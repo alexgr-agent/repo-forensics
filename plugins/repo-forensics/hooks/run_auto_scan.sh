@@ -50,7 +50,7 @@ if [ -f "$GUARD" ]; then
 fi
 
 if [ -f "$LAUNCHER" ]; then
-    exec "${BASH:-/bin/bash}" "$LAUNCHER" "$SCRIPT"
+    exec "${BASH:-$(command -v bash || echo /bin/bash)}" "$LAUNCHER" "$SCRIPT"
 fi
 
 exec python3 "$SCRIPT"

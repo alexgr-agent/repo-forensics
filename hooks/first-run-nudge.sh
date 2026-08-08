@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # repo-forensics - SessionStart First-Run Auto-Update Nudge
 #
 # Marketplace installs can go stale. This hook prints a one-time platform-aware

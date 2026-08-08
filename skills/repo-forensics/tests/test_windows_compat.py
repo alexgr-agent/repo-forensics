@@ -1,5 +1,6 @@
 import os
 import re
+import shutil
 import subprocess
 
 from shell_compat import bash_c, sh_argv
@@ -45,6 +46,11 @@ def _assert_found(result, expected):
 REPO_ROOT = Path(__file__).resolve().parents[3]
 RUN_FORENSICS = REPO_ROOT / "skills" / "repo-forensics" / "scripts" / "run_forensics.sh"
 PYTHON_LAUNCHER = REPO_ROOT / "hooks" / "python-launcher.sh"
+BASH = shutil.which("bash") or "/bin/bash"
+# The codex-finder helper sources the launcher via sed inside a stripped-PATH
+# environment (PATH=/usr/bin:/bin); on non-FHS systems (NixOS) sed does not
+# exist there, so resolve it from the parent environment up front.
+SED = shutil.which("sed") or "sed"
 
 
 def _write_shim(path: Path, banner: str | None, *, executable: bool = True) -> None:
@@ -54,7 +60,7 @@ def _write_shim(path: Path, banner: str | None, *, executable: bool = True) -> N
     path.parent.mkdir(parents=True, exist_ok=True)
     version_line = f'echo "{banner}"' if banner is not None else "true"
     path.write_text(
-        "#!/bin/bash\n"
+        f"#!{BASH}\n"
         f'[ "$1" = "--version" ] && {{ {version_line}; exit 0; }}\n'
         'echo "SHIM_RAN:$*"\n'
     )
@@ -68,7 +74,7 @@ def _run_codex_finder(env: dict) -> subprocess.CompletedProcess:
     exercised without the machine's real system Python short-circuiting it."""
     script = (
         'set -u\n'
-        f'''eval "$(sed -n '1,/^if py3=/p' "{PYTHON_LAUNCHER}" | sed '$d')"\n'''
+        f'''eval "$("{SED}" -n '1,/^if py3=/p' "{PYTHON_LAUNCHER}" | "{SED}" '$d')"\n'''
         'set +e\n'
         'out=$(find_codex_runtime_python); rc=$?\n'
         'printf "OUT=%s\\nRC=%s\\n" "$out" "$rc"\n'
