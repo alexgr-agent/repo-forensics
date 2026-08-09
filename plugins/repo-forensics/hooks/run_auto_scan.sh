@@ -23,8 +23,9 @@
 
 set -u
 
-SCRIPT="${CLAUDE_PLUGIN_ROOT}/skills/repo-forensics/scripts/auto_scan.py"
-LAUNCHER="${CLAUDE_PLUGIN_ROOT}/hooks/python-launcher.sh"
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-${KIMI_PLUGIN_ROOT:-}}"
+SCRIPT="$PLUGIN_ROOT/skills/repo-forensics/scripts/auto_scan.py"
+LAUNCHER="$PLUGIN_ROOT/hooks/python-launcher.sh"
 
 if [ ! -f "$SCRIPT" ]; then
     echo "[repo-forensics] WARNING: auto_scan.py not found at: $SCRIPT"

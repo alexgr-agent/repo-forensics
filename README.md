@@ -28,6 +28,7 @@ Audit untrusted repos before they touch your agent. Fully local, self-updating d
 <p align="center">
   <img src="https://img.shields.io/badge/Claude%20Code-auto--scan-5436DA.svg?logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZD0iTTEyIDJDNi40OCAyIDIgNi40OCAyIDEyczQuNDggMTAgMTAgMTAgMTAtNC40OCAxMC0xMFMxNy41MiAyIDEyIDJ6IiBmaWxsPSIjZmZmIi8+PC9zdmc+" alt="Claude Code">
   <img src="https://img.shields.io/badge/Codex%20CLI-auto--scan-10A37F.svg" alt="Codex CLI">
+  <img src="https://img.shields.io/badge/Kimi%20Code-auto--scan-1E88E5.svg" alt="Kimi Code">
   <img src="https://img.shields.io/badge/OpenClaw-supported-FF6B35.svg" alt="OpenClaw">
   <img src="https://img.shields.io/badge/Cursor-supported-00D1FF.svg" alt="Cursor">
   <img src="https://img.shields.io/badge/NanoClaw-supported-8B5CF6.svg" alt="NanoClaw">
@@ -129,6 +130,7 @@ Installed as a plugin, repo-forensics also runs automatically in the background,
 |----------|-----------|-------------|
 | Claude Code | Plugin install auto-registers all 3 hooks | None needed |
 | Codex CLI | Plugin install auto-registers all 3 hooks | Local checkout: `python3 scripts/codex_install.py` |
+| Kimi Code | Plugin install auto-registers all 3 hooks | None needed |
 | OpenClaw | Not auto-wired by plugin system | One-time: `python3 scripts/openclaw_install.py` |
 | Cursor | Not auto-wired by plugin system | One-time: `python3 scripts/cursor_install.py` |
 | NanoClaw / CLI | N/A (no plugin hook system) | Use manual `/repo-forensics` invocation |
@@ -529,6 +531,20 @@ python3 scripts/codex_install.py --verify --require-registered
 ```
 
 Codex v0.137+ inventory uses `codex plugin list --json` when available, falling back to filesystem manifests on older installs.
+
+</details>
+
+<details>
+<summary><b>Kimi Code</b> (auto-scan on install)</summary>
+
+Install the plugin directly from GitHub. Hooks auto-wire from `.kimi-plugin/plugin.json`. Same hooks as Claude Code: PreToolUse (IOC gate), PostToolUse (auto-scan), SessionStart (security scan).
+
+```
+/plugins install https://github.com/alexgreensh/repo-forensics
+/reload
+```
+
+Every `git clone`, `npm install`, `pip install`, `uv add`, `bun install`, `pnpm add` is scanned automatically. Known-malicious packages are blocked before execution, with the block reason surfaced in the agent context.
 
 </details>
 

@@ -104,18 +104,20 @@ def get_tracked_hook_files(repo_root):
 def get_tracked_runtime_manifest_files(repo_root):
     """Get load-bearing plugin manifest files under agent plugin dirs.
 
-    Claude, Codex, Cursor, and cross-agent marketplace manifests live outside
-    skill_root but determine what hooks and skills the agent loads. Extending
-    the integrity registry to cover them closes the same gap class as hook
-    files (commit 64fbe57).
+    Claude, Codex, Cursor, Kimi, and cross-agent marketplace manifests live
+    outside skill_root but determine what hooks and skills the agent loads.
+    Extending the integrity registry to cover them closes the same gap class
+    as hook files (commit 64fbe57).
 
-    `.cursor-plugin` was added with the Cursor adapter (PRD v3 O8). A manifest
-    that is not in this tuple is checksummed by nobody: it escapes both
-    `--verify` and the pinned-key signature check, so a tampered Cursor
-    manifest could re-point the hook commands with nothing to notice.
+    `.cursor-plugin` was added with the Cursor adapter (PRD v3 O8) and
+    `.kimi-plugin` with the Kimi Code adapter. A manifest that is not in this
+    tuple is checksummed by nobody: it escapes both `--verify` and the
+    pinned-key signature check, so a tampered manifest could re-point the
+    hook commands with nothing to notice.
     """
     tracked = []
-    for dirname in (".claude-plugin", ".codex-plugin", ".cursor-plugin"):
+    for dirname in (".claude-plugin", ".codex-plugin", ".cursor-plugin",
+                    ".kimi-plugin"):
         manifest_dir = os.path.join(repo_root, dirname)
         try:
             if not os.path.isdir(manifest_dir):
