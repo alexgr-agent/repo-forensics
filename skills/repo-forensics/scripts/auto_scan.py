@@ -7,7 +7,7 @@ Runs as a Claude Code / Codex / OpenClaw PostToolUse hook and as a Cursor
 afterShellExecution hook (`--adapter cursor`). Reads JSON from stdin, writes its
 report to stdout. Fast path (<10ms for non-matching commands).
 
-OBSERVE-ONLY on every adapter. This is where the deep 27-scanner audit runs, so
+OBSERVE-ONLY on every adapter. This is where the deep 28-scanner audit runs, so
 it deliberately never gates execution — the blocking decision belongs to
 pre_scan.py, which is the only thing fast enough to sit in front of the agent's
 inner loop (PRD v3 R2).
@@ -624,7 +624,7 @@ def run_scanner(scanner_script, repo_path):
 
 
 def run_targeted_scan(repo_path):
-    """Run 18 targeted scanners in parallel on a cloned/installed repo."""
+    """Run 19 targeted scanners in parallel on a cloned/installed repo."""
     if not os.path.isdir(repo_path):
         return []
 
@@ -647,6 +647,7 @@ def run_targeted_scan(repo_path):
         'scan_bytecode.py',
         'scan_dead_anchors.py',
         'scan_yara.py',
+        'scan_git_config.py',
     ]
 
     from concurrent.futures import ThreadPoolExecutor, as_completed

@@ -75,7 +75,7 @@
   <!-- Center glow halo -->
   <circle cx="450" cy="275" r="155" fill="url(#centerGlow)" opacity="0.6"/>
 
-  <!-- Connection lines from center to scanners (17 shown; agent_skills, post_incident, devcontainer omitted from visual) -->
+  <!-- Connection lines from center to scanners (18 shown; agent_skills, post_incident, devcontainer omitted from visual) -->
   <!-- 0: skill_threats (red) -->
   <line x1="450" y1="275" x2="450" y2="95" stroke="#ff4444" stroke-width="1.2" stroke-opacity="0.4" stroke-dasharray="4,4"/>
   <!-- 1: mcp_security (red) -->
@@ -110,6 +110,8 @@
   <line x1="450" y1="275" x2="323" y2="146" stroke="#00bcd4" stroke-width="1.2" stroke-opacity="0.4" stroke-dasharray="4,4"/>
   <!-- 15: git_forensics (teal) -->
   <line x1="450" y1="275" x2="381" y2="108" stroke="#00bcd4" stroke-width="1.2" stroke-opacity="0.4" stroke-dasharray="4,4"/>
+  <!-- 17: git_config (teal) — executable git config, outside orbit like yara -->
+  <line x1="450" y1="275" x2="180" y2="275" stroke="#00bcd4" stroke-width="1.2" stroke-opacity="0.4" stroke-dasharray="4,4"/>
 
   <!-- CENTER HEXAGON -->
   <polygon points="450,229 493,252 493,298 450,321 407,298 407,252" fill="url(#centerGrad)" stroke="#4fc3f7" stroke-width="2" filter="url(#softglow)"/>
@@ -117,7 +119,7 @@
   <text x="450" y="268" text-anchor="middle" fill="#e3f2fd" font-size="10.5" font-weight="600" letter-spacing="1">TARGET</text>
   <text x="450" y="283" text-anchor="middle" fill="#90caf9" font-size="9" letter-spacing="0.5">REPO</text>
 
-  <!-- SCANNER NODES — 17 around the circle -->
+  <!-- SCANNER NODES — 18 shown (16 on the orbit; yara and git_config outside it) -->
   <!-- Orbit ring (decorative) -->
   <circle cx="450" cy="275" r="180" fill="none" stroke="#1e3a5f" stroke-width="1" stroke-dasharray="3,6"/>
 
@@ -251,6 +253,15 @@
     <circle cx="381" cy="108" r="30" fill="none" stroke="#00bcd4" stroke-width="0.6" opacity="0.4"/>
   </g>
 
+  <!-- 17. git_config (teal) — executable git config / shipped-.git, outside orbit like yara -->
+  <g filter="url(#glow)">
+    <circle cx="180" cy="275" r="30" fill="#031213" stroke="#00bcd4" stroke-width="1.8"/>
+    <text x="180" y="270" text-anchor="middle" fill="#80deea" font-size="7.5" font-weight="600" letter-spacing="0.5">git</text>
+    <text x="180" y="281" text-anchor="middle" fill="#80deea" font-size="7.5" font-weight="600" letter-spacing="0.5">config</text>
+    <text x="180" y="293" text-anchor="middle" fill="#80deea" font-size="6.5" letter-spacing="0.3">exec config</text>
+    <circle cx="180" cy="275" r="30" fill="none" stroke="#00bcd4" stroke-width="0.6" opacity="0.4"/>
+  </g>
+
   <!-- LEGEND -->
   <rect x="30" y="495" width="840" height="42" rx="6" fill="#0a1520" stroke="#1e3a5f" stroke-width="1" opacity="0.8"/>
   <!-- Red -->
@@ -273,6 +284,6 @@
   <text x="681" y="520" fill="#80deea" font-size="8" font-weight="600">Repository Integrity</text>
 
   <!-- Title -->
-  <text x="450" y="35" text-anchor="middle" fill="#e3f2fd" font-size="13" font-weight="700" letter-spacing="2" filter="url(#textglow)">repo-forensics — 27-scanner attack surface map</text>
+  <text x="450" y="35" text-anchor="middle" fill="#e3f2fd" font-size="13" font-weight="700" letter-spacing="2" filter="url(#textglow)">repo-forensics — 28-scanner attack surface map</text>
   <text x="450" y="52" text-anchor="middle" fill="#546e7a" font-size="9" letter-spacing="1">every node is a scanner | every line is a path to detection</text>
 </svg>

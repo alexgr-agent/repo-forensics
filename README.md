@@ -51,7 +51,7 @@ Nobody does. The vetting step doesn't exist. [1,184 malicious skills](https://ww
 
 You won't feel it. There are no symptoms.
 
-**Repo Forensics is the vetting step.** Audit any repo, skill, MCP server, or plugin before it touches your machine. Works across the AI agent ecosystem: Claude Code, OpenClaw, Codex, Cursor, NanoClaw, or anything that installs third-party code. 27 scanners, runtime behavior prediction, ClawHavoc campaign detection. Runs in seconds.
+**Repo Forensics is the vetting step.** Audit any repo, skill, MCP server, or plugin before it touches your machine. Works across the AI agent ecosystem: Claude Code, OpenClaw, Codex, Cursor, NanoClaw, or anything that installs third-party code. 28 scanners, runtime behavior prediction, ClawHavoc campaign detection. Runs in seconds.
 
 **Your code never leaves your machine.** Zero dependencies. No cloud API. No telemetry. Unlike mcp-scan, nothing is uploaded anywhere.
 
@@ -94,14 +94,14 @@ $ ./run_forensics.sh ./trusted-library
 ## How It Works
 
 <p align="center">
-  <img src="diagrams/pipeline.svg" alt="Scanning pipeline: input to 27 scanners to correlation to verdict" width="900"/>
+  <img src="diagrams/pipeline.svg" alt="Scanning pipeline: input to 28 scanners to correlation to verdict" width="900"/>
 </p>
 
-Point it at any repository. 27 scanners run in parallel, each checking a different attack surface: prompt injection, supply chain, credential theft, runtime behavior, infrastructure misconfiguration, and more. The correlation engine then cross-references findings across 41 rules to detect compound threats that no single scanner would catch. A dynamic import paired with a network fetch becomes a deferred payload loading finding. An environment variable read combined with an outbound POST becomes a data exfiltration finding.
+Point it at any repository. 28 scanners run in parallel, each checking a different attack surface: prompt injection, supply chain, credential theft, runtime behavior, infrastructure misconfiguration, and more. The correlation engine then cross-references findings across 41 rules to detect compound threats that no single scanner would catch. A dynamic import paired with a network fetch becomes a deferred payload loading finding. An environment variable read combined with an outbound POST becomes a data exfiltration finding.
 
 Every finding carries a confidence score alongside severity, surfaced through four verdict tiers: BLOCK, WARN, INFO, and SUPPRESSED. Ambiguous WARN-tier findings can be adjudicated by the host agent (Claude Code, Codex, etc.) under a prompt-injection-safe protocol -- sanitized snippets, metadata-first, no code fences -- so context that the scanner can't infer is factored in without creating a new attack surface.
 
-The result is a severity-ranked verdict with exit codes designed for CI/CD gating. Export it as text, JSON, a compact summary, or **SARIF 2.1.0** (`--format sarif`) that drops straight into the GitHub Security tab and any SARIF-consuming tooling. The 27 scanners below include a **YARA signature scanner** for curated malware, webshell, cryptominer, and hacktool families.
+The result is a severity-ranked verdict with exit codes designed for CI/CD gating. Export it as text, JSON, a compact summary, or **SARIF 2.1.0** (`--format sarif`) that drops straight into the GitHub Security tab and any SARIF-consuming tooling. The 28 scanners below include a **YARA signature scanner** for curated malware, webshell, cryptominer, and hacktool families.
 
 <details>
 <summary>SARIF mapping details</summary>
@@ -120,7 +120,7 @@ Installed as a plugin, repo-forensics also runs automatically in the background,
 | Hook | Trigger | What It Does |
 |------|---------|-------------|
 | **PreToolUse** | Before any `npm install`, `pip install`, `uv add`, `bun install`, `pnpm add`, shell command | Blocks known-malicious packages before execution. IOC-only, <10ms. |
-| **PostToolUse** | After `git clone`, `git pull`, `npm install`, `uv sync`, `brew upgrade`, etc. | Full 27-scanner audit on the cloned/installed code. |
+| **PostToolUse** | After `git clone`, `git pull`, `npm install`, `uv sync`, `brew upgrade`, etc. | Full 28-scanner audit on the cloned/installed code. |
 | **SessionStart** | Every new session | Detects changed plugins, skills, and MCP servers since last session. Bootstraps/repairs daily IOC, CISA KEV, and signed rule-pack refresh. |
 
 **Platform support:**
@@ -202,7 +202,7 @@ Scanning never requires network access. The feed is a freshness layer on top of 
 ---
 ## Battle-Tested Against Real Attacks
 
-3,422 tests across 40+ test files. Not synthetic toy examples: detection patterns built from real supply chain campaigns that hit production systems.
+3,567 tests across 40+ test files. Not synthetic toy examples: detection patterns built from real supply chain campaigns that hit production systems.
 
 **Named attack campaigns in the IOC database:**
 
@@ -233,7 +233,7 @@ Scanning never requires network access. The feed is a freshness layer on top of 
 
 Every campaign above has version-pinned IOCs in `compromised_versions.json`, detection rules in the lifecycle and dependency scanners, and correlation rules for compound attack patterns.
 
-**The tests are safe to run.** All 3,422 tests use synthetic fixtures in temporary directories. No real malware is downloaded or executed. Pattern matching runs against fake package.json files containing attack signatures, the same way antivirus software tests against EICAR strings.
+**The tests are safe to run.** All 3,567 tests use synthetic fixtures in temporary directories. No real malware is downloaded or executed. Pattern matching runs against fake package.json files containing attack signatures, the same way antivirus software tests against EICAR strings.
 
 ---
 ## Why Not the Alternatives?
@@ -249,7 +249,7 @@ Every campaign above has version-pinned IOCs in `compromised_versions.json`, det
 | VirusTotal + ClawHub | ClawHub signature scanning | Surface-level. Signature-based, not structural. No prompt injection detection, no taint tracking. |
 | Manual review | Reading code | Misses zero-width unicode, cross-file taint flows, tool description injection. |
 
-**repo-forensics:** 27 scanners. Zero dependencies. Fully offline. Runtime behavior prediction. Post-incident forensics. Built for the AI agent ecosystem.
+**repo-forensics:** 28 scanners. Zero dependencies. Fully offline. Runtime behavior prediction. Post-incident forensics. Built for the AI agent ecosystem.
 
 ---
 ## What It Catches
@@ -259,12 +259,12 @@ Every campaign above has version-pinned IOCs in `compromised_versions.json`, det
 </p>
 
 ---
-## The 27 Scanners
+## The 28 Scanners
 
 Each scanner targets a distinct attack surface. Together they cover the full threat landscape for AI agent code.
 
 <p align="center">
-  <img src="diagrams/scanner-map.svg" alt="27-scanner attack surface map showing all scanners organized by threat category" width="900"/>
+  <img src="diagrams/scanner-map.svg" alt="28-scanner attack surface map showing all scanners organized by threat category" width="900"/>
 </p>
 
 | Scanner | What It Detects | Approach |
@@ -277,7 +277,7 @@ Each scanner targets a distinct attack surface. Together they cover the full thr
 | **binary** | Executables disguised as images/text/docs, **audio steganography** (executable payloads in WAV/MP3/FLAC), **embedded PE detection** (polyglot files with MZ+PE at non-zero offset) | Magic number detection, audio data section analysis, PE signature validation |
 
 <details>
-<summary>Show all 27 scanners</summary>
+<summary>Show all 28 scanners</summary>
 
 | Scanner | What It Detects | Approach |
 |---------|----------------|----------|
@@ -301,6 +301,7 @@ Each scanner targets a distinct attack surface. Together they cover the full thr
 | **splitstream** | Payloads split into inert base64/base85/base32/hex fragments scattered across unrelated files (no import edge) and concatenated at runtime -- evades per-file and cross-file taint checks | Single O(n) pass, fragments fingerprinted by alphabet + length-band and grouped, reassembled per group and decode-rescanned; member/size/wall-clock bounded |
 | **provenance** | Artifacts whose present signature/attestation **fails** verification -- the tampering signal (modified after signing, or signed by an untrusted key) | Shells out to cosign / gh / npm / pip when on PATH (zero added deps), timeout-bounded, never networks or hard-fails; the universal unsigned state is deliberately not alarmed -- only real tampering surfaces, as CRITICAL |
 | **dead_anchors** | Dead/claimable external anchors a skill references -- **SkillJacking** (repojacking of deleted GitHub owners/repos, phantom npm/PyPI packages, expired domains, dangling cloud-hosting subdomains) -- that an attacker can register to hijack the trust chain | GitHub / registry / RDAP / DNS probes with a per-host circuit breaker; three-tier verdict (only CONFIRMED-CLAIMABLE emits; LIVE-AND-OWNED and COULDNT-CHECK stay silent); `--offline` opt-out, zero non-stdlib deps |
+| **git_config** | Executable git configuration (Beltdown class): shipped `.git` directories (nested in a checkout, hidden in `node_modules`, or packed in an archive), `.git/config` carrying armed exec keys (`core.fsmonitor`, `core.hooksPath`, `core.sshCommand`, `core.pager`/`editor`, `core.askpass`, `filter.*.clean/smudge/process`, `gpg.program`, `diff.external`, shell aliases, include paths, `credential.helper`), hostile `gitdir:` pointer files, `.gitmodules` with `update = !command`, and the staged plant that writes those keys and then renames or copies a directory to `.git` | Tolerant git-config parsing with protective-value awareness (`fsmonitor=false`, `hooksPath=/dev/null`, `git-lfs` filters stay silent), shipped-vs-own-checkout severity split, worktree-proof pointer logic, exact-`.git` target matching with one-hop variable resolution (shell/cmd/PowerShell/Python/Node), recognised-hook-name and case-insensitive `.sample` handling, path-shape classification for archive members |
 | **yara** | Curated malware, webshell, cryptominer, and hacktool signatures (11 hand-authored rules across 4 families). Multi-string conjunctive conditions plus filesize bounds, so a match is a confirmed family indicator, not a single-token guess. `yara-python` is optional: when absent the scanner degrades to a capability gap (exit-neutral), so the core stays zero-dep and offline. Context-gated so a match on a real payload stays CRITICAL while the same bytes in docs, tests, or blocklists demote, no false-positive noise | YARA signature matching with `data/yara/{webshells,malware,cryptominers,hacktools}.yar`, per-file sha256 integrity in `data/yara/manifest.json`, evidence gating via the unified file-type and line-context classifier |
 
 </details>
@@ -487,7 +488,7 @@ Exit codes: `0` = clean, `1` = warn, `2` = block merge.
 | **IOC auto-update** | `--update-iocs` pulls latest C2 IPs, malicious domains, known-bad packages |
 | **Installation verification** | `--verify-install` checks repo-forensics itself for tampering |
 | **Manifest drift** | Declared vs actual imports, phantom deps, runtime installs |
-| **3,422 pytest tests** | Full coverage across 40+ test files |
+| **3,567 pytest tests** | Full coverage across 40+ test files |
 
 </details>
 
@@ -558,7 +559,7 @@ Writes three hooks to `~/.cursor/hooks.json`:
 | Cursor event | What it does |
 |---|---|
 | `beforeShellExecution` | Blocks known-malicious installs and pipe-to-shell **before the command executes**. Fast IOC gate only (~18ms including interpreter startup; the detection itself is microseconds). |
-| `afterShellExecution` | Full 27-scanner audit of what was just installed or cloned. Observe-only — it never gates execution. |
+| `afterShellExecution` | Full 28-scanner audit of what was just installed or cloned. Observe-only — it never gates execution. |
 | `sessionStart` | Baseline diff of plugins/skills/MCP servers, plus threat-feed refresh. Cursor does not always dispatch this in cloud contexts, so the blocking hook bootstraps the refresh daemon too, behind a once-per-session latch. |
 
 The installer merges rather than overwrites: existing non-repo-forensics hooks
@@ -630,7 +631,7 @@ No pip install. No API keys. No Docker. No dependencies.
 <summary>More options: skill-scan, watch mode, CI/CD, IOC updates</summary>
 
 ```bash
-./skills/repo-forensics/scripts/run_forensics.sh /path/to/skill --skill-scan    # Focused AI skill/MCP scan (17 scanners)
+./skills/repo-forensics/scripts/run_forensics.sh /path/to/skill --skill-scan    # Focused AI skill/MCP scan (18 scanners)
 ./skills/repo-forensics/scripts/run_forensics.sh /path/to/repo --watch           # Track file integrity between scans
 ./skills/repo-forensics/scripts/run_forensics.sh /path/to/repo --update-iocs     # Pull latest threat indicators
 ./skills/repo-forensics/scripts/run_forensics.sh /path/to/repo --format json     # CI/CD machine-readable output

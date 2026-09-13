@@ -55,6 +55,7 @@ import zlib
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import forensics_core as core
+import scan_git_config
 import scan_sast
 import scan_secrets
 import scan_skill_threats
@@ -365,10 +366,14 @@ def _scan_zip(source, label, depth, state, findings):
                                          f"{label} zip index is corrupt.", label, "opaque-archive"))
                 return
             is_ooxml = _is_ooxml([i.filename for i in infos])
+            git_roots_seen = set()
             for info in infos:
                 if _over_budget(state):
                     state["incomplete"] = True
                     break
+                _flag_git_member_name(
+                    info.filename, label, git_roots_seen, state, inner,
+                    is_dir=info.is_dir() or bool(info.external_attr & 0x10))
                 if info.is_dir():
                     continue
                 entries += 1
@@ -425,6 +430,7 @@ def _scan_tar(source, label, depth, state, findings):
         return
     inner = []
     entries = 0
+    git_roots_seen = set()
     try:
         with tf:
             # Lazy iteration: a .tgz that expands to gigabytes is bounded by the
@@ -442,6 +448,8 @@ def _scan_tar(source, label, depth, state, findings):
                 if _over_budget(state):
                     state["incomplete"] = True
                     break
+                _flag_git_member_name(member.name, label, git_roots_seen,
+                                      state, inner, is_dir=member.isdir())
                 if not member.isfile():
                     if member.issym() or member.islnk():
                         findings.append(_finding("high", "Unsafe tar link member refused",
@@ -478,6 +486,29 @@ def _scan_tar(source, label, depth, state, findings):
         _emit_inner(label, inner, findings)
 
 
+def _flag_git_member_name(member_name, label, git_roots_seen, state, inner,
+                          is_dir=False):
+    """Name-only shipped-.git detection for archive members. Runs before any
+    read so an unreadable, oversized, or directory member is still surfaced:
+    an archive that carries git metadata is hostile by construction. is_dir
+    carries the archive's own directory marking (zip DOS dir bit / trailing
+    slash, tar dir member) so a bare `.git` directory entry is shipped
+    metadata (critical), not a gitdir pointer file (high)."""
+    cls = scan_git_config.classify_git_member_path(member_name, is_dir=is_dir)
+    if not cls:
+        return
+    kind, git_root = cls
+    if kind == "gitdir_file":
+        inner.append(scan_git_config.archive_gitdir_finding(label, member_name))
+        return
+    if git_root not in git_roots_seen:
+        git_roots_seen.add(git_root)
+        inner.append(scan_git_config.archive_shipped_git_finding(label, git_root))
+    if kind == "hooks" and state.get("git_hooks", 0) < scan_git_config._MAX_HOOK_FINDINGS:
+        state["git_hooks"] = state.get("git_hooks", 0) + 1
+        inner.append(scan_git_config.archive_shipped_hooks_finding(label, member_name))
+
+
 def _dispatch_member(data, member_name, vpath, depth, state, inner):
     """Scan a member; recurse into nested archives up to MAX_DEPTH."""
     kind = _archive_kind(member_name)
@@ -500,6 +531,7 @@ def _dispatch_member(data, member_name, vpath, depth, state, inner):
                               vpath, "unsupported-archive-type"))
         return
     inner.extend(_scan_member_text(data, vpath))
+    inner.extend(scan_git_config.scan_archive_member_content(data, member_name, vpath))
 
 
 def scan_repo(repo_path, ignore_patterns=None):

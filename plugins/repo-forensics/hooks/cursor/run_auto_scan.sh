@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Cursor afterShellExecution wrapper (PRD v3 R2, M2).
 #
-# OBSERVE-ONLY. The deep 27-scanner audit runs here, after the command, exactly
+# OBSERVE-ONLY. The deep 28-scanner audit runs here, after the command, exactly
 # as it does on Claude Code's PostToolUse. It is deliberately NOT on the
 # beforeShellExecution wire: only the <10ms IOC gate is admissible in front of
 # the agent's inner loop (R2), and a 30s deep scan there would be ripped out by
