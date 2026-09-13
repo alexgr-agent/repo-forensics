@@ -510,7 +510,7 @@ def _is_comment_or_string(snippet, ext=""):
 def infer_evidence_class(scanner, category, file_path, snippet):
     """Centrally infer an evidence_class from scanner / category / file type /
     comment/string context. This is the single place evidence_class is derived,
-    so the 27 scanners never need to hand-tag it.
+    so the 28 scanners never need to hand-tag it.
 
     Precedence (first match wins):
       1. directive category  -> direct   (the four named directive detectors)

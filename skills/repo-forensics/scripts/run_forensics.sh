@@ -10,8 +10,8 @@ if [ -z "${1:-}" ]; then
     echo "Usage: $0 <repo_path> [options]"
     echo ""
     echo "Modes:"
-    echo "  (default)              Full audit - all 27 scanners"
-    echo "  --skill-scan           Focused on AI skill threats (17 scanners, faster)"
+    echo "  (default)              Full audit - all 28 scanners"
+    echo "  --skill-scan           Focused on AI skill threats (18 scanners, faster)"
     echo "  --inventory            Enumerate installed AI-agent stacks (zero-LLM, JSON output)"
     echo ""
     echo "Options:"
@@ -361,10 +361,10 @@ except: print(0)
 }
 
 if $SKILL_SCAN; then
-    # Focused mode: 10 scanners most relevant to vetting skills
+    # Focused mode: 18 scanners most relevant to vetting skills
     if ! $MACHINE_FORMAT; then
         echo ""
-        echo "[*] Running focused skill scan (17 scanners)..."
+        echo "[*] Running focused skill scan (18 scanners)..."
     fi
 
     throttled_run run_scanner "skill_threats" "scan_skill_threats.py" &
@@ -384,13 +384,14 @@ if $SKILL_SCAN; then
     throttled_run run_scanner "provenance" "scan_provenance.py" &
     throttled_run run_scanner "dead_anchors" "scan_dead_anchors.py" &
     throttled_run run_scanner "yara" "scan_yara.py" &
+    throttled_run run_scanner "git_config" "scan_git_config.py" &
     wait
 
 else
     # Full audit: all scanners in parallel
     if ! $MACHINE_FORMAT; then
         echo ""
-        echo "[*] Running all 27 scanners in parallel..."
+        echo "[*] Running all 28 scanners in parallel..."
     fi
     throttled_run run_scanner "entropy" "scan_entropy.py" &
     throttled_run run_scanner "binary" "scan_binary.py" &
@@ -423,6 +424,7 @@ else
     throttled_run run_scanner "splitstream" "scan_splitstream.py" &
     throttled_run run_scanner "provenance" "scan_provenance.py" &
     throttled_run run_scanner "dead_anchors" "scan_dead_anchors.py" &
+    throttled_run run_scanner "git_config" "scan_git_config.py" &
     wait
 fi
 

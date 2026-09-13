@@ -75,6 +75,7 @@ _SCAN_FILE_MODULES = [
     "scan_entrypoint",
     "scan_manifest_drift",
     "scan_yara",
+    "scan_git_config",
 ]
 
 # Scanners with specialised entry points: only called for matching filenames.

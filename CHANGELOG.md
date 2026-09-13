@@ -2,6 +2,140 @@
 
 All notable changes to repo-forensics. Versions follow semver.
 
+## [Unreleased]
+
+### New scanner: git_config - executable git configuration (Beltdown class)
+
+Detects the executable-git-config attack class: agent CLIs and humans run git inside
+a workspace, and git executes repository-supplied config values, so a shipped or
+planted `.git` directory is code execution with the victim's authority.
+
+- Shipped `.git` directories are hostile by construction: nested `.git` on the
+  filesystem is HIGH on presence, any `.git` content inside a scanned archive
+  (zip/tar, incl. renamed/polyglot containers) is CRITICAL (GC-SHIP-001/003).
+- `.git/config` is parsed for armed exec keys (GC-SHIP-002, CRITICAL):
+  `core.fsmonitor`, `core.hooksPath`, `core.sshCommand`, `core.pager`, `core.editor`,
+  `!`-prefixed aliases, `include`/`includeIf` paths, and non-builtin
+  `credential.helper` values. Protective hardening values (`fsmonitor=false`,
+  `hooksPath=/dev/null`), plain aliases, and git's built-in credential helpers are
+  inert and never flagged. The scanned checkout's own root config reports at HIGH
+  (GC-ROOT-001) since local tooling legitimately sets some of these.
+- `gitdir:` pointer files: submodule/worktree pointers resolving inside the scanned
+  tree's own `.git` are recognised as legitimate; pointers escaping the tree or
+  arming shipped metadata are flagged (GC-SHIP-004). Non-sample hooks shipped in
+  `.git/hooks` are CRITICAL (GC-SHIP-005).
+- `.gitmodules` with `update = !command` is CRITICAL (GC-MOD-001): arbitrary shell
+  execution on `git submodule update`.
+- Staged-rename chain (GC-REN-001, CRITICAL): one file that writes an exec-capable
+  git config key AND renames a directory to `.git` - the runtime plant against an
+  already-clean clone. The conjunction is same-file and the rename target must be
+  exactly `.git`, covering POSIX mv, cmd ren/move, PowerShell Move-Item/Rename-Item,
+  Python os.rename/os.replace/shutil.move/pathlib, and Node fs.rename/move.
+- `scan_archive` now classifies every member path for shipped git metadata before
+  reading it, so unreadable or directory members are still surfaced.
+- Fixed in passing: `run_forensics.sh` described the focused mode as "10 scanners"
+  while launching 17; the comment and banner now state the real count (18 with the
+  new scanner; 28 in full audit). `auto_scan.py` runs it too (19 targeted scanners).
+
+### git_config hardening (adversarial review round 2)
+
+- Rename/copy plant arm (GC-REN-001) rewritten: the target must be exactly `.git`
+  (basename), which kills the git/git false positives (`mv proj.git
+  .../proj.git`, `mv "$1" "$1.git"`). Matching is no longer regex-only: either
+  quote style, trailing flags (`Move-Item staging .git -Force`), copy-plants
+  (`cp -r`, `Copy-Item`, `xcopy`, `robocopy`, `shutil.copytree`, `fs.copySync`),
+  and one-hop variable indirection (`target=.git; mv stage "$target"`,
+  `target='.git'; os.rename(stage, target)`) across shell, cmd, PowerShell,
+  Python and Node are all resolved.
+- Ignored dependency roots (`node_modules`, `venv`, `dist`, ...) are now swept
+  for `.git` metadata only (presence, armed config, hooks, pointer files);
+  ordinary content there stays ignored, mirroring the archive path.
+- gitdir pointers: a ROOT `.git` pointer file is now evaluated - silent only
+  with worktree proof (commondir + gitdir back-link resolving to the scanned
+  root's pointer); escaping pointers without proof, and pointers arming shipped
+  content, are flagged. Symlinked nested `.git` directories and pointer files
+  are resolved and inspected. Multiline pointer files parse (re.M).
+- Shipped hooks: only recognised git hook names count (arbitrary files under
+  hooks/ do not), the `.sample` exclusion is case-insensitive, and filesystem
+  hook findings are capped at 5 like the archive path; armed-config findings
+  cap at 25 per config body.
+- Armed exec-key set grows: `filter.<name>.clean/smudge/process`
+  (checkout-time exec via .gitattributes), `gpg.program`, `diff.external`,
+  `core.askpass`. Inert carve-outs: stock `gpg`/`gpg2` and `git-lfs` filter
+  commands. The ROOT rule's `core.pager`/`core.editor` now fire only on
+  path-like values, so `editor = vim` in a developer's own checkout is silent.
+- Archive member classification: a bare `.git` DIRECTORY entry without a
+  trailing slash (zip DOS dir bit, tar dir member) is shipped metadata
+  (critical), not a gitdir pointer file (high).
+- `gen_rule_ids.py` registers `scan_git_config.py` ("GC") so a future
+  rule_ids.csv regen cannot silently drop the 8 GC rows; the scanner-map
+  diagram gains a git_config node and every scanner-count surface reads 28.
+
+### git_config hardening (adversarial review round 3)
+
+- A root `.git` SYMLINK is no longer invisible: it satisfies neither the
+  plain-dir nor the pointer-file branch, so an armed config behind one went
+  undetected. Root symlinks are realpath-resolved, reported (GC-SHIP-004),
+  and their target's config/hooks inspected (GC-SHIP-002/005).
+- Worktree proof hardened: a manufactured directory carrying a `commondir`
+  file (contents ".") plus a `gitdir` back-pointer was accepted as worktree
+  machinery while real git executed the armed external config. Verification
+  now resolves the commondir CONTENTS to a genuine main-repo gitdir (HEAD
+  present), requires the target to sit at exactly
+  <main-gitdir>/worktrees/<name>, and compares paths with normcase
+  (Windows). An armed config inside a proven target still fires
+  (GC-ROOT-001). Submodule checkouts scanned as root (target under the
+  parent's .git/modules/, no commondir) are recognised as the parent's own
+  metadata and stay silent; the acceptance proof is hardened in round 4.
+- Rename/copy plant arm is flow-aware: the last assignment before each use
+  wins and assignments after a use arm nothing (`target=.git` then
+  `target=backup` then `mv stage "$target"` is silent). Cheap indirection
+  classes resolve: multi-hop variables (`b=$a`, Python `b=a`), constant
+  command substitution (`$(printf .git)`, `$(echo .git)`),
+  quote-concatenation (`"."git`), backslash escapes (`.g\it`), environment
+  concatenation (`.$suffix` with `suffix=git` bound), Python `'.'+'git'`,
+  and Node template constants (`.gi${'t'}`). Target comparison and all
+  fast-path gates are case-insensitive: `.GIT` IS git's directory on
+  Windows/macOS. Deeper dataflow (non-constant substitutions, functions,
+  loops, bare-identifier fs.rename callbacks) is a documented limit.
+- git-lfs inert carve-out requires a word boundary: `git-lfs-evil` and
+  `git-lfsmuggle` filter commands are armed, not stock LFS.
+- Arm-1 inert lookaheads align with the config parser:
+  `hooksPath = /dev/null/evil` (and `fsmonitor = false/...`) are armed,
+  matching the parser; `/dev/null` and `false` stay inert.
+- Shell segment splitting is quote-aware (a `;` inside a quoted string no
+  longer invents commands), call arms accept one level of nested parens
+  (`os.rename(str(stage), '.git')`), the fs.rename arrow/`function`
+  callback form resolves its real target argument, GNU `-t` /
+  `--target-directory` names the target, and known value-taking flags
+  (`-Filter`, `-Include`, `-Exclude`, `-Credential`) no longer shadow it.
+
+### git_config hardening (adversarial review round 4)
+
+- Submodule proof rewritten around genuine parent topology; the back-link
+  file is gone from the proof entirely (git writes no such file, so a
+  planted one was forgeable evidence). A submodule checkout scanned as root
+  stays silent only when its metadata is a genuine git directory (HEAD,
+  objects/, refs/), it sits at <parent-gitdir>/modules/<path> where the
+  parent .git is itself genuine (HEAD/objects/refs), and the parent
+  checkout contains the scan root. Forged metadata at a .git/modules path
+  fires GC-SHIP-004, as does a genuine-looking parent whose checkout does
+  not contain the scan root. Submodules of linked worktrees
+  (<main>/.git/worktrees/<wt>/modules/<path>) resolve through the worktree
+  gitdir after revalidating its commondir link, and nested submodule paths
+  (.git/modules/vendor/oniguruma) are recognised - git names the metadata
+  directory after the full submodule path.
+- Accepted submodule/worktree targets are now inspected for executable
+  hooks as well as armed config: recognised non-sample hook names fire
+  GC-SHIP-005, capped per target like the filesystem hook path.
+- Rename/copy plant arm resolves inline operands: mv stage "$(printf .git)"
+  and os.rename(stage, '.'+'git') fire GC-REN-001, and the same-line Node
+  form (const t = '.git'; fs.renameSync(stage, t)) no longer slips a
+  fast-path gate that ran before same-line bindings were collected.
+- Test-count sync: metrics and every README count site read 3,567 (17 new
+  regression tests, including fixtures built with real git init /
+  submodule add at a nested path); the four diagram SVGs are refreshed.
+
 ## [2.14.8] - 2026-08-28
 
 ### Fix: re-signed release manifest (2.14.7 shipped an unverifiable one)

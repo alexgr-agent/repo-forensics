@@ -12,7 +12,7 @@
   "plugins": [
     {
       "name": "repo-forensics",
-      "description": "Offline security scanner for AI-agent repos, skills, plugins, and MCP servers. 26 scanners detect prompt injection, MCP tool poisoning, credential exposure, malicious lifecycle hooks, package IOCs, CVEs, CISA KEV exposure, and post-incident traces. Zero dependencies. Zero telemetry.",
+      "description": "Offline security scanner for AI-agent repos, skills, plugins, and MCP servers. 28 scanners detect prompt injection, MCP tool poisoning, credential exposure, malicious lifecycle hooks, package IOCs, CVEs, CISA KEV exposure, and post-incident traces. Zero dependencies. Zero telemetry.",
       "version": "2.14.8",
       "author": {
         "name": "Alex Greenshpun",
