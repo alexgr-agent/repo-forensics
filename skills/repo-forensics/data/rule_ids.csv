@@ -553,9 +553,13 @@ YR-HCK-002,YR,hacktool,scan_yara.py,manifest.json,0,medium
 YR-HCK-003,YR,hacktool,scan_yara.py,manifest.json,0,medium
 GC-SHIP-001,GC,SHIP,scan_git_config.py,_walk_shipped_git,0,high
 GC-SHIP-002,GC,SHIP,scan_git_config.py,armed_config_entries,0,critical
-GC-SHIP-003,GC,SHIP,scan_git_config.py,archive_shipped_git_finding,0,critical
+GC-SHIP-003,GC,SHIP,scan_git_config.py,archive_shipped_git_finding,0,high
 GC-SHIP-004,GC,SHIP,scan_git_config.py,_scan_nested_gitdir_file,0,high
 GC-SHIP-005,GC,SHIP,scan_git_config.py,_shipped_hooks_finding,0,critical
 GC-ROOT-001,GC,ROOT,scan_git_config.py,_walk_shipped_git,1,high
 GC-MOD-001,GC,MOD,scan_git_config.py,scan_gitmodules_text,0,critical
 GC-REN-001,GC,REN,scan_git_config.py,scan_rename_chain_text,0,critical
+GC-NET-001,GC,NET,scan_git_config.py,_classify_entry,0,high
+GC-WRITE-001,GC,WRITE,scan_git_config.py,scan_direct_write_text,0,high
+GC-ENV-001,GC,ENV,scan_git_config.py,scan_direct_write_text,1,high
+GC-ROOT-002,GC,ROOT,scan_git_config.py,_walk_shipped_git,2,medium

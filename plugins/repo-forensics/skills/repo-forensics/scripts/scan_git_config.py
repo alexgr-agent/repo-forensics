@@ -14,7 +14,9 @@ Detection surface:
 1. Shipped .git directories. Version-control tooling never distributes its
    metadata directory, so a .git directory anywhere except the scanned
    checkout's own root is hostile by construction. On the filesystem a nested
-   .git is reported on presence (high); inside an archive it is critical.
+   .git is reported on presence (high), and so is one inside an archive (git
+   library test suites ship fixture repos as archives); armed config/hook
+   content is critical on both surfaces.
 2. Armed executable config keys. .git/config carrying command-executing keys
    (core.fsmonitor, core.hooksPath, core.sshCommand, core.pager, core.editor,
    core.askpass, filter.<name>.clean/smudge/process, gpg.program,
@@ -36,7 +38,14 @@ Detection surface:
    inside the tree, is flagged.
 4. .gitmodules with `update = !command` - arbitrary shell execution on
    `git submodule update`.
-5. Staged plant chain: a single file (code or prose) that writes an
+5. Traffic redirection in config (GC-NET-001): url.<base>.insteadOf /
+   pushInsteadOf pointing at another host, http.proxy, http.sslVerify=false.
+6. Direct writes and env-injected config (GC-WRITE-001, GC-ENV-001): a file
+   that writes an exec key into <dir>/.git/config or a hook into
+   <dir>/.git/hooks/, GIT_CONFIG_COUNT/KEY_n/VALUE_n carrying an exec key,
+   GIT_CONFIG_GLOBAL/SYSTEM pointing into the workspace, `git -c <exec-key>=`.
+7. Non-sample hooks in the checkout's own .git/hooks (GC-ROOT-002).
+8. Staged plant chain: a single file (code or prose) that writes an
    exec-capable git config key AND renames or copies a directory to `.git` -
    the runtime plant that turns a clean clone into an armed one after
    scanning. Matching is not regex-only: the target must be exactly `.git`
@@ -46,12 +55,19 @@ Detection surface:
 
 Design notes (the asymmetries a reviewer will ask about):
 
-- Filesystem-HIGH vs archive-CRITICAL for shipped-.git presence. On the
-  filesystem a nested .git is HIGH: rare-but-real developer layouts (a repo
-  accidentally nested inside another checkout) exist, and the scanner cannot
-  prove the content was *distributed*. A distribution archive is different:
-  no legitimate packaging pipeline emits .git metadata, so presence alone is
-  CRITICAL there. Armed config/hook CONTENT is critical on both surfaces.
+- Shipped-.git presence is HIGH on both surfaces. On the filesystem,
+  rare-but-real developer layouts (a repo accidentally nested inside another
+  checkout) exist; in an archive, git-library test suites (go-git, dulwich,
+  libgit2, isomorphic-git) ship fixture repositories with `.git` inside, so
+  presence alone cannot be critical without blocking those packages. Armed
+  config/hook CONTENT is critical on both surfaces, which is what separates
+  a hostile archive from a fixture.
+- The config parser mirrors real git's grammar (same-line `[section] key =
+  value`, dotted `[section.sub]` headers, continuation lines, escaped
+  subsection quotes, comments without a preceding space) because a scanner
+  that reads less than git does is bypassed by anything git accepts and it
+  does not. The test suite feeds fixtures through `git config -f --list` and
+  requires the scanner's armed keys to cover git's.
 - Ignored dependency roots (node_modules, venv, dist, ...) are skipped for
   ordinary content by every scanner, but NOT for .git metadata: a planted
   node_modules/<pkg>/.git is a prime hiding spot, so the filesystem pass
@@ -98,6 +114,11 @@ R_SHIPPED_HOOKS = "GC-SHIP-005"    # non-sample hook file in a shipped .git
 R_ROOT_CONFIG = "GC-ROOT-001"      # armed exec key in the checkout's own config
 R_GITMODULES_EXEC = "GC-MOD-001"   # .gitmodules update = !command
 R_RENAME_CHAIN = "GC-REN-001"      # config write + rename/copy-to-.git in one file
+                                   # (or across files of one directory)
+R_TRAFFIC_REDIRECT = "GC-NET-001"  # insteadOf / proxy / sslVerify=false in config
+R_DIRECT_WRITE = "GC-WRITE-001"    # writes exec config to .git/config, or a hook
+R_ENV_CONFIG = "GC-ENV-001"        # env-injected / -c exec config
+R_ROOT_HOOKS = "GC-ROOT-002"       # non-sample hook in the checkout's own .git
 
 # Whole-scanner wall-clock budget, matching the pipeline timeout discipline of
 # the other walk_aux-style scanners (the hook runner SIGKILLs at 15s).
@@ -116,8 +137,19 @@ _MAX_ARMED_CONFIG_FINDINGS = 25
 # ---------------------------------------------------------------------------
 # Tolerant git-config (INI) parsing
 # ---------------------------------------------------------------------------
+#
+# The parser mirrors real git's config grammar, because a scanner that reads
+# less than git does is bypassed by anything git accepts and the scanner does
+# not: a key on the SAME LINE as its section header (`[core] fsmonitor = x`),
+# the deprecated `[section.subsection]` header spelling, backslash-newline
+# continuations, `\"` inside a quoted subsection, quoted/escaped values, and
+# `#` / `;` comments that need no preceding space. tests/test_scan_git_config.py
+# feeds every such fixture through `git config -f <file> --list` and requires
+# the scanner's armed-key set to cover git's.
 
-_SECTION_RE = re.compile(r'^\s*\[\s*([A-Za-z0-9_.-]+)(?:\s+"([^"]*)")?\s*\]')
+# Subsection quoting allows backslash escapes: [remote "a\"b"].
+_SECTION_RE = re.compile(
+    r'^\s*\[\s*([A-Za-z0-9_.-]+)(?:\s+"((?:[^"\\]|\\.)*)")?\s*\]')
 _KV_RE = re.compile(r'^\s*([A-Za-z][A-Za-z0-9.-]*)\s*(?:=\s*(.*))?$')
 
 # core.fsmonitor values that do NOT execute an external command: empty/unset,
@@ -137,51 +169,164 @@ _GPG_PROGRAM_INERT = {"", "gpg", "gpg2"}
 # boundary (whitespace or end-of-value): `git-lfs-evil` and `git-lfsmuggle`
 # are attacker binaries, not git-lfs.
 _FILTER_LFS_INERT_RE = re.compile(r"git-lfs(?:\s|$)", re.IGNORECASE)
+# Boolean spellings git accepts; pager.<cmd> takes a boolean OR a command.
+_BOOLEAN_VALUES = {"", "true", "false", "yes", "no", "on", "off", "0", "1"}
+# Installed-tool helpers that developer setups write into their own checkout
+# config (`gh auth setup-git`, 1Password SSH signing, Git Credential
+# Manager). Recognised by program basename, and ONLY for the scanned
+# checkout's own config: in a shipped config an attacker can name his binary
+# anything, so a basename is not an identity there.
+_ROOT_TRUSTED_CREDENTIAL_BASENAMES = frozenset({
+    "git-credential-manager", "git-credential-manager-core",
+    "git-credential-manager.exe", "gcm", "gcm.exe",
+})
+_ROOT_TRUSTED_GPG_BASENAMES = frozenset({"op-ssh-sign", "op-ssh-sign.exe"})
+# Interpreters/downloaders whose appearance as the program of a config
+# command marks it as a shell one-liner rather than a named tool.
+_SHELL_PROGRAMS = frozenset({
+    "sh", "bash", "zsh", "dash", "ksh", "csh", "tcsh", "fish", "cmd",
+    "powershell", "pwsh", "python", "python2", "python3", "perl", "ruby",
+    "node", "php", "env", "busybox", "curl", "wget", "nc", "ncat", "socat",
+    "osascript",
+})
+_TEMP_PREFIXES = ("/tmp/", "/var/tmp/", "/dev/shm/", "/private/tmp/",
+                  "/private/var/tmp/")
+# Program names git ships for the transport commands remote.*.uploadpack /
+# receivepack normally hold.
+_TRANSPORT_PROGRAM_BASENAMES = frozenset({
+    "git-upload-pack", "git-receive-pack", "git-upload-archive",
+})
 
-
-def _strip_comment(value):
-    """Remove a trailing git-config comment (unquoted # or ;)."""
+def _parse_value(raw):
+    """A git-config value as git reads it: leading whitespace dropped, quoted
+    spans unquoted (`a "b c" d` -> `a b c d`), backslash escapes resolved,
+    trailing unquoted whitespace dropped, and the value ended by the first
+    UNQUOTED `#` or `;` - no preceding space required, exactly as git does."""
     out = []
     in_quote = False
-    for i, ch in enumerate(value):
-        if ch == '"' and (i == 0 or value[i - 1] != "\\"):
+    i = 0
+    n = len(raw)
+    while i < n:
+        ch = raw[i]
+        if ch == "\\" and i + 1 < n:
+            nxt = raw[i + 1]
+            out.append({"n": "\n", "t": "\t", "b": "\b"}.get(nxt, nxt))
+            i += 2
+            continue
+        if ch == '"':
             in_quote = not in_quote
-        if ch in "#;" and not in_quote and (i == 0 or value[i - 1] in " \t"):
+            i += 1
+            continue
+        if ch in "#;" and not in_quote:
             break
         out.append(ch)
+        i += 1
     return "".join(out).strip()
 
 
-def _unquote(value):
-    if len(value) >= 2 and value.startswith('"') and value.endswith('"'):
-        return value[1:-1]
-    return value
+def _logical_lines(text):
+    """(line_no, text) pairs with git's backslash-newline continuation
+    applied: a line ending in an odd number of backslashes continues on the
+    next line, and the finding keeps the FIRST physical line number. Comment
+    lines never continue."""
+    lines = text.splitlines()
+    out = []
+    i = 0
+    while i < len(lines):
+        start = i
+        cur = lines[i]
+        stripped = cur.lstrip()
+        if not stripped.startswith(("#", ";")):
+            while i + 1 < len(lines):
+                trailing = len(cur) - len(cur.rstrip("\\"))
+                if trailing % 2 == 0:
+                    break
+                i += 1
+                cur = cur[:-1] + lines[i]
+        out.append((start + 1, cur))
+        i += 1
+    return out
 
 
 def _parse_config(text):
     """Yield (section, subsection, key, value, line_no, line_text) entries."""
+    if text.startswith("﻿"):
+        text = text[1:]  # git skips a UTF-8 BOM
     section = ""
     subsection = ""
-    for line_no, raw in enumerate(text.splitlines(), start=1):
+    for line_no, raw in _logical_lines(text):
         line = raw.strip()
         if not line or line.startswith(("#", ";")):
             continue
         m = _SECTION_RE.match(line)
         if m:
             section = m.group(1).lower()
-            subsection = m.group(2) or ""
-            continue
+            if m.group(2) is not None:
+                subsection = re.sub(r"\\(.)", r"\1", m.group(2))
+            elif "." in section:
+                # Deprecated `[section.subsection]` spelling: the subsection
+                # is case-insensitive (git lowercases it).
+                section, subsection = section.split(".", 1)
+            else:
+                subsection = ""
+            # Real git parses a key/value on the SAME LINE as the header.
+            line = line[m.end():].strip()
+            if not line or line.startswith(("#", ";")):
+                continue
         m = _KV_RE.match(line)
         if not m:
             continue
         key = m.group(1).lower()
-        value = _unquote(_strip_comment(m.group(2) or ""))
+        value = _parse_value(m.group(2) or "")
         yield section, subsection, key, value, line_no, raw.strip()
 
 
-def _credential_helper_armed(value):
+def _first_program(value):
+    """Basename (lower-cased, no .exe) of the first word of a command value,
+    ignoring a leading `!` shell marker and quotes."""
+    v = value.strip().lstrip("!").strip().strip("\"'")
+    if not v:
+        return ""
+    first = v.split()[0] if v.split() else ""
+    base = first.replace("\\", "/").rsplit("/", 1)[-1].lower()
+    return base[:-4] if base.endswith(".exe") else base
+
+
+def _shellish(value):
+    """A value that is a shell one-liner or names an interpreter/downloader,
+    not a plain tool name."""
+    if any(c in value for c in ";|&`<>") or "$(" in value:
+        return True
+    return _first_program(value) in _SHELL_PROGRAMS
+
+
+def _relocatable(value):
+    """A command that runs a file relative to the checkout, in the home
+    directory, or in a temp directory - somewhere an attacker can place it."""
+    v = value.strip().lstrip("!").strip().strip("\"'")
+    low = v.lower()
+    return (v.startswith(("./", "../", ".\\", "..\\", "~", "%", "$"))
+            or low.startswith(_TEMP_PREFIXES))
+
+
+def _root_suspicious(value):
+    """Root-config leniency for command keys that developers legitimately
+    point at installed tools: only shell one-liners and attacker-placeable
+    paths count, so `code --wait` / `pdftotext` / `/usr/bin/tool` stay quiet."""
+    return _shellish(value) or _relocatable(value)
+
+
+def _credential_helper_armed(value, root=False):
     if not value:
         return False
+    body = value[1:].strip() if value.startswith("!") else value
+    if root and _first_program(body) in _ROOT_TRUSTED_CREDENTIAL_BASENAMES \
+            and not _relocatable(body) and not _shellish(body):
+        return False
+    if root and value.startswith("!") and _first_program(body) == "gh" \
+            and body.split()[1:3] == ["auth", "git-credential"] \
+            and not _relocatable(body):
+        return False  # `gh auth setup-git` writes exactly this
     if value.startswith("!"):
         return True  # shell command, always exec
     first = value.split()[0].lower()
@@ -201,82 +346,210 @@ def _looks_path_like(value):
             or value.startswith(("~", ".")))
 
 
-def armed_config_entries(config_text, root=False):
-    """Return exec-capable config entries whose values actually run something.
+def _hookspath_in_tree(value, repo_root):
+    """True when core.hooksPath resolves INSIDE the scanned checkout (husky's
+    `.husky/_`, a tracked `.githooks`): the hooks are content of the tree, not
+    an escape from it."""
+    if not repo_root:
+        return False
+    v = value.strip()
+    if not v or v.startswith("~") or v.startswith("%") or v.startswith("$"):
+        return False
+    resolved = v if os.path.isabs(v) else os.path.join(repo_root, v)
+    resolved = os.path.normpath(resolved)
+    if resolved.lower().startswith(_TEMP_PREFIXES):
+        return False
+    return _is_within(os.path.realpath(resolved), os.path.realpath(repo_root))
 
-    Each entry is dict(key, value, line, line_text, reason). Protective values
-    used by sandbox hardening guides (fsmonitor=false, hooksPath=/dev/null) are
-    deliberately inert so hardened repos never trip the rule.
 
-    root=True applies the scanned-checkout's-own-config leniency: core.pager
-    and core.editor only count when the value is path-like, because developers
-    legitimately set them to PATH program names (vim, less, code) in their own
-    checkouts. Shipped configs get no such benefit - every value is hostile.
+def _redirect_entry(reason, severity):
+    return {"reason": reason, "severity": severity,
+            "rule_id": R_TRAFFIC_REDIRECT, "category": "git-config-redirect"}
+
+
+def _url_host(url):
+    m = re.match(r"^(?:[A-Za-z][A-Za-z0-9+.-]*://)?(?:[^@/]*@)?([^:/]+)", url.strip())
+    return m.group(1).lower() if m else ""
+
+
+def _classify_entry(section, sub, key, value, root, repo_root):
+    """The verdict for ONE config entry: None when inert, otherwise a dict
+    with `reason` and optionally `severity` / `rule_id` / `category`
+    overrides (the defaults are set by the caller's surface).
+
+    Command-executing keys are subsection-aware: `diff.<driver>.textconv`,
+    `merge.<driver>.driver`, `remote.<name>.uploadpack`, `pager.<command>`,
+    `mergetool.<tool>.cmd`. `root` applies the scanned checkout's own-config
+    leniency, so tools developers legitimately install (an editor, a
+    document converter, a merge tool) stay quiet unless the value is a shell
+    one-liner or an attacker-placeable path; shipped configs get none."""
+    if section == "core" and key == "fsmonitor":
+        if value.lower() not in _FSMONITOR_INERT:
+            return {"reason": "git executes the fsmonitor hook on working-tree queries"}
+    elif section == "core" and key == "hookspath":
+        if value.strip().lower() not in _HOOKSPATH_INERT:
+            entry = {"reason": "git executes hooks from this directory on ordinary git operations"}
+            if root and _hookspath_in_tree(value, repo_root):
+                entry["severity"] = "medium"
+                entry["reason"] = (
+                    "git executes the hooks in this directory (inside the "
+                    "scanned tree; a hook manager such as husky writes this "
+                    "on every install, but the hook files are tree content "
+                    "and run on ordinary git operations)")
+            return entry
+    elif section == "core" and key == "sshcommand":
+        if value:
+            return {"reason": f"git executes core.{key} as a shell command"}
+    elif section == "core" and key in ("pager", "editor"):
+        if value and not (root and not (_looks_path_like(value) or _shellish(value))):
+            return {"reason": f"git executes core.{key} as a shell command"}
+    elif section == "core" and key == "askpass":
+        if value:
+            return {"reason": "git executes core.askpass to obtain credentials"}
+    elif section == "core" and key == "gitproxy":
+        if value and not (root and not _root_suspicious(value)):
+            return {"reason": "git executes core.gitProxy as the git:// connection proxy command"}
+    elif section == "core" and key == "alternaterefscommand":
+        if value and not (root and not _root_suspicious(value)):
+            return {"reason": "git executes core.alternateRefsCommand to enumerate alternates"}
+    elif section == "gpg" and key == "program":
+        if value.strip().lower() not in _GPG_PROGRAM_INERT:
+            if root and _first_program(value) in _ROOT_TRUSTED_GPG_BASENAMES \
+                    and not _relocatable(value) and not _shellish(value):
+                return None
+            return {"reason": "git executes gpg.program for signing operations"}
+    elif section == "gpg" and key == "defaultkeycommand":
+        if value and not (root and not _root_suspicious(value)):
+            return {"reason": "git executes gpg.ssh.defaultKeyCommand to pick a signing key"}
+    elif section == "diff" and key == "external":
+        if value:
+            return {"reason": "git executes diff.external as the diff driver"}
+    elif section == "diff" and key in ("textconv", "command") and sub:
+        if value and not (root and not _root_suspicious(value)):
+            return {"reason": (f"git executes diff.{key} for paths mapped to this "
+                               f"driver in .gitattributes (git diff, git log -p, git show)")}
+    elif section == "merge" and key == "driver" and sub:
+        if value and not (root and not _root_suspicious(value)):
+            return {"reason": "git executes merge.<driver>.driver to merge paths mapped to it in .gitattributes"}
+    elif section == "filter" and key in ("clean", "smudge", "process"):
+        if value and not _FILTER_LFS_INERT_RE.match(value.lstrip()):
+            return {"reason": (f"git runs the filter.{key} command on checkout/"
+                               f"checkin of every matching path (.gitattributes)")}
+    elif section == "pager":
+        if value.lower() not in _BOOLEAN_VALUES and not (
+                root and not (_looks_path_like(value) or _shellish(value))):
+            return {"reason": f"git executes pager.{key} as the pager for `git {key}`"}
+    elif section == "sequence" and key == "editor":
+        if value and not (root and not (_looks_path_like(value) or _shellish(value))):
+            return {"reason": "git executes sequence.editor for interactive rebase todo lists"}
+    elif section == "remote" and key in ("uploadpack", "receivepack", "vcs"):
+        if value and not (root and (not _root_suspicious(value)
+                                    or _first_program(value) in _TRANSPORT_PROGRAM_BASENAMES)):
+            return {"reason": f"git executes remote.<name>.{key} when fetching from or pushing to this remote"}
+    elif section == "remote" and key in ("url", "pushurl"):
+        if value.lower().startswith(("ext::", "fd::")):
+            return {"reason": "an ext::/fd:: remote URL makes git run a transport-helper command"}
+    elif section in ("difftool", "mergetool", "browser", "man") and key in ("cmd", "path") and sub:
+        if value and not (root and not _root_suspicious(value)):
+            return {"reason": f"git executes {section}.<tool>.{key} when launching that tool"}
+    elif section == "interactive" and key == "difffilter":
+        if value and not (root and not _root_suspicious(value)):
+            return {"reason": "git executes interactive.diffFilter on `git add -p` output"}
+    elif section == "submodule" and key == "update":
+        if value.lstrip().startswith("!"):
+            return {"reason": "submodule.<name>.update = !command runs a shell command on `git submodule update`"}
+    elif section == "alias":
+        if value.lstrip().startswith("!"):
+            return {"reason": f"shell alias `git {key}` executes an arbitrary command"}
+    elif section in ("include", "includeif") and key == "path":
+        if value:
+            return {"reason": "pulls additional config, which can carry the keys above, from this path"}
+    elif section.startswith("credential") and key == "helper":
+        if _credential_helper_armed(value, root=root):
+            return {"reason": "git executes the credential helper on authentication"}
+    # Traffic redirection: not command execution, but it silently re-points or
+    # weakens every fetch/push in the workspace.
+    elif section == "url" and key in ("insteadof", "pushinsteadof") and sub:
+        if value:
+            same_host = _url_host(sub) == _url_host(value)
+            if not root or not same_host:
+                return _redirect_entry(
+                    f"url.<base>.{key} rewrites every URL starting `{value}` to "
+                    f"`{sub}`, silently re-pointing fetches/pushes at another host",
+                    "high")
+    elif section == "http" and key == "proxy":
+        if value:
+            return _redirect_entry(
+                "http.proxy routes every HTTP(S) git operation "
+                "through this proxy", "medium" if root else "high")
+    elif section == "http" and key == "sslverify":
+        if value.lower() in ("false", "no", "off", "0"):
+            return _redirect_entry(
+                "http.sslVerify = false disables TLS certificate "
+                "verification for HTTP(S) git operations",
+                "medium" if root else "high")
+    return None
+
+
+def armed_config_entries(config_text, root=False, repo_root=None):
+    """Return exec-capable config entries whose values actually run something
+    (and traffic-redirect entries, which carry their own rule id/severity).
+
+    Each entry is dict(key, value, line, line_text, reason[, severity,
+    rule_id, category]). Protective values used by sandbox hardening guides
+    (fsmonitor=false, hooksPath=/dev/null) are deliberately inert so hardened
+    repos never trip the rule.
+
+    root=True applies the scanned-checkout's-own-config leniency (see
+    _classify_entry). Shipped configs get no such benefit - every value is
+    hostile. repo_root, when given with root=True, lets core.hooksPath values
+    that resolve inside the tree report at medium instead of high.
     """
     armed = []
-    for section, _sub, key, value, line_no, line_text in _parse_config(config_text):
-        reason = None
-        fqkey = f"{section}.{key}" if section else key
-        if section == "core" and key == "fsmonitor":
-            if value.lower() not in _FSMONITOR_INERT:
-                reason = "git executes the fsmonitor hook on working-tree queries"
-        elif section == "core" and key == "hookspath":
-            if value.strip().lower() not in _HOOKSPATH_INERT:
-                reason = "git executes hooks from this directory on ordinary git operations"
-        elif section == "core" and key in ("sshcommand",):
-            if value:
-                reason = f"git executes core.{key} as a shell command"
-        elif section == "core" and key in ("pager", "editor"):
-            if value and not (root and not _looks_path_like(value)):
-                reason = f"git executes core.{key} as a shell command"
-        elif section == "core" and key == "askpass":
-            if value:
-                reason = "git executes core.askpass to obtain credentials"
-        elif section == "gpg" and key == "program":
-            if value.strip().lower() not in _GPG_PROGRAM_INERT:
-                reason = "git executes gpg.program for signing operations"
-        elif section == "diff" and key == "external":
-            if value:
-                reason = "git executes diff.external as the diff driver"
-        elif section == "filter" and key in ("clean", "smudge", "process"):
-            if value and not _FILTER_LFS_INERT_RE.match(value.lstrip()):
-                reason = (f"git runs the filter.{key} command on checkout/"
-                          f"checkin of every matching path (.gitattributes)")
-        elif section == "alias":
-            if value.lstrip().startswith("!"):
-                reason = f"shell alias `git {key}` executes an arbitrary command"
-        elif section in ("include", "includeif") and key == "path":
-            if value:
-                reason = "pulls additional config, which can carry the keys above, from this path"
-        elif section.startswith("credential") and key == "helper":
-            if _credential_helper_armed(value):
-                reason = "git executes the credential helper on authentication"
-        if reason:
-            armed.append({
-                "key": fqkey, "value": value, "line": line_no,
-                "line_text": line_text[:120], "reason": reason,
-            })
+    for section, sub, key, value, line_no, line_text in _parse_config(config_text):
+        verdict = _classify_entry(section, sub, key, value, root, repo_root)
+        if verdict is None:
+            continue
+        entry = {
+            "key": f"{section}.{key}" if section else key,
+            "value": value, "line": line_no,
+            "line_text": line_text[:120], "reason": verdict["reason"],
+        }
+        for extra in ("severity", "rule_id", "category"):
+            if extra in verdict:
+                entry[extra] = verdict[extra]
+        armed.append(entry)
     return armed
 
 
 def _config_findings(config_text, file_label, *, rule_id, severity, shipped,
-                     line_numbers=True):
+                     line_numbers=True, repo_root=None):
     """One finding per armed exec key in a .git/config body, capped so a
     pathological config cannot flood the report."""
     findings = []
-    entries = armed_config_entries(config_text, root=not shipped)
+    entries = armed_config_entries(config_text, root=not shipped,
+                                   repo_root=repo_root)
     for entry in entries[:_MAX_ARMED_CONFIG_FINDINGS]:
         where = "shipped .git/config" if shipped else "the scanned checkout's own .git/config"
+        redirect = entry.get("category") == "git-config-redirect"
         findings.append(core.Finding(
-            scanner=SCANNER_NAME, severity=severity, rule_id=rule_id,
-            title=f"Executable git config key armed: {entry['key']}",
+            scanner=SCANNER_NAME,
+            severity=entry.get("severity") or severity,
+            rule_id=entry.get("rule_id") or rule_id,
+            title=(f"Git config redirects or weakens git traffic: {entry['key']}"
+                   if redirect else
+                   f"Executable git config key armed: {entry['key']}"),
             description=(
                 f"{where} sets `{entry['key']} = {entry['value']}': "
-                f"{entry['reason']}. Any git command run in this workspace "
-                f"(including an agent CLI's own background git) executes it."
+                f"{entry['reason']}. "
+                + ("Every fetch/push in this workspace is affected."
+                   if redirect else
+                   "Any git command run in this workspace "
+                   "(including an agent CLI's own background git) executes it.")
             ),
             file=file_label, line=entry["line"] if line_numbers else 0,
-            snippet=entry["line_text"], category="git-config-exec",
+            snippet=entry["line_text"],
+            category=entry.get("category", "git-config-exec"),
             evidence_class="direct",
         ))
     return findings
@@ -302,13 +575,31 @@ def _read_gitdir_target(pointer_path):
     return m.group("target") if m else None
 
 
-def _is_within(path, root):
+def _is_within_lexical(path, root):
     try:
         return os.path.commonpath([os.path.normcase(os.path.abspath(path)),
                                    os.path.normcase(os.path.abspath(root))]) == \
             os.path.normcase(os.path.abspath(root))
     except ValueError:  # different drives (Windows)
         return False
+
+
+def _is_within(path, root):
+    """Containment by either spelling: as written, or with symlinks resolved.
+    Git records the RESOLVED path in the pointer/back-link files it writes
+    (macOS: a worktree created under /tmp is recorded as /private/tmp/...), so
+    a lexical-only comparison flags every genuine worktree that lives under a
+    symlinked directory."""
+    return (_is_within_lexical(path, root)
+            or _is_within_lexical(os.path.realpath(path),
+                                  os.path.realpath(root)))
+
+
+def _same_path(a, b):
+    """Two paths naming the same location, as written or with symlinks
+    resolved."""
+    return (_norm(a) == _norm(b)
+            or _norm(os.path.realpath(a)) == _norm(os.path.realpath(b)))
 
 
 def _norm(path):
@@ -359,14 +650,14 @@ def _verify_worktree_link(resolved_target, pointer_fs):
             os.path.join(resolved_target, common_rel))
     # Topology: the worktree gitdir must sit directly under the main repo's
     # .git/worktrees/, and the commondir target must be a real gitdir.
-    if _norm(os.path.dirname(resolved_target)) != \
-            _norm(os.path.join(main_gitdir, "worktrees")):
+    if not _same_path(os.path.dirname(resolved_target),
+                      os.path.join(main_gitdir, "worktrees")):
         return False
     if not os.path.isfile(os.path.join(main_gitdir, "HEAD")):
         return False
     if not os.path.isabs(back_target):
         back_target = os.path.join(resolved_target, back_target)
-    return _norm(back_target) == _norm(pointer_fs)
+    return _same_path(back_target, pointer_fs)
 
 
 def _genuine_gitdir(path):
@@ -397,7 +688,7 @@ def _proven_worktree_checkout(main_gitdir, wt_meta):
         common = os.path.normpath(common_rel)
     else:
         common = os.path.normpath(os.path.join(wt_meta, common_rel))
-    if _norm(common) != _norm(main_gitdir):
+    if not _same_path(common, main_gitdir):
         return None
     if not os.path.isabs(back_target):
         back_target = os.path.join(wt_meta, back_target)
@@ -464,7 +755,7 @@ def _verify_submodule_link(resolved_target, pointer_fs):
                 continue
             if not _genuine_gitdir(parent_gitdir):
                 continue
-            if _norm(scan_root) != _norm(checkout) and \
+            if not _same_path(scan_root, checkout) and \
                     _is_within(scan_root, checkout):
                 return True
         return False
@@ -537,6 +828,24 @@ def _shipped_hooks_finding(rel_path):
             f"Git executes it on the matching operation (commit, checkout, "
             f"push, ...) with the victim's authority."
         ),
+        file=rel_path, line=0, snippet=os.path.basename(rel_path),
+        category="git-config-exec", evidence_class="direct",
+    )
+
+
+def _root_hook_finding(rel_path, armed_root):
+    return core.Finding(
+        scanner=SCANNER_NAME, severity="high" if armed_root else "medium",
+        rule_id=R_ROOT_HOOKS,
+        title="Non-sample git hook in the checkout's own .git/hooks",
+        description=(
+            f"{rel_path} is a non-sample hook in the scanned checkout's own "
+            f"git directory. Git executes it on the matching operation "
+            f"(commit, checkout, push, ...). A normal clone never receives "
+            f"hooks; one that arrives inside a delivered workspace is "
+            f"attacker-supplied"
+            + (", and the checkout's config is also armed." if armed_root
+               else " unless a hook installer put it there - confirm the content.")),
         file=rel_path, line=0, snippet=os.path.basename(rel_path),
         category="git-config-exec", evidence_class="direct",
     )
@@ -752,9 +1061,35 @@ def _walk_shipped_git(repo_path, findings, deadline):
                     config_text = fh.read(1024 * 1024)
             except OSError:
                 config_text = ""
-            findings.extend(_config_findings(
+            root_config = _config_findings(
                 config_text, os.path.join(".git", "config"),
-                rule_id=R_ROOT_CONFIG, severity="high", shipped=False))
+                rule_id=R_ROOT_CONFIG, severity="high", shipped=False,
+                repo_root=repo_abs)
+            findings.extend(root_config)
+        else:
+            root_config = []
+        # The checkout's own hooks directory. A normal clone never receives
+        # hooks, but a workspace delivered as an archive or copy carries an
+        # attacker-supplied one, so non-sample hooks are reported: medium as
+        # a review prompt (hook installers write these legitimately), high
+        # when the root config is also armed with an exec key.
+        armed_root = any(f.category == "git-config-exec"
+                         and f.severity in ("high", "critical")
+                         for f in root_config)
+        hooks_dir = os.path.join(root_dotgit, "hooks")
+        try:
+            root_hook_names = sorted(os.listdir(hooks_dir))
+        except OSError:
+            root_hook_names = []
+        for name in root_hook_names:
+            if state["hooks"] >= _MAX_HOOK_FINDINGS:
+                break
+            if _hook_name_or_none(name) is None:
+                continue
+            if os.path.isfile(os.path.join(hooks_dir, name)):
+                state["hooks"] += 1
+                findings.append(_root_hook_finding(
+                    os.path.join(".git", "hooks", name), armed_root))
     elif os.path.isfile(root_dotgit):
         _scan_root_gitdir_file(root_dotgit, repo_abs, findings, state)
 
@@ -834,7 +1169,10 @@ def scan_gitmodules_text(text, file_label):
 # ini-style assignment) and prose directives; the conjunction with arm 2 is
 # what keeps this precise.
 _CONFIG_WRITE_RE = re.compile(r"""(?ix)
-    \bgit\s+(?:(?-i:-C)\s+\S+\s+)*(?:(?-i:-c)\s+|config\s+(?:--[a-z-]+\s+)*)[^\n]{0,80}?
+    \bgit\s+(?:(?-i:-C)\s+\S+\s+
+              |--(?:git-dir|work-tree|namespace|exec-path)(?:=\S+|\s+\S+)\s+
+              |--[a-z-]+\s+)*
+        (?:(?-i:-c)\s+|config\s+(?:--[a-z-]+\s+)*)[^\n]{0,80}?
         (?:
             (?:core\.)?fsmonitor(?![\w-])(?!\s*[= ]\s*(?:true|false|yes|no|on|off|0|1)(?![\w/\\.]))
           | (?:core\.)?hookspath(?![\w-])(?!\s*[= ]\s*(?:/dev/null|nul)(?![\w/\\.]))
@@ -865,6 +1203,12 @@ _CONFIG_WRITE_RE = re.compile(r"""(?ix)
 #     /dev/null) are excluded here just like in the config parser: setting
 #     the built-in fsmonitor or disabling hooks is protective, not a write
 #     an attacker would stage.
+
+# Arm 1 minus its last alternative (a redirect/open into .git/config): "an
+# exec-capable key is being set", independent of WHERE it is written.
+_CONFIG_EXEC_KEY_RE = re.compile(
+    _CONFIG_WRITE_RE.pattern.rsplit("\n    | (?:>>?|open", 1)[0] + "\n",
+    _CONFIG_WRITE_RE.flags)
 
 # Cheap per-line superset of arm 1: if none of these tokens is present (and
 # the line carries no `.git`), neither arm can match, so the line is skipped
@@ -1221,15 +1565,15 @@ def _line_plants_git(line, state_at):
     return False
 
 
-def scan_rename_chain_text(text, file_label):
-    """Critical when ONE file both writes an exec-capable git config key and
-    renames or copies a directory to `.git`. Either behaviour alone is common
-    and legitimate; together they are the runtime plant for a nested-.git
-    swap. The rename/copy arm resolves variables FLOW-SENSITIVELY (the last
-    assignment before each use wins) and case-insensitively, covering the
-    cheap indirection classes documented on _resolve_assigned_value -
-    both in assignments and in cheap INLINE literal operands
-    (mv stage "$(printf .git)", os.rename(stage, '.'+'git'))."""
+def _chain_hits(text):
+    """(config_hit, rename_hit) for one file: each is (line_no, line_text) or
+    None. The two arms of the staged-plant chain, kept separate so the caller
+    can conjoin them within a file (critical) or across files of one
+    directory (high). The rename/copy arm resolves variables
+    FLOW-SENSITIVELY (the last assignment before each use wins) and
+    case-insensitively, covering the cheap indirection classes documented on
+    _resolve_assigned_value - both in assignments and in cheap INLINE literal
+    operands (mv stage "$(printf .git)", os.rename(stage, '.'+'git'))."""
     # File-level fast path (case-insensitive: `.GIT` is git's directory on
     # Windows/macOS), normalised for quoting/escaping so obfuscated
     # spellings ("."git, .g\it) cannot slip the gate.
@@ -1237,7 +1581,7 @@ def scan_rename_chain_text(text, file_label):
     if '.git' not in lowered:
         lowered = lowered.replace("'", "").replace('"', "").replace("\\", "")
     if '.git' not in lowered and not _ARM1_HINT_RE.search(text):
-        return []
+        return None, None
     var_state = {}        # name (lower) -> resolved value (str) or None
     has_git_var = False
     config_hit = None
@@ -1311,6 +1655,17 @@ def scan_rename_chain_text(text, file_label):
             has_git_var = any(
                 isinstance(v, str) and v.lower() == ".git"
                 for v in var_state.values())
+    return config_hit, rename_hit
+
+
+def scan_rename_chain_text(text, file_label):
+    """Critical when ONE file both writes an exec-capable git config key and
+    renames or copies a directory to `.git`. Either behaviour alone is common
+    and legitimate; together they are the runtime plant for a nested-.git
+    swap. See _chain_hits for how each arm is matched; the cross-file form
+    (the two arms in different files of one directory) is correlated by
+    _walk_content_rules at high severity."""
+    config_hit, rename_hit = _chain_hits(text)
     if not (config_hit and rename_hit):
         return []
     return [core.Finding(
@@ -1330,8 +1685,216 @@ def scan_rename_chain_text(text, file_label):
     )]
 
 
+# ---------------------------------------------------------------------------
+# Direct writes and env-injected config (no rename involved)
+# ---------------------------------------------------------------------------
+
+# A write whose TARGET path ends in .git/config: shell redirect / tee / cp /
+# mv / install, Python open()/write_text, Node writeFile, or `git config
+# --file <path>/.git/config`. Any prefix directory is allowed (pkg/.git/config).
+_GIT_CONFIG_WRITE_TARGET_RE = re.compile(r"""(?ix)
+    (?:>>?|\btee\b|\bcp\b|\bmv\b|\binstall\b|\bcopy(?:-item)?\b
+       |\bopen\s*\(|\bwrite\w*\s*\(|--file[ =]|-f\s)
+    [^\n]{0,80}?\.git[/\\]config\b""")
+# A write into .git/hooks/<name>; the name is checked against _KNOWN_HOOKS.
+_GIT_HOOK_WRITE_TARGET_RE = re.compile(r"""(?ix)
+    (?:>>?|\btee\b|\bcp\b|\bmv\b|\binstall\b|\bcopy(?:-item)?\b
+       |\bopen\s*\(|\bwrite\w*\s*\(|\bchmod\b|\bln\b)
+    [^\n]{0,80}?\.git[/\\]hooks[/\\](?P<hook>[A-Za-z][A-Za-z-]*)(?![\w.-])""")
+
+_GIT_CONFIG_KEY_ENV_RE = re.compile(
+    r"""\bGIT_CONFIG_KEY_(?P<n>\d+)\s*=\s*(?P<key>[^\s;&|]+)""")
+_GIT_CONFIG_VALUE_ENV_RE = re.compile(
+    r"""\bGIT_CONFIG_VALUE_(?P<n>\d+)\s*=\s*(?P<value>"[^"\n]*"|'[^'\n]*'|[^\s;&|]+)""")
+_GIT_CONFIG_FILE_ENV_RE = re.compile(
+    r"""\bGIT_CONFIG_(?P<which>GLOBAL|SYSTEM)\s*=\s*(?P<value>"[^"\n]*"|'[^'\n]*'|[^\s;&|]+)""")
+_GIT_DASH_C_RE = re.compile(
+    r"""\bgit\s+(?:-[A-Za-z]\s+\S+\s+|--[a-z-]+(?:=\S+)?\s+)*-c\s+
+        (?P<key>[A-Za-z][\w.-]*(?:\.[\w.-]+)+)=(?P<value>"[^"\n]*"|'[^'\n]*'|\S+)""",
+    re.VERBOSE)
+# GIT_CONFIG_GLOBAL/SYSTEM values that point INTO the workspace: the current
+# directory spelled several ways, or a bare relative name.
+_WORKSPACE_PATH_RE = re.compile(
+    r"""(?ix)^(?:\$\{?PWD\}?|\$\(\s*pwd\s*\)|%CD%|\$\{?GITHUB_WORKSPACE\}?
+        |\.{1,2}[/\\]|\$\{?PROJECT_DIR\}?)
+        |^(?![/~$%\\]|[A-Za-z]:)[^/\\]+$""")
+
+
+def _unquote_shell(value):
+    v = value.strip()
+    if len(v) >= 2 and v[0] in "\"'" and v[-1] == v[0]:
+        return v[1:-1]
+    return v
+
+
+def _key_to_parts(dotted):
+    """`a.b.c` -> (section, subsection, key), git's own split: the first
+    component is the section, the last the key, anything between the
+    subsection."""
+    parts = dotted.split(".")
+    if len(parts) < 2:
+        return None
+    return parts[0].lower(), ".".join(parts[1:-1]), parts[-1].lower()
+
+
+def scan_direct_write_text(text, file_label):
+    """Config plants that need no rename: a write whose target is
+    `<dir>/.git/config` while the same file also sets an exec-capable key
+    (high), a write into `<dir>/.git/hooks/<hook>` (medium; hook installers
+    do this legitimately, so it is a review prompt, not a verdict), and
+    config injected through the environment - GIT_CONFIG_COUNT/KEY_n/VALUE_n
+    carrying an exec key, GIT_CONFIG_GLOBAL/SYSTEM pointing into the
+    workspace (high), or a one-shot `git -c <exec-key>=<value>` (medium) -
+    where no file under .git is ever touched."""
+    lowered = text.lower()
+    if ".git" not in lowered and "git_config" not in lowered \
+            and "git -c" not in lowered and " -c " not in lowered:
+        return []
+    findings = []
+    config_write = exec_key = hook_write = None
+    for line_no, raw in enumerate(text.splitlines(), start=1):
+        line = raw[: core.MAX_LINE_LENGTH]
+        if ".git" in line.lower():
+            if config_write is None and _GIT_CONFIG_WRITE_TARGET_RE.search(line):
+                config_write = (line_no, raw.strip())
+            if hook_write is None:
+                m = _GIT_HOOK_WRITE_TARGET_RE.search(line)
+                if m and _hook_name_or_none(m.group("hook")) is not None:
+                    hook_write = (line_no, raw.strip(), m.group("hook"))
+        # A config body written from a string literal carries literal `\n` /
+        # `\t` escapes (`'[core]\n\tfsmonitor = ./x.sh'`); they are spaces to
+        # the config the string becomes, and would otherwise glue the key to
+        # the previous word and defeat the word boundary.
+        if exec_key is None and _CONFIG_EXEC_KEY_RE.search(
+                line.replace("\\n", " ").replace("\\t", " ")):
+            exec_key = (line_no, raw.strip())
+    if config_write and exec_key:
+        findings.append(core.Finding(
+            scanner=SCANNER_NAME, severity="high", rule_id=R_DIRECT_WRITE,
+            title="Writes executable git config directly into .git/config",
+            description=(
+                f"{file_label} writes to a `.git/config` path "
+                f"(line {config_write[0]}) and sets an exec-capable git config "
+                f"key (line {exec_key[0]}). Writing the config in place arms "
+                f"the workspace without any rename: the next git command "
+                f"executes the planted value."),
+            file=file_label, line=config_write[0],
+            snippet=config_write[1][:120], category="git-config-exec",
+            evidence_class="direct"))
+    if hook_write:
+        findings.append(core.Finding(
+            scanner=SCANNER_NAME, severity="medium", rule_id=R_DIRECT_WRITE,
+            title="Writes a git hook directly into .git/hooks",
+            description=(
+                f"{file_label} writes `.git/hooks/{hook_write[2]}` "
+                f"(line {hook_write[0]}). Git executes that hook on the "
+                f"matching operation with the victim's authority; hook "
+                f"installers do this legitimately, so confirm the content."),
+            file=file_label, line=hook_write[0],
+            snippet=hook_write[1][:120], category="git-config-exec",
+            evidence_class="direct"))
+
+    # Environment-injected config.
+    keys = {m.group("n"): m for m in _GIT_CONFIG_KEY_ENV_RE.finditer(text)}
+    values = {m.group("n"): m for m in _GIT_CONFIG_VALUE_ENV_RE.finditer(text)}
+    for n, km in sorted(keys.items(), key=lambda kv: int(kv[0])):
+        parts = _key_to_parts(_unquote_shell(km.group("key")))
+        if parts is None:
+            continue
+        vm = values.get(n)
+        # A literal VALUE is judged like a config file's root-mode entry; a
+        # value the file does not spell out cannot be proven benign, so it is
+        # treated as an attacker-placeable path.
+        value = _unquote_shell(vm.group("value")) if vm else "./unresolved"
+        verdict = _classify_entry(parts[0], parts[1], parts[2], value,
+                                  True, None)
+        if verdict is None or verdict.get("rule_id"):
+            continue
+        line_no = text.count("\n", 0, km.start()) + 1
+        findings.append(_env_config_finding(
+            file_label, line_no, "high",
+            f"GIT_CONFIG_KEY_{n}={_unquote_shell(km.group('key'))}", verdict))
+    for m in _GIT_CONFIG_FILE_ENV_RE.finditer(text):
+        value = _unquote_shell(m.group("value"))
+        if value.lower() in ("", "/dev/null", "nul") \
+                or not _WORKSPACE_PATH_RE.search(value):
+            continue
+        line_no = text.count("\n", 0, m.start()) + 1
+        findings.append(_env_config_finding(
+            file_label, line_no, "high",
+            f"GIT_CONFIG_{m.group('which')}={value}",
+            {"reason": (f"GIT_CONFIG_{m.group('which')} makes every git "
+                        f"command load its config from a file inside the "
+                        f"workspace, which can carry any of the exec keys")}))
+    for m in _GIT_DASH_C_RE.finditer(text):
+        parts = _key_to_parts(m.group("key"))
+        if parts is None:
+            continue
+        value = _unquote_shell(m.group("value"))
+        verdict = _classify_entry(parts[0], parts[1], parts[2], value,
+                                  True, None)
+        if verdict is None or verdict.get("rule_id"):
+            continue
+        line_no = text.count("\n", 0, m.start()) + 1
+        findings.append(_env_config_finding(
+            file_label, line_no, "medium", m.group(0)[:100], verdict))
+    return findings[:_MAX_ARMED_CONFIG_FINDINGS]
+
+
+def _env_config_finding(file_label, line_no, severity, snippet, verdict):
+    return core.Finding(
+        scanner=SCANNER_NAME, severity=severity, rule_id=R_ENV_CONFIG,
+        title="Executable git config injected through the environment or -c",
+        description=(
+            f"{file_label} (line {line_no}) injects git config without "
+            f"touching any file under .git: {verdict['reason']}. Every git "
+            f"command run with this environment executes it."),
+        file=file_label, line=line_no, snippet=snippet[:120],
+        category="git-config-exec", evidence_class="direct")
+
+
+def scan_plant_text(text, file_label):
+    """Every per-file content rule of this scanner, in one call: the
+    staged-plant chain (config write + rename to .git in one file), direct
+    config/hook writes, and env/-c injected config."""
+    return (scan_rename_chain_text(text, file_label)
+            + scan_direct_write_text(text, file_label))
+
+
+def _cross_file_chain_findings(per_dir):
+    """The staged-plant chain split across files: one file writes the exec
+    config, a SIBLING file (same directory) renames a directory to `.git`.
+    Either alone is ordinary and a single file holding both is already
+    critical, so this only fires on the split form, at high - two files in
+    one directory is a weaker link than one script doing both."""
+    out = []
+    for directory, hits in sorted(per_dir.items()):
+        cfg_only = [(f, h) for f, (c, r) in hits.items() if c and not r
+                    for h in (c,)]
+        ren_only = [(f, h) for f, (c, r) in hits.items() if r and not c
+                    for h in (r,)]
+        if not cfg_only or not ren_only:
+            continue
+        cfg_file, cfg_line = cfg_only[0]
+        ren_file, ren_line = ren_only[0]
+        out.append(core.Finding(
+            scanner=SCANNER_NAME, severity="high", rule_id=R_RENAME_CHAIN,
+            title="Staged .git plant split across files: config write and move to .git",
+            description=(
+                f"{cfg_file} writes an exec-capable git config key "
+                f"(line {cfg_line[0]}) and {ren_file} in the same directory "
+                f"renames/copies a directory to `.git` (line {ren_line[0]}). "
+                f"Run in sequence they arm a previously clean checkout the "
+                f"same way the single-file staged plant does."),
+            file=ren_file, line=ren_line[0], snippet=ren_line[1][:120],
+            category="git-config-exec", evidence_class="direct"))
+    return out[:_MAX_ARMED_CONFIG_FINDINGS]
+
+
 def _walk_content_rules(repo_path, ignore_patterns, findings, deadline):
-    """walk_repo pass for .gitmodules and the staged-plant chain."""
+    """walk_repo pass for .gitmodules, the staged-plant chain (single-file
+    and split across sibling files), direct writes and env-injected config."""
+    per_dir = {}
     for file_path, rel_path in core.walk_repo(
             repo_path, ignore_patterns=ignore_patterns):
         if time.monotonic() > deadline:
@@ -1352,7 +1915,14 @@ def _walk_content_rules(repo_path, ignore_patterns, findings, deadline):
         text = raw.decode("utf-8", errors="replace")
         if base.lower() == ".gitmodules":
             findings.extend(scan_gitmodules_text(text, rel_path))
-        findings.extend(scan_rename_chain_text(text, rel_path))
+        config_hit, rename_hit = _chain_hits(text)
+        if config_hit and rename_hit:
+            findings.extend(scan_rename_chain_text(text, rel_path))
+        elif config_hit or rename_hit:
+            per_dir.setdefault(os.path.dirname(rel_path), {})[rel_path] = (
+                config_hit, rename_hit)
+        findings.extend(scan_direct_write_text(text, rel_path))
+    findings.extend(_cross_file_chain_findings(per_dir))
 
 
 # ---------------------------------------------------------------------------
@@ -1404,13 +1974,16 @@ def classify_git_member_path(member_name, is_dir=False):
 
 def archive_shipped_git_finding(label, git_root):
     return core.Finding(
-        scanner=SCANNER_NAME, severity="critical", rule_id=R_ARCHIVE_GIT,
+        scanner=SCANNER_NAME, severity="high", rule_id=R_ARCHIVE_GIT,
         title="Archive ships a .git directory",
         description=(
             f"{label} contains git metadata under {git_root}. Distribution "
-            f"archives never legitimately carry a .git directory; its config "
-            f"and hooks execute commands when anyone (human or agent CLI) "
-            f"runs git inside the extracted workspace."
+            f"archives rarely carry a .git directory (git-library test "
+            f"suites ship fixture repositories this way, so bare presence is "
+            f"high, not critical); its config and hooks execute commands "
+            f"when anyone (human or agent CLI) runs git inside the extracted "
+            f"workspace. An armed config or a non-sample hook in the same "
+            f"archive is reported critical."
         ),
         file=label, line=0, snippet=git_root + "/",
         category="shipped-git-dir", evidence_class="direct",
@@ -1457,7 +2030,7 @@ def scan_archive_member_content(data, member_name, vpath):
             shipped=True, line_numbers=False))
     if os.path.basename(member_name).lower() == ".gitmodules":
         findings.extend(scan_gitmodules_text(text, vpath))
-    findings.extend(scan_rename_chain_text(text, vpath))
+    findings.extend(scan_plant_text(text, vpath))
     return findings
 
 
@@ -1474,7 +2047,7 @@ def scan_file(file_path, rel_path):
     findings = []
     if os.path.basename(file_path).lower() == ".gitmodules":
         findings.extend(scan_gitmodules_text(text, rel_path))
-    findings.extend(scan_rename_chain_text(text, rel_path))
+    findings.extend(scan_plant_text(text, rel_path))
     return findings
 
 

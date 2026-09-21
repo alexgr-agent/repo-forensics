@@ -263,11 +263,22 @@ class TestStagedRenameChain:
             tmp_path, "git config core.fsmonitor x.sh\nmv .git .git.bak\n")
         assert "GC-REN-001" not in _ids(findings)
 
-    def test_split_across_files_silent(self, tmp_path):
-        # The chain is same-file: the plant script and the config write in
-        # different files is not the staged swap.
+    def test_split_across_sibling_files_is_high_not_critical(self, tmp_path):
+        # PR #45 review (MED): the chain used to be same-file only. The two
+        # arms in SIBLING files of one directory now correlate, at high - a
+        # weaker link than one script doing both, which stays critical.
         (tmp_path / "a.sh").write_text("git config core.fsmonitor x.sh\n")
         (tmp_path / "b.sh").write_text("mv staging .git\n")
+        findings = scanner.scan_repo(str(tmp_path))
+        chain = [f for f in findings if f.rule_id == "GC-REN-001"]
+        assert len(chain) == 1
+        assert chain[0].severity == "high"
+
+    def test_split_across_different_directories_silent(self, tmp_path):
+        (tmp_path / "one").mkdir()
+        (tmp_path / "two").mkdir()
+        (tmp_path / "one" / "a.sh").write_text("git config core.fsmonitor x.sh\n")
+        (tmp_path / "two" / "b.sh").write_text("mv staging .git\n")
         findings = scanner.scan_repo(str(tmp_path))
         assert "GC-REN-001" not in _ids(findings)
 
@@ -300,7 +311,14 @@ class TestArchiveIntegration:
         assert "GC-SHIP-005" in ids
         shipped = [f for f in findings if f.rule_id == "GC-SHIP-003"]
         assert len(shipped) == 1  # one finding per .git root, not per member
-        assert shipped[0].severity == "critical"
+        # PR #45 review (LOW): bare presence is HIGH (git-library test suites
+        # ship fixture repos); the ARMED config and the non-sample hook in
+        # this same archive are what make it critical.
+        assert shipped[0].severity == "high"
+        assert any(f.rule_id == "GC-SHIP-002" and f.severity == "critical"
+                   for f in findings)
+        assert any(f.rule_id == "GC-SHIP-005" and f.severity == "critical"
+                   for f in findings)
 
     def test_beltdown2_tar_prearmed(self, tmp_path):
         self._tar(tmp_path / "bundle.tar.gz", {
