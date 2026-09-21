@@ -131,18 +131,72 @@ def _fold_str(node, scopes):
         binding = _lookup_binding(scopes, node.id)
         if binding is not None and binding[0] == 'const':
             return binding[1]
+        return None
+    if isinstance(node, ast.JoinedStr):
+        # f"sys{'tem'}" / f"{a}{b}": foldable only when every piece is a
+        # literal or a plain (no !r, no :spec) interpolation that itself folds.
+        parts = []
+        for piece in node.values:
+            if isinstance(piece, ast.Constant) and isinstance(piece.value, str):
+                parts.append(piece.value)
+            elif (isinstance(piece, ast.FormattedValue)
+                  and piece.conversion == -1 and piece.format_spec is None):
+                folded = _fold_str(piece.value, scopes)
+                if folded is None:
+                    return None
+                parts.append(folded)
+            else:
+                return None
+        return "".join(parts)
+    if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+            and node.func.attr == 'join' and len(node.args) == 1
+            and not node.keywords):
+        # "".join(["sys", "tem"]) / "-".join(("a", "b")): literal separator,
+        # literal sequence of foldable strings.
+        sep = _fold_str(node.func.value, scopes)
+        seq = node.args[0]
+        if sep is not None and isinstance(seq, (ast.List, ast.Tuple)):
+            parts = [_fold_str(elt, scopes) for elt in seq.elts]
+            if all(part is not None for part in parts):
+                return sep.join(parts)
     return None
 
 
 def _resolve_module(node, scopes):
     """Resolve an expression to a sensitive-module name, following module
-    aliases (o = os). Returns the module name or None."""
+    aliases (o = os, import os as o) and the runtime-import forms that yield
+    the same module object: __import__("os"), importlib.import_module("os"),
+    sys.modules["os"]. Returns the module name or None."""
     if isinstance(node, ast.Name):
         if node.id in SENSITIVE_MODULES:
             return node.id
         binding = _lookup_binding(scopes, node.id)
         if binding is not None and binding[0] == 'mod':
             return binding[1]
+        return None
+    if (isinstance(node, ast.Call) and len(node.args) == 1
+            and not node.keywords):
+        func = node.func
+        is_import = (
+            (isinstance(func, ast.Name) and func.id == '__import__')
+            or (isinstance(func, ast.Attribute) and func.attr == 'import_module'
+                and _resolve_module(func.value, scopes) == 'importlib')
+        )
+        if is_import:
+            name = _fold_str(node.args[0], scopes)
+            if name in SENSITIVE_MODULES:
+                return name
+        return None
+    if isinstance(node, ast.Subscript):
+        base = node.value
+        if (isinstance(base, ast.Attribute) and base.attr == 'modules'
+                and _resolve_module(base.value, scopes) == 'sys'):
+            sl = node.slice
+            if hasattr(ast, 'Index') and isinstance(sl, ast.Index):
+                sl = sl.value
+            name = _fold_str(sl, scopes)
+            if name in SENSITIVE_MODULES:
+                return name
     return None
 
 
@@ -176,6 +230,12 @@ def _reflective_target(node, scopes):
     elif (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
           and node.func.attr == 'get' and node.args):
         mod = _dict_base_module(node.func.value, scopes)
+        key = _fold_str(node.args[0], scopes)
+    elif (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+          and node.func.attr == '__getattribute__' and len(node.args) == 1):
+        # os.__getattribute__("sys" + "tem"): attribute retrieval by method
+        # call, the same evasion as getattr(os, "system").
+        mod = _resolve_module(node.func.value, scopes)
         key = _fold_str(node.args[0], scopes)
     else:
         return None
@@ -251,7 +311,13 @@ def _collect_scope(body, outer_scopes, fetch_funcs, reflective_funcs):
         it (branches that do not bind the name contribute the incoming
         binding). Otherwise the name is killed here, shadowing outer
         scopes, so a branch-only alias or taint can never convict
-        post-join code."""
+        post-join code.
+
+        Safe against evasion because Pattern 13 / visit_Subscript convict the
+        reflective retrieval expression itself, wherever it appears, whether
+        or not an alias survives the join; only the secondary
+        Fetch-then-Execute finding needs the alias, so losing it post-join
+        costs one corroborating finding, never the detection."""
         branch_scopes = [
             _collect_scope(b, scopes, fetch_funcs, reflective_funcs)
             for b in bodies if b
@@ -282,6 +348,19 @@ def _collect_scope(body, outer_scopes, fetch_funcs, reflective_funcs):
                 scope.kill(name)
 
     def handle_stmt(stmt):
+        if isinstance(stmt, (ast.Import, ast.ImportFrom)):
+            # `import os as o` / `from . import os as o` bind a sensitive
+            # module under a new name. Unaliased forms resolve by name
+            # already; only a rebinding needs recording.
+            for alias in stmt.names:
+                if alias.asname and alias.name in SENSITIVE_MODULES \
+                        and (isinstance(stmt, ast.Import)
+                             or (stmt.module is None and stmt.level > 0)):
+                    scope.blocked.discard(alias.asname)
+                    scope.module_aliases[alias.asname] = alias.name
+                elif alias.asname:
+                    scope.kill(alias.asname)
+            return
         if isinstance(stmt, ast.FunctionDef):
             local = _collect_scope(stmt.body, scopes, fetch_funcs,
                                    reflective_funcs)
@@ -692,14 +771,20 @@ class ObfuscationVisitor(ast.NodeVisitor):
             if binding is not None and binding[0] == 'callable':
                 sink = binding[1]
         elif (isinstance(node.func, ast.Attribute)
-              and node.func.attr == 'get'):
+              and node.func.attr in ('get', '__getattribute__')):
             sink = _reflective_target(node, self._scopes)
             sink_from_get = sink is not None
         if sink_from_get:
+            if node.func.attr == '__getattribute__':
+                via = f"{sink[0]}.__getattribute__('{sink[1]}')"
+                how = "via .__getattribute__() with a folded key"
+            else:
+                via = f"{sink[0]}.__dict__.get('{sink[1]}')"
+                how = "via .__dict__.get() with a folded key"
             self._add(
                 severity="critical",
-                title=f"Reflective Attribute Access: {sink[0]}.__dict__.get('{sink[1]}')",
-                description=f"Reflective dict access evasion: dangerous '{sink[1]}' retrieved from '{sink[0]}' via .__dict__.get() with a folded key",
+                title=f"Reflective Attribute Access: {via}",
+                description=f"Reflective attribute access evasion: dangerous '{sink[1]}' retrieved from '{sink[0]}' {how}",
                 lineno=lineno,
                 category="obfuscated-exec"
             )
