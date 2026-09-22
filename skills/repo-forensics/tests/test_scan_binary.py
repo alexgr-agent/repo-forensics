@@ -108,6 +108,86 @@ class TestEmbeddedPe:
         assert len(findings) == 0, "Expected no findings for tiny file"
 
 
+class TestAudioSteganography:
+    """Regression tests for the audio-steg PE validation (PR #43).
+
+    A bare 'MZ' pair is only 2 bytes, so it recurs by pure chance roughly
+    every 64 KB inside entropy-coded audio; flagging it as an executable was a
+    critical-severity false positive on ordinary audio. The fix requires a real
+    PE structure (e_lfanew -> 'PE\\x00\\x00'), and that structural check reads
+    the signature at ``offset + e_lfanew`` (relative to the MZ), so it must NOT
+    regress a genuine embedded PE into a missed detection.
+    """
+
+    # Non-text, non-exec-magic filler: none of these bytes is 0x4D ('M') or
+    # 0x7F, so no accidental 'MZ' / '\\x7fELF' magic appears, and only 2 of the
+    # 8 bytes are printable so the separate "text content in audio" heuristic
+    # (>90% printable) never trips either.
+    _FILLER = bytes([0xA5, 0x5A, 0xC3, 0x00, 0x11, 0xF0, 0x9D, 0x42])
+
+    def _filler(self, n):
+        return (self._FILLER * (n // len(self._FILLER) + 1))[:n]
+
+    def test_bare_mz_in_audio_no_finding(self, tmp_path):
+        """FALSE-POSITIVE guard: a bare 'MZ' inside audio entropy, with no valid
+        PE structure behind it, must NOT be flagged as an executable."""
+        # header + filler + bare MZ (e_lfanew bytes are filler => nonsense) + filler
+        content = b'ID3\x03\x00\x00\x00\x00\x00\x00' + self._filler(4000) \
+            + b'MZ' + self._filler(60000)
+        f = tmp_path / "song.mp3"
+        f.write_bytes(content)
+
+        findings = scanner.scan_audio_steganography(str(f), "song.mp3")
+        assert not any("Executable" in x.title for x in findings), (
+            f"bare MZ in audio wrongly flagged as executable: {[x.title for x in findings]}"
+        )
+
+    def test_bare_mz_with_forged_absolute_pe_no_finding(self, tmp_path):
+        """A 'PE\\x00\\x00' planted at the ABSOLUTE offset named by e_lfanew (rather
+        than relative to the MZ) must not satisfy validation -- guards against
+        reintroducing the absolute-offset read as a forgeable bypass."""
+        data = bytearray(b'ID3\x03\x00\x00\x00\x00\x00\x00' + self._filler(60000))
+        mz_at = 3000
+        data[mz_at:mz_at + 2] = b'MZ'
+        struct.pack_into('<I', data, mz_at + 0x3C, 0x80)   # e_lfanew = 0x80
+        data[0x80:0x84] = b'PE\x00\x00'                     # PE at ABSOLUTE 0x80
+        f = tmp_path / "forged.mp3"
+        f.write_bytes(bytes(data))
+
+        findings = scanner.scan_audio_steganography(str(f), "forged.mp3")
+        assert not any("Executable" in x.title for x in findings), (
+            "forged absolute-offset PE wrongly validated as an embedded executable"
+        )
+
+    def test_real_embedded_pe_in_mp3_is_flagged(self, tmp_path):
+        """TRUE-POSITIVE: a structurally valid PE embedded at a non-zero offset in
+        an .mp3 must be flagged (the relative-offset fix must not lose this)."""
+        content = b'ID3\x03\x00\x00\x00\x00\x00\x00' + self._filler(2000) \
+            + _make_valid_pe_bytes() + self._filler(60000)
+        f = tmp_path / "carrier.mp3"
+        f.write_bytes(content)
+
+        findings = scanner.scan_audio_steganography(str(f), "carrier.mp3")
+        titles = [x.title for x in findings]
+        assert any("Executable" in t for t in titles), (
+            f"real embedded PE in .mp3 not flagged (false negative): {titles}"
+        )
+
+    def test_real_embedded_pe_in_wav_is_flagged(self, tmp_path):
+        """TRUE-POSITIVE for .wav: search starts past the 44-byte RIFF header, and
+        a valid PE after it must still be flagged."""
+        content = b'RIFF' + self._filler(2040) + _make_valid_pe_bytes() \
+            + self._filler(60000)
+        f = tmp_path / "carrier.wav"
+        f.write_bytes(content)
+
+        findings = scanner.scan_audio_steganography(str(f), "carrier.wav")
+        titles = [x.title for x in findings]
+        assert any("Executable" in t for t in titles), (
+            f"real embedded PE in .wav not flagged (false negative): {titles}"
+        )
+
+
 class TestScanBinaryMain:
     """Regression tests for Issue #38: the `os.access(filepath, os.X_OK)` branch
     on a data file (no exec magic, no shebang) must emit a LOW
