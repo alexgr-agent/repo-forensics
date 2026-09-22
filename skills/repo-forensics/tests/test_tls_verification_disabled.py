@@ -50,3 +50,48 @@ def test_skill_prose_catches_insecure_downloads_and_keeps_wget_k_clean(tmp_path)
     good_ids={f.rule_id for f in skill.scan_file(str(good),'good.md')}
     assert 'ST-PR-017' in bad_ids
     assert 'ST-PR-017' not in good_ids
+
+def test_python_nested_call_before_verify_false():
+    text = "requests.get(url, headers=dict(token='x'), verify=False)"
+    assert "SA-PY-025" in ids(text, ".py")
+
+def test_python_multiline_call_verify_false():
+    text = '''requests.get(
+        url,
+        headers={"x": make_header("y")},
+        verify=False,
+    )'''
+    assert "SA-PY-025" in ids(text, ".py")
+
+def test_httpx_nested_and_multiline_verify_false():
+    text = '''httpx.post(
+        url,
+        json=build_payload(item=value()),
+        verify = False,
+    )'''
+    assert "SA-PY-025" in ids(text, ".py")
+
+def test_python_verify_false_must_be_literal_false():
+    for text in ("requests.get(url, verify=disabled)", "requests.get(url, verify=0)", "requests.get(url, **opts)"):
+        assert "SA-PY-025" not in ids(text, ".py")
+
+def test_python_aliases_not_claimed_without_binding_analysis():
+    assert "SA-PY-025" not in ids("r.get(url, verify=False)", ".py")
+
+def test_node_tls_multiline_forms():
+    text = '''const agent = new https.Agent({
+      rejectUnauthorized:
+        false
+    });
+    opts.rejectUnauthorized =
+      false;
+    process.env.NODE_TLS_REJECT_UNAUTHORIZED =
+      "0";'''
+    assert "SA-JS-040" in ids(text, ".js")
+
+def test_node_nested_object_before_tls_option():
+    text = '''const opts = {
+      headers: { authorization: token() },
+      rejectUnauthorized: false,
+    };'''
+    assert "SA-JS-040" in ids(text, ".js")
