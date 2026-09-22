@@ -112,9 +112,5 @@
     ".cursor-plugin/hooks.json": "77dcb9cd64b52604cbc607a867b1069187ad6ab2ba6e0e77bbab58206bc1707f",
     ".cursor-plugin/plugin.json": "1bccb46a0a5034001352676db8e79e8f16533b19b2ccb37390e4ae705d65d0da"
   },
-  "manifest_count": 5,
-  "repo_source_manifests": {
-    ".agents/plugins/marketplace.json": "1fb6dcd1f514fe8787cf52c0d3f8982ac509b0c1e09fe70c1a0cd1590d6fb15e"
-  },
-  "source_manifest_count": 1
+  "manifest_count": 5
 }
