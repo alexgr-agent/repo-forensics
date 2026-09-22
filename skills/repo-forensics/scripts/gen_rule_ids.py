@@ -64,6 +64,12 @@ _SCANNER_ABBREV = {
     # for namespace completeness only. The minted YR-* ids are appended to
     # rule_ids.csv manually. Expected, not a bug.
     "scan_yara.py": "YR",
+    # git_config authors its rule ids as module constants (R_*) with no
+    # *_PATTERNS tables to scrape, so this abbrev emits ZERO scraped rows —
+    # registration for namespace completeness only, so a future rule_ids.csv
+    # regen does not silently drop the 8 GC rows. The GC-* ids are appended
+    # to rule_ids.csv manually. Expected, not a bug.
+    "scan_git_config.py": "GC",
 }
 
 # Table-name fragment -> CATEGORY abbreviation. First matching fragment wins.

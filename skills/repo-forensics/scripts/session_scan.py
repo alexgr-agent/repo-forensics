@@ -1140,7 +1140,7 @@ def main(argv=None):
         findings = scan_item(dirpath, label, itype, checksums)
         scan_results[f"{itype}:{dirpath}"] = findings
 
-    # Step 3b: Deep scan — full 18-scanner suite on changed items (seconds)
+    # Step 3b: Deep scan — full 28-scanner suite on changed items (seconds)
     # Catches zero-day supply chain attacks, obfuscated code, C2 beaconing,
     # manifest drift — threats that IOC-only checks miss.
     # Only runs when items actually changed (rare). Skipped on first run

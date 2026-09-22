@@ -17,7 +17,7 @@ when the user asks whether something is safe, or when investigating a suspected
 compromise.
 
 ```bash
-./skills/repo-forensics/scripts/run_forensics.sh <path>              # full audit, 27 scanners
+./skills/repo-forensics/scripts/run_forensics.sh <path>              # full audit, 28 scanners
 ./skills/repo-forensics/scripts/run_forensics.sh <path> --skill-scan # faster, skill-focused
 ./skills/repo-forensics/scripts/run_forensics.sh <path> --format json
 ```
@@ -33,7 +33,7 @@ you do not need to invoke them:
 | Event | What it does |
 |---|---|
 | `beforeShellExecution` | Blocks known-malicious installs and pipe-to-shell **before the command runs**. Fast IOC gate only. |
-| `afterShellExecution` | Full 27-scanner audit of whatever was just installed or cloned. Observe-only. |
+| `afterShellExecution` | Full 28-scanner audit of whatever was just installed or cloned. Observe-only. |
 | `sessionStart` | Detects changed plugins/skills/MCP servers; refreshes threat feeds. |
 
 ## If a command is denied
