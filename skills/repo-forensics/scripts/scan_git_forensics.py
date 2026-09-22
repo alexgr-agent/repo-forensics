@@ -306,21 +306,78 @@ def _is_agent_plugin_repo(repo_path):
                for marker in _PLUGIN_MARKERS)
 
 
-def _walk_pin_values(value, key=""):
-    """Yield explicit commit pins only; never treat arbitrary 40-hex text as a pin."""
+def _plugin_identity(repo_path):
+    """Return the installed plugin identity from its own manifest, if unique."""
+    candidates = []
+    for rel in (".claude-plugin/plugin.json", ".codex-plugin/plugin.json",
+                ".agents/plugin.json", ".gemini/plugin.json", "openclaw.plugin.json"):
+        path = os.path.join(repo_path, rel)
+        try:
+            data = json.load(open(path, "r", encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            continue
+        if isinstance(data, dict):
+            for key in ("name", "id", "pluginId", "plugin_id"):
+                value = data.get(key)
+                if isinstance(value, str) and value.strip():
+                    candidates.append(value.strip().lower())
+                    break
+    unique = set(candidates)
+    return next(iter(unique)) if len(unique) == 1 else None
+
+
+def _record_identities(value):
+    if not isinstance(value, dict):
+        return set()
+    out = set()
+    for key in ("name", "id", "pluginId", "plugin_id", "package"):
+        item = value.get(key)
+        if isinstance(item, str) and item.strip():
+            out.add(item.strip().lower())
+    return out
+
+
+def _record_pins(value):
+    if not isinstance(value, dict):
+        return set()
+    pins = set()
+    for key, item in value.items():
+        if str(key).lower() in _PIN_KEYS and isinstance(item, str) and _SHA40_RE.fullmatch(item):
+            pins.add(item.lower())
+    return pins
+
+
+def _iter_records(value):
     if isinstance(value, dict):
-        for k, v in value.items():
-            yield from _walk_pin_values(v, str(k).lower())
+        yield value
+        for item in value.values():
+            yield from _iter_records(item)
     elif isinstance(value, list):
         for item in value:
-            yield from _walk_pin_values(item, key)
-    elif isinstance(value, str) and key in _PIN_KEYS and _SHA40_RE.fullmatch(value):
-        yield value.lower()
+            yield from _iter_records(item)
 
 
 def _recover_recorded_pins(repo_path):
-    pins = set()
+    """Resolve pins only from metadata records belonging to this plugin.
+
+    A lockfile may contain many plugins. Pins from unrelated records must never
+    make this checkout look valid. Missing or ambiguous identity is a coverage
+    gap, not acceptance.
+    """
+    identity = _plugin_identity(repo_path)
     metadata_seen = False
+    matching_records = []
+    ambiguous_identity = False
+    # The installed plugin's own manifest is authoritative for its own pin.
+    if identity is not None:
+        for rel in (".claude-plugin/plugin.json", ".codex-plugin/plugin.json",
+                    ".agents/plugin.json", ".gemini/plugin.json", "openclaw.plugin.json"):
+            try:
+                own = json.load(open(os.path.join(repo_path, rel), "r", encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+                continue
+            if _record_pins(own):
+                matching_records.append(own)
     for root, dirs, files in os.walk(repo_path):
         rel_root = os.path.relpath(root, repo_path)
         if rel_root.count(os.sep) > 3:
@@ -328,7 +385,7 @@ def _recover_recorded_pins(repo_path):
             continue
         dirs[:] = [d for d in dirs if d != ".git"]
         for name in files:
-            if name.lower() not in _PIN_METADATA_NAMES:
+            if name.lower() not in _PIN_METADATA_NAMES or name.lower() == "plugin.json":
                 continue
             path = os.path.join(root, name)
             try:
@@ -337,12 +394,27 @@ def _recover_recorded_pins(repo_path):
                 data = json.load(open(path, "r", encoding="utf-8"))
             except (OSError, UnicodeDecodeError, json.JSONDecodeError):
                 continue
-            found = set(_walk_pin_values(data))
-            pins.update(found)
-            if name.lower() != "plugin.json":
-                metadata_seen = True
-    return pins, metadata_seen
-
+            metadata_seen = True
+            records = list(_iter_records(data))
+            if identity is None:
+                if any(_record_pins(record) for record in records):
+                    ambiguous_identity = True
+                continue
+            for record in records:
+                ids = _record_identities(record)
+                if identity in ids:
+                    matching_records.append(record)
+    pins = set()
+    for record in matching_records:
+        pins.update(_record_pins(record))
+    # Multiple matching records that disagree are ambiguous. Never accept any.
+    if len(pins) > 1:
+        return set(), metadata_seen, True
+    if identity is None and metadata_seen:
+        ambiguous_identity = True
+    if identity is not None and metadata_seen and not matching_records:
+        ambiguous_identity = True
+    return pins, metadata_seen, ambiguous_identity
 
 def scan_plugin_checkout_provenance(repo_path):
     """Detect ambiguous Git refs and pin mismatches in agent plugin checkouts."""
@@ -374,7 +446,7 @@ def scan_plugin_checkout_provenance(repo_path):
             file=".git/HEAD", line=0, snippet=f"HEAD -> {symbolic}",
             category="plugin-provenance", evidence_class="direct"))
 
-    pins, metadata_seen = _recover_recorded_pins(repo_path)
+    pins, metadata_seen, ambiguous_identity = _recover_recorded_pins(repo_path)
     if pins and head and head.lower() not in pins:
         findings.append(core.Finding(
             scanner=SCANNER_NAME, severity="critical",
@@ -392,13 +464,13 @@ def scan_plugin_checkout_provenance(repo_path):
                          "branch. Hash-pinned installs must use detached HEAD and verify it."),
             file=".git/HEAD", line=0, snippet=f"HEAD -> {symbolic}",
             category="plugin-provenance", evidence_class="direct"))
-    elif metadata_seen and not pins:
+    elif (metadata_seen and not pins) or ambiguous_identity:
         findings.append(core.Finding(
             scanner=SCANNER_NAME, severity="medium",
             title="Agent Plugin Provenance Pin Unavailable",
             description=("Plugin metadata was found, but no explicit 40-hex commit pin could "
                          "be recovered; checkout provenance could not be verified."),
-            file="plugin-metadata", line=0, snippet="no explicit commit pin",
+            file="plugin-metadata", line=0, snippet=("ambiguous plugin identity/pin" if ambiguous_identity else "no explicit commit pin"),
             category="coverage-gap", evidence_class="direct"))
     return findings
 
