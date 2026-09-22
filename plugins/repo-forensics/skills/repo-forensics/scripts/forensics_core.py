@@ -2064,6 +2064,102 @@ def _cross_file_trifecta(by_file, exec_files, network_files, credential_files,
     return None
 
 
+# --- Typed exfiltration correlation leaves (Rules 1 & 3) -----------------
+# Rules 1 and 3 pair an env/credential or sensitive-read leaf with a network
+# leaf. Classification uses ONLY structured finding identity - scanner,
+# rule_id, category, and the fixed primitive titles emitted by the raw
+# trifecta / bytecode scanners - never free-text description or title prose.
+# Prose keyword matching manufactured critical compounds from vocabulary
+# accidents (e.g. SC-NET-001 "Hardcoded IP Address", whose generic
+# "Potential hardcoded secret detected" description satisfied the env side
+# with no credential access present).
+
+# Categories whose semantics ARE env/credential access or egress, assigned
+# by scanners and signed rulepacks (structured fields, not prose).
+_EXFIL_ENV_CATEGORIES = frozenset({
+    "env access", "credential-read", "credential-exfiltration",
+    "credential-theft", "secret-exposure",
+})
+_EXFIL_SENSITIVE_READ_CATEGORIES = frozenset({
+    "credential-path-directive", "credential-read", "secret-storage",
+    "sensitive-read",
+})
+_EXFIL_NETWORK_CATEGORIES = frozenset({"network", "network-egress"})
+
+# (scanner, category) pairs whose findings ARE an outbound-network directive or
+# egress primitive even though their category is not `network`. Instruction
+# files (SKILL.md, agent prose) never trigger the raw network primitives above,
+# so without these a skill that says "read ~/.aws/credentials, then POST it to
+# https://..." lost its critical exfil compound and dropped from BLOCK to WARN.
+# Keyed on the emitting scanner as well as the category so an unrelated scanner
+# reusing a generic category name (e.g. `exfiltration`) does not join the set.
+# `skill_threats: credential-exfiltration` is NOT listed as a category: most of
+# its rules (ST-EX-005..008) are environment READS, and typing the whole
+# category as egress would let two env reads pair into a critical with no
+# network call anywhere. Its one egress rule is typed by id below.
+_EXFIL_NETWORK_SCANNER_CATEGORIES = frozenset({
+    # Both prose-imperative rules require a URL target in the directive.
+    ("skill_threats", "prose-imperative"),
+    ("skill_threats", "memory-heist-exfil"),
+    ("sast", "exfiltration"),
+    ("sast", "git-exfiltration"),
+    ("runtime_dynamism", "fetch-execute"),
+    # Tainted-data-reaches-sink findings. The sink list mixes network and exec
+    # sinks and the finding does not say which, so this is deliberately the
+    # broad reading: the finding already asserts data leaves its origin.
+    ("dataflow", "dataflow"),
+})
+
+# Fixed primitive identities from detect_trifecta_raw() and scan_bytecode -
+# (scanner, title) pairs pinned by their emitters and their tests.
+_EXFIL_NETWORK_RULE_IDS = frozenset({
+    "ST-EX-001",  # known exfiltration webhook service (webhook.site, ...)
+})
+_EXFIL_NETWORK_PRIMITIVES = frozenset({
+    ("trifecta_raw", "Outbound network primitive"),
+    ("bytecode", "Outbound network primitive"),
+})
+_EXFIL_CRED_READ_PRIMITIVES = frozenset({
+    ("trifecta_raw", "Credential read primitive"),
+    ("bytecode", "Credential read primitive"),
+})
+
+
+def _exfil_capabilities(f):
+    """Classify a finding's exfil-correlation capabilities from structured
+    fields only. Returns a subset of {"env", "sensitive_read", "network"}.
+
+    Deliberate exclusions:
+    - SC-NET-* secrets rules (hardcoded IP addresses): an IP literal is
+      neither credential access nor an outbound call. Their category is
+      literally `network`, so the network side excludes the `secrets` scanner
+      outright rather than relying on the category string.
+    - Free-text keyword matches against description/title prose: the exact
+      failure mode this replaces.
+    """
+    caps = set()
+    scanner = f.scanner or ""
+    category = (f.category or "").lower()
+    rule_id = f.rule_id or ""
+    if (category in _EXFIL_ENV_CATEGORIES
+            or (scanner, f.title) in _EXFIL_CRED_READ_PRIMITIVES
+            or rule_id.startswith("ST-EX-")
+            or (scanner == "secrets" and rule_id.startswith("SC-")
+                and not rule_id.startswith("SC-NET-"))):
+        caps.add("env")
+    if (category in _EXFIL_SENSITIVE_READ_CATEGORIES
+            or (scanner, f.title) in _EXFIL_CRED_READ_PRIMITIVES
+            or rule_id == "ST-EX-004"
+            or rule_id.startswith("ST-CR-")):
+        caps.add("sensitive_read")
+    if ((category in _EXFIL_NETWORK_CATEGORIES and scanner != "secrets")
+            or (scanner, category) in _EXFIL_NETWORK_SCANNER_CATEGORIES
+            or rule_id in _EXFIL_NETWORK_RULE_IDS
+            or (scanner, f.title) in _EXFIL_NETWORK_PRIMITIVES):
+        caps.add("network")
+    return caps
+
+
 def correlate(findings, repo_path=None):
     """Flag compound threats where multiple findings in the same file form attack chains.
 
@@ -2108,10 +2204,13 @@ def correlate(findings, repo_path=None):
             continue
         by_file.setdefault(f.file, []).append(f)
 
-    env_keywords = {"env access", "environ", "credential", "secret", ".env", ".ssh", ".aws", "keychain"}
     network_keywords = {"network", "http", "fetch", "request", "post", "webhook", "curl", "wget", "exfiltration"}
     exec_keywords = {"eval", "exec", "system", "subprocess", "code execution", "shell"}
     encoding_keywords = {"base64", "obfuscat", "encoding", "hex string"}
+    # Legacy prose-keyword sets retained ONLY for the rules that were not
+    # part of the typed-correlation rewrite (Rules 27/28/29 below). Rules 1
+    # and 3 classify leaves structurally via _exfil_capabilities instead.
+    env_keywords = {"env access", "environ", "credential", "secret", ".env", ".ssh", ".aws", "keychain"}
     sensitive_read_keywords = {".env", ".ssh", ".aws", "credential", "keychain", "browser data", "config"}
     prompt_injection_keywords = {"prompt injection", "instruction override", "persona reassignment", "confirmation bypass"}
     lifecycle_keywords = {"lifecycle", "hook", "postinstall", "preinstall", "cmdclass", "setup.py"}
@@ -2177,9 +2276,27 @@ def correlate(findings, repo_path=None):
             return "structural"
         return "inferred"
 
+    def has_distinct_typed_pair(file_findings, capability_a, capability_b):
+        """True when SOME two DIFFERENT findings carry capability_a and
+        capability_b. A single finding may carry several capabilities (a
+        `credential-exfiltration` rule is both env access and egress), so
+        comparing only the first leaf of each side could miss a valid pair:
+        A(env+net), B(env) has the pair B->A but first-leaf comparison sees
+        A on both sides and stays silent."""
+        side_a = [f for f in file_findings if capability_a in _exfil_capabilities(f)]
+        side_b = [f for f in file_findings if capability_b in _exfil_capabilities(f)]
+        return any(a.finding_id != b.finding_id for a in side_a for b in side_b)
+
     for filepath, file_findings in by_file.items():
-        # Rule 1: env access + network call
-        if has_category(file_findings, env_keywords) and has_category(file_findings, network_keywords):
+        # Rule 1: env/credential access + network call, from DISTINCT,
+        # structurally-typed leaves. Keyword matching over finding prose used
+        # to manufacture this compound from vocabulary accidents - a lone
+        # "Hardcoded IP Address" secrets finding (description "Potential
+        # hardcoded secret detected") satisfied the env side with no
+        # credential access present, so any IP literal next to an outbound
+        # primitive produced a spurious critical BLOCK that masked real
+        # verdicts (Pluto reflective-RCE audit, 2026-09-20).
+        if has_distinct_typed_pair(file_findings, "env", "network"):
             correlated.append(Finding(
                 scanner="correlation",
                 severity="critical",
@@ -2212,8 +2329,9 @@ def correlate(findings, repo_path=None):
                 category="obfuscation"
             ))
 
-        # Rule 3: sensitive file read + network call
-        if has_category(file_findings, sensitive_read_keywords) and has_category(file_findings, network_keywords):
+        # Rule 3: sensitive file read + network call, from DISTINCT,
+        # structurally-typed leaves (same typed model as Rule 1).
+        if has_distinct_typed_pair(file_findings, "sensitive_read", "network"):
             # Don't duplicate if already caught by Rule 1
             already_flagged = any(c.file == filepath and c.title == "Potential Data Exfiltration" for c in correlated)
             if not already_flagged:

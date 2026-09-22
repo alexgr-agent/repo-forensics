@@ -28,6 +28,446 @@ DANGEROUS_ATTRS = {'system', 'popen', 'Popen', 'call', 'run', 'check_output',
 DECODE_FUNCS = {'b64decode', 'decodebytes', 'decodestring',
                 'decompress', 'loads', 'fromhex', 'decode', 'unhexlify'}
 
+# Call shapes that retrieve remote content/commands at runtime (fetch sources
+# for fetch-then-execute taint). Attribute-name based so both
+# `urllib.request.urlopen(...)` and `from urllib.request import urlopen` forms
+# resolve; module-scoped verbs cover requests/httpx/urllib3/aiohttp.
+FETCH_ATTR_CALLS = {'urlopen', 'HTTPConnection', 'HTTPSConnection'}
+FETCH_MODULE_VERBS = {'get', 'post', 'put', 'delete', 'head', 'request',
+                      'poolmanager'}
+FETCH_MODULES = {'requests', 'httpx', 'urllib3', 'aiohttp'}
+
+
+class _Scope:
+    """Per-scope name bindings collected before the detection pass.
+
+    Tracks only what reflective-call detection needs: foldable string
+    constants ("po" + "pen"), module aliases (o = os), module-dict aliases
+    (d = os.__dict__ or d = vars(os)), dangerous-callable aliases
+    (launch = os.__dict__["po" + "pen"]), and fetch-tainted names (values
+    derived from a runtime remote fetch). Names are removed from every map
+    on reassignment to something unrecognised, so a stale alias can never
+    convict unrelated later code.
+    """
+
+    def __init__(self):
+        self.const = {}            # name -> constant string
+        self.module_aliases = {}   # name -> sensitive module name
+        self.dict_aliases = {}     # name -> module name (module.__dict__ / vars(module))
+        self.callable_aliases = {} # name -> (module, dangerous attr)
+        self.tainted = set()       # names holding fetch-derived values
+        self.blocked = set()       # names killed here - shadow outer scopes
+
+    def kill(self, name):
+        self.const.pop(name, None)
+        self.module_aliases.pop(name, None)
+        self.dict_aliases.pop(name, None)
+        self.callable_aliases.pop(name, None)
+        self.tainted.discard(name)
+        self.blocked.add(name)
+
+
+def _binding_in(scope, name):
+    """The binding `name` holds in one _Scope as a (kind, value) tuple:
+    ('const', str), ('mod', module), ('dict', module),
+    ('callable', (module, attr)), or ('taint', True). None when unbound."""
+    if name in scope.const:
+        return ('const', scope.const[name])
+    if name in scope.module_aliases:
+        return ('mod', scope.module_aliases[name])
+    if name in scope.dict_aliases:
+        return ('dict', scope.dict_aliases[name])
+    if name in scope.callable_aliases:
+        return ('callable', scope.callable_aliases[name])
+    if name in scope.tainted:
+        return ('taint', True)
+    return None
+
+
+def _lookup_binding(scopes, name):
+    """Innermost binding for `name` across the scope chain (innermost
+    first). A branch-killed name is blocked and shadows every outer
+    binding, matching Python's assignment-shadows-outer semantics."""
+    for scope in scopes:
+        if name in scope.blocked:
+            return None
+        binding = _binding_in(scope, name)
+        if binding is not None:
+            return binding
+    return None
+
+
+def _apply_binding(scope, name, binding):
+    """Write a (kind, value) binding into a scope, replacing anything
+    the name held there before (including a branch-kill shadow)."""
+    kind, value = binding
+    scope.kill(name)
+    scope.blocked.discard(name)
+    if kind == 'const':
+        scope.const[name] = value
+    elif kind == 'mod':
+        scope.module_aliases[name] = value
+    elif kind == 'dict':
+        scope.dict_aliases[name] = value
+    elif kind == 'callable':
+        scope.callable_aliases[name] = value
+    elif kind == 'taint':
+        scope.tainted.add(name)
+
+
+def _fold_str(node, scopes):
+    """Constant-fold a string expression: literals, literal concatenation
+    ("po" + "pen"), and names bound to foldable strings in any enclosing
+    collected scope. Returns None when not statically foldable."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        left = _fold_str(node.left, scopes)
+        right = _fold_str(node.right, scopes)
+        if left is not None and right is not None:
+            return left + right
+        return None
+    if isinstance(node, ast.Name):
+        binding = _lookup_binding(scopes, node.id)
+        if binding is not None and binding[0] == 'const':
+            return binding[1]
+        return None
+    if isinstance(node, ast.JoinedStr):
+        # f"sys{'tem'}" / f"{a}{b}": foldable only when every piece is a
+        # literal or a plain (no !r, no :spec) interpolation that itself folds.
+        parts = []
+        for piece in node.values:
+            if isinstance(piece, ast.Constant) and isinstance(piece.value, str):
+                parts.append(piece.value)
+            elif (isinstance(piece, ast.FormattedValue)
+                  and piece.conversion == -1 and piece.format_spec is None):
+                folded = _fold_str(piece.value, scopes)
+                if folded is None:
+                    return None
+                parts.append(folded)
+            else:
+                return None
+        return "".join(parts)
+    if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+            and node.func.attr == 'join' and len(node.args) == 1
+            and not node.keywords):
+        # "".join(["sys", "tem"]) / "-".join(("a", "b")): literal separator,
+        # literal sequence of foldable strings.
+        sep = _fold_str(node.func.value, scopes)
+        seq = node.args[0]
+        if sep is not None and isinstance(seq, (ast.List, ast.Tuple)):
+            parts = [_fold_str(elt, scopes) for elt in seq.elts]
+            if all(part is not None for part in parts):
+                return sep.join(parts)
+    return None
+
+
+def _resolve_module(node, scopes):
+    """Resolve an expression to a sensitive-module name, following module
+    aliases (o = os, import os as o) and the runtime-import forms that yield
+    the same module object: __import__("os"), importlib.import_module("os"),
+    sys.modules["os"]. Returns the module name or None."""
+    if isinstance(node, ast.Name):
+        if node.id in SENSITIVE_MODULES:
+            return node.id
+        binding = _lookup_binding(scopes, node.id)
+        if binding is not None and binding[0] == 'mod':
+            return binding[1]
+        return None
+    if (isinstance(node, ast.Call) and len(node.args) == 1
+            and not node.keywords):
+        func = node.func
+        is_import = (
+            (isinstance(func, ast.Name) and func.id == '__import__')
+            or (isinstance(func, ast.Attribute) and func.attr == 'import_module'
+                and _resolve_module(func.value, scopes) == 'importlib')
+        )
+        if is_import:
+            name = _fold_str(node.args[0], scopes)
+            if name in SENSITIVE_MODULES:
+                return name
+        return None
+    if isinstance(node, ast.Subscript):
+        base = node.value
+        if (isinstance(base, ast.Attribute) and base.attr == 'modules'
+                and _resolve_module(base.value, scopes) == 'sys'):
+            sl = node.slice
+            if hasattr(ast, 'Index') and isinstance(sl, ast.Index):
+                sl = sl.value
+            name = _fold_str(sl, scopes)
+            if name in SENSITIVE_MODULES:
+                return name
+    return None
+
+
+def _dict_base_module(node, scopes):
+    """Resolve a module-dict expression to its module name:
+    os.__dict__, vars(os), or an alias of either (d = os.__dict__)."""
+    if isinstance(node, ast.Attribute) and node.attr == '__dict__':
+        return _resolve_module(node.value, scopes)
+    if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+            and node.func.id == 'vars' and len(node.args) == 1):
+        return _resolve_module(node.args[0], scopes)
+    if isinstance(node, ast.Name):
+        binding = _lookup_binding(scopes, node.id)
+        if binding is not None and binding[0] == 'dict':
+            return binding[1]
+    return None
+
+
+def _reflective_target(node, scopes):
+    """Resolve a reflective-retrieval expression to (module, dangerous attr):
+    os.__dict__["po" + "pen"], vars(os)["system"], aliases of those, and the
+    dict.get("sy" + "stem") form. Returns None when the expression is not a
+    dangerous reflective retrieval."""
+    if isinstance(node, ast.Subscript):
+        mod = _dict_base_module(node.value, scopes)
+        sl = node.slice
+        # Python 3.8 wraps the subscript key in ast.Index (removed in 3.9+).
+        if hasattr(ast, 'Index') and isinstance(sl, ast.Index):
+            sl = sl.value
+        key = _fold_str(sl, scopes)
+    elif (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+          and node.func.attr == 'get' and node.args):
+        mod = _dict_base_module(node.func.value, scopes)
+        key = _fold_str(node.args[0], scopes)
+    elif (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+          and node.func.attr == '__getattribute__' and len(node.args) == 1):
+        # os.__getattribute__("sys" + "tem"): attribute retrieval by method
+        # call, the same evasion as getattr(os, "system").
+        mod = _resolve_module(node.func.value, scopes)
+        key = _fold_str(node.args[0], scopes)
+    else:
+        return None
+    if mod in SENSITIVE_MODULES and key in DANGEROUS_ATTRS:
+        return (mod, key)
+    return None
+
+
+def _is_fetch_call(node, scopes):
+    """True when a Call node retrieves remote content/commands at runtime."""
+    if not isinstance(node, ast.Call):
+        return False
+    func = node.func
+    if isinstance(func, ast.Name):
+        return func.id == 'urlopen'
+    if isinstance(func, ast.Attribute):
+        if func.attr in ('urlopen', 'HTTPConnection', 'HTTPSConnection'):
+            return True
+        if func.attr in ('create_connection', 'connect'):
+            # Socket-shaped connects only: a bare `conn.connect()` on an
+            # arbitrary object (db, websocket client) is not a fetch source.
+            base = func.value
+            if isinstance(base, ast.Name) and base.id == 'socket':
+                return True
+            if (isinstance(base, ast.Attribute)
+                    and base.attr == 'socket'):
+                return True
+            if isinstance(base, ast.Name):
+                if _lookup_binding(scopes, base.id) == ('mod', 'socket'):
+                    return True
+            return False
+        if func.attr.lower() in FETCH_MODULE_VERBS:
+            base = func.value
+            if isinstance(base, ast.Name) and base.id in FETCH_MODULES:
+                return True
+            if isinstance(base, ast.Name):
+                binding = _lookup_binding(scopes, base.id)
+                if (binding is not None and binding[0] == 'mod'
+                        and binding[1] in FETCH_MODULES):
+                    return True
+    return False
+
+
+def _is_tainted(node, scopes):
+    """True when an expression derives from a runtime remote fetch: it
+    contains a fetch call or a name previously bound to fetch-derived data
+    (propagating through .read()/.json()/json.loads(...).get(...) chains)."""
+    for sub in ast.walk(node):
+        if isinstance(sub, ast.Name):
+            if _lookup_binding(scopes, sub.id) == ('taint', True):
+                return True
+        elif _is_fetch_call(sub, scopes):
+            return True
+    return False
+
+
+def _collect_scope(body, outer_scopes, fetch_funcs, reflective_funcs):
+    """Walk one statement body in source order, collecting bindings.
+
+    `outer_scopes` are enclosing scopes (read fallback). FunctionDefs are
+    analysed recursively with a fresh local scope and registered in
+    fetch_funcs / reflective_funcs when they return fetch-tainted data or a
+    dangerous reflective retrieval, so `command = fetch_cmd()` taints and
+    `sink = get_launcher()` aliases at the call site.
+    """
+    scope = _Scope()
+    scopes = [scope] + list(outer_scopes)
+
+    def merge_branch_bodies(bodies, include_incoming):
+        """Join conditional branches conservatively. Each branch body is
+        collected into its own scope seeded from the current chain; a
+        binding survives the join only when EVERY reachable exit agrees on
+        it (branches that do not bind the name contribute the incoming
+        binding). Otherwise the name is killed here, shadowing outer
+        scopes, so a branch-only alias or taint can never convict
+        post-join code.
+
+        Safe against evasion because Pattern 13 / visit_Subscript convict the
+        reflective retrieval expression itself, wherever it appears, whether
+        or not an alias survives the join; only the secondary
+        Fetch-then-Execute finding needs the alias, so losing it post-join
+        costs one corroborating finding, never the detection."""
+        branch_scopes = [
+            _collect_scope(b, scopes, fetch_funcs, reflective_funcs)
+            for b in bodies if b
+        ]
+        names = set()
+        for bs in branch_scopes:
+            names |= (set(bs.const) | set(bs.module_aliases)
+                      | set(bs.dict_aliases) | set(bs.callable_aliases)
+                      | bs.tainted | bs.blocked)
+        for name in names:
+            exits = []
+            for bs in branch_scopes:
+                if name in bs.blocked:
+                    # The branch re-bound the name to something
+                    # unrecognised: that exit's binding is unknown,
+                    # not the incoming one.
+                    exits.append(None)
+                    continue
+                bound = _binding_in(bs, name)
+                exits.append(bound if bound is not None
+                             else _lookup_binding(scopes, name))
+            if include_incoming:
+                exits.append(_lookup_binding(scopes, name))
+            first = exits[0]
+            if first is not None and all(e == first for e in exits):
+                _apply_binding(scope, name, first)
+            else:
+                scope.kill(name)
+
+    def handle_stmt(stmt):
+        if isinstance(stmt, (ast.Import, ast.ImportFrom)):
+            # `import os as o` / `from . import os as o` bind a sensitive
+            # module under a new name. Unaliased forms resolve by name
+            # already; only a rebinding needs recording.
+            for alias in stmt.names:
+                if alias.asname and alias.name in SENSITIVE_MODULES \
+                        and (isinstance(stmt, ast.Import)
+                             or (stmt.module is None and stmt.level > 0)):
+                    scope.blocked.discard(alias.asname)
+                    scope.module_aliases[alias.asname] = alias.name
+                elif alias.asname:
+                    scope.kill(alias.asname)
+            return
+        if isinstance(stmt, ast.FunctionDef):
+            local = _collect_scope(stmt.body, scopes, fetch_funcs,
+                                   reflective_funcs)
+            local_scopes = [local] + scopes
+            for sub in ast.walk(stmt):
+                if isinstance(sub, ast.Return) and sub.value is not None:
+                    if _is_tainted(sub.value, local_scopes):
+                        fetch_funcs.add(stmt.name)
+                    target = _reflective_target(sub.value, local_scopes)
+                    if target is not None:
+                        reflective_funcs[stmt.name] = target
+            return
+        if isinstance(stmt, (ast.With, ast.AsyncWith)):
+            for item in stmt.items:
+                if (item.optional_vars is not None
+                        and isinstance(item.optional_vars, ast.Name)
+                        and _is_tainted(item.context_expr, scopes)):
+                    scope.blocked.discard(item.optional_vars.id)
+                    scope.tainted.add(item.optional_vars.id)
+            for sub in stmt.body:
+                handle_stmt(sub)
+            return
+        if isinstance(stmt, ast.If):
+            # if/else: post-join bindings must agree across branch exits.
+            # With no else, the incoming state is itself an exit.
+            bodies = [stmt.body] + ([stmt.orelse] if stmt.orelse else [])
+            merge_branch_bodies(bodies, include_incoming=not stmt.orelse)
+            return
+        if isinstance(stmt, (ast.For, ast.AsyncFor, ast.While)):
+            # Loops may execute zero times: the incoming state is always a
+            # reachable exit, so a body-only binding never survives.
+            bodies = [stmt.body] + ([stmt.orelse] if stmt.orelse else [])
+            merge_branch_bodies(bodies, include_incoming=True)
+            if isinstance(stmt, (ast.For, ast.AsyncFor)) \
+                    and isinstance(stmt.target, ast.Name):
+                # The loop target holds the last iterated value (or the
+                # incoming binding after zero iterations) - never a
+                # reliable alias or taint carrier.
+                scope.kill(stmt.target.id)
+            return
+        if isinstance(stmt, ast.Try):
+            # Post-join code is reachable only via the body exit or a
+            # handler exit (an uncaught exception never reaches it), so the
+            # incoming state is not an exit of its own; handlers that leave
+            # the name untouched resolve to the incoming binding through
+            # the merge. finally runs on every path, so its bindings apply
+            # unconditionally afterwards.
+            bodies = [stmt.body] + [h.body for h in stmt.handlers]
+            if stmt.orelse:
+                bodies.append(stmt.orelse)
+            merge_branch_bodies(bodies, include_incoming=False)
+            for sub in stmt.finalbody:
+                handle_stmt(sub)
+            return
+        if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1 \
+                and isinstance(stmt.targets[0], ast.Name):
+            name = stmt.targets[0].id
+            value = stmt.value
+            folded = _fold_str(value, scopes)
+            if folded is not None:
+                scope.blocked.discard(name)
+                scope.const[name] = folded
+                return
+            mod = _resolve_module(value, scopes)
+            if mod is not None:
+                scope.blocked.discard(name)
+                scope.module_aliases[name] = mod
+                return
+            dict_mod = _dict_base_module(value, scopes)
+            if dict_mod is not None:
+                scope.blocked.discard(name)
+                scope.dict_aliases[name] = dict_mod
+                return
+            target = _reflective_target(value, scopes)
+            if target is not None:
+                scope.blocked.discard(name)
+                scope.callable_aliases[name] = target
+                return
+            if (isinstance(value, ast.Call)
+                    and isinstance(value.func, ast.Name)):
+                if value.func.id in reflective_funcs:
+                    scope.blocked.discard(name)
+                    scope.callable_aliases[name] = \
+                        reflective_funcs[value.func.id]
+                    return
+                if value.func.id in fetch_funcs:
+                    scope.blocked.discard(name)
+                    scope.tainted.add(name)
+                    return
+            if _is_tainted(value, scopes):
+                scope.blocked.discard(name)
+                scope.tainted.add(name)
+                return
+            # Unrecognised reassignment: the name no longer aliases anything.
+            scope.kill(name)
+            return
+        if isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name):
+            scope.kill(stmt.target.id)
+            return
+        if isinstance(stmt, ast.AugAssign) and isinstance(stmt.target, ast.Name):
+            scope.kill(stmt.target.id)
+
+    for stmt in body:
+        handle_stmt(stmt)
+    return scope
+
+
 
 class ObfuscationVisitor(ast.NodeVisitor):
     """AST visitor detecting obfuscation and dangerous dynamic patterns."""
@@ -42,6 +482,20 @@ class ObfuscationVisitor(ast.NodeVisitor):
         # ONE shared scan_decode budget threaded from main() across every file so
         # the decode deadline + byte cap span the whole scan, never re-armed.
         self.budget = budget
+        # Reflective-call / taint state, populated by bind() before visiting:
+        # scope stack (innermost first), functions returning fetch-tainted
+        # values, functions returning dangerous reflective retrievals.
+        self._scopes = [_Scope()]
+        self._fetch_funcs = set()
+        self._reflective_funcs = {}
+
+    def bind(self, tree):
+        """Run the binding pre-pass over a parsed module. Must be called
+        before visit(); scan_file() does this. Collects constants, aliases,
+        taint, and helper-return shapes used by the reflective-sink and
+        fetch-then-execute patterns."""
+        self._scopes = [_collect_scope(tree.body, [], self._fetch_funcs,
+                                       self._reflective_funcs)]
 
     def _snippet(self, lineno):
         if lineno and 1 <= lineno <= len(self.source_lines):
@@ -159,19 +613,21 @@ class ObfuscationVisitor(ast.NodeVisitor):
             if len(node.args) >= 2:
                 obj_arg = node.args[0]
                 attr_arg = node.args[1]
-                obj_name = obj_arg.id if isinstance(obj_arg, ast.Name) else None
+                obj_name = _resolve_module(obj_arg, self._scopes)
                 # Support both ast.Constant (3.8+) and ast.Str (deprecated 3.8,
                 # REMOVED 3.12+). Guard the bare ast.Str reference with hasattr so
                 # evaluating it does not AttributeError on 3.12+ (it crashed the whole
                 # scanner on modern Python), mirroring the guarded sites below and in
                 # scan_entrypoint.py. ast.Constant already covers every string literal
                 # on 3.8+, so this branch is dead weight there and live only on <3.12.
+                # The key is then constant-folded so getattr(os, "po" + "pen")
+                # and getattr(os, KEY) with KEY bound to a literal resolve too.
                 if isinstance(attr_arg, ast.Constant) and isinstance(attr_arg.value, str):
                     attr_val = attr_arg.value
                 elif hasattr(ast, "Str") and isinstance(attr_arg, ast.Str):
                     attr_val = attr_arg.s
                 else:
-                    attr_val = None
+                    attr_val = self._fold(attr_arg)
                 if obj_name in SENSITIVE_MODULES and attr_val in DANGEROUS_ATTRS:
                     self._add(
                         severity="critical",
@@ -299,7 +755,128 @@ class ObfuscationVisitor(ast.NodeVisitor):
                                 category="obfuscated-exec"
                             )
 
+        # Pattern 13: reflective dangerous sink invoked through a module
+        # __dict__ / vars() subscript, a .get() on the module dict, or a
+        # callable alias (launch = os.__dict__["po" + "pen"]; launch(cmd)).
+        # The retrieval itself is flagged by visit_Subscript (or at the
+        # assignment for aliases); here we resolve the sink for the
+        # fetch-then-execute taint check and for the .get() form, which has
+        # no Subscript node.
+        sink = None
+        sink_from_get = False
+        if isinstance(node.func, ast.Subscript):
+            sink = _reflective_target(node.func, self._scopes)
+        elif isinstance(node.func, ast.Name):
+            binding = _lookup_binding(self._scopes, node.func.id)
+            if binding is not None and binding[0] == 'callable':
+                sink = binding[1]
+        elif (isinstance(node.func, ast.Attribute)
+              and node.func.attr in ('get', '__getattribute__')):
+            sink = _reflective_target(node, self._scopes)
+            sink_from_get = sink is not None
+        if sink_from_get:
+            if node.func.attr == '__getattribute__':
+                via = f"{sink[0]}.__getattribute__('{sink[1]}')"
+                how = "via .__getattribute__() with a folded key"
+            else:
+                via = f"{sink[0]}.__dict__.get('{sink[1]}')"
+                how = "via .__dict__.get() with a folded key"
+            self._add(
+                severity="critical",
+                title=f"Reflective Attribute Access: {via}",
+                description=f"Reflective attribute access evasion: dangerous '{sink[1]}' retrieved from '{sink[0]}' {how}",
+                lineno=lineno,
+                category="obfuscated-exec"
+            )
+
+        # Pattern 14: fetch-then-execute. A command fetched from a remote
+        # source at call time (urlopen/requests/... through .read()/.json()/
+        # json.loads().get() or a helper return) flows into a reflective
+        # shell sink. This is the runtime-fetched RCE shape that per-call
+        # metadata scanning cannot see.
+        if sink is not None:
+            tainted_arg = any(
+                _is_tainted(arg, self._scopes)
+                for arg in list(node.args) + [kw.value for kw in node.keywords]
+            )
+            if tainted_arg:
+                self._add(
+                    severity="critical",
+                    title=f"Fetch-then-Execute: remote content passed to reflective {sink[0]}.{sink[1]}",
+                    description=(f"Command/content fetched from a remote source at runtime is "
+                                 f"passed to a reflectively-resolved {sink[0]}.{sink[1]} sink. "
+                                 f"The executed payload is invisible to static and metadata scanning."),
+                    lineno=lineno,
+                    category="remote-code-execution"
+                )
+
         self.generic_visit(node)
+
+    def _fold(self, node):
+        """Constant-fold a string expression against collected bindings."""
+        return _fold_str(node, self._scopes)
+
+    def visit_Subscript(self, node):
+        """Flag dangerous reflective retrieval: os.__dict__["po" + "pen"],
+        vars(os)["system"], or an alias of the module dict subscripted with a
+        foldable dangerous key. Fires at the retrieval site whether or not
+        the result is ever called - the retrieval alone hides the sink from
+        call-based scanners."""
+        target = _reflective_target(node, self._scopes)
+        if target is not None:
+            self._add(
+                severity="critical",
+                title=f"Reflective Attribute Access: {target[0]}.__dict__['{target[1]}']",
+                description=f"Reflective dict access evasion: dangerous '{target[1]}' retrieved from '{target[0]}' via __dict__/vars() with a folded key",
+                lineno=getattr(node, 'lineno', None),
+                category="obfuscated-exec"
+            )
+        self.generic_visit(node)
+
+    def visit_FunctionDef(self, node):
+        """Track function-local binding scopes so aliases/constants/taint
+        declared inside a function resolve for its body, and never leak out
+        to sibling code."""
+        local = _collect_scope(node.body, self._scopes, self._fetch_funcs,
+                               self._reflective_funcs)
+        self._scopes.insert(0, local)
+        self.generic_visit(node)
+        self._scopes.pop(0)
+
+    def _visit_branch_bodies(self, bodies):
+        """Visit conditional branch bodies with a branch-local binding
+        scope pushed, so aliases/taint resolve INSIDE the branch that
+        defines them (the pre-pass join keeps them out of the post-join
+        scope)."""
+        for body in bodies:
+            if not body:
+                continue
+            local = _collect_scope(body, self._scopes, self._fetch_funcs,
+                                   self._reflective_funcs)
+            self._scopes.insert(0, local)
+            for sub in body:
+                self.visit(sub)
+            self._scopes.pop(0)
+
+    def visit_If(self, node):
+        self.visit(node.test)
+        self._visit_branch_bodies([node.body, node.orelse])
+
+    def visit_While(self, node):
+        self.visit(node.test)
+        self._visit_branch_bodies([node.body, node.orelse])
+
+    def visit_For(self, node):
+        self.visit(node.target)
+        self.visit(node.iter)
+        self._visit_branch_bodies([node.body, node.orelse])
+
+    visit_AsyncFor = visit_For
+
+    def visit_Try(self, node):
+        bodies = [node.body] + [h.body for h in node.handlers]
+        bodies += [node.orelse, node.finalbody]
+        self._visit_branch_bodies(bodies)
 
     def visit_ClassDef(self, node):
         """Detect __reduce__ overrides - classic pickle deserialization backdoor."""
@@ -356,6 +933,7 @@ def scan_file(file_path, rel_path, budget=None):
 
     source_lines = source.split('\n')
     visitor = ObfuscationVisitor(rel_path, source_lines, budget=budget)
+    visitor.bind(tree)
     visitor.visit(tree)
     return visitor.findings
 
