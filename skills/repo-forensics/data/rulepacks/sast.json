@@ -593,7 +593,7 @@
       }
     },
     {
-      "id": "SA-PY-025",
+      "id": "SA-PY-032",
       "type": "regex",
       "pattern": "\\b(?:requests|httpx)\\s*\\.\\s*(?:request|get|post|put|patch|delete|head|options)\\s*\\([^\\n)]*\\bverify\\s*=\\s*False\\b|ssl\\._create_unverified_context\\s*\\(|\\bssl\\.CERT_NONE\\b",
       "extensions": [
@@ -3179,33 +3179,7 @@
       }
     },
     {
-      "id": "SA-SH-020",
-      "type": "regex",
-      "pattern": "--dangerously-skip-permissions|\\bbypassPermissions\\b|--permission-mode[=\\s]+['\"`]?bypass",
-      "extensions": [
-        ".sh",
-        ".bash",
-        ".zsh"
-      ],
-      "title": "AI Agent CLI Permission Bypass Flag",
-      "severity": "critical",
-      "confidence": 0.9,
-      "category": "auth-bypass",
-      "explanation": "Shell wrapper passes --dangerously-skip-permissions / bypassPermissions to an AI coding-agent CLI, disabling its human-approval gate; relay-driven agent-execution malware uses this so attacker-supplied prompts run tool calls unchecked (AgentGate MCPA-2026-0063/0084).",
-      "examples": {
-        "match": [
-          "  --dangerously-skip-permissions \\",
-          "claude --permission-mode bypass -p \"$PROMPT\"",
-          "MODE=bypassPermissions"
-        ],
-        "no_match": [
-          "claude -p \"$PROMPT\"",
-          "echo setting permissions"
-        ]
-      }
-    },
-    {
-      "id": "SA-SH-021",
+      "id": "SA-SH-025",
       "type": "regex",
       "pattern": "\\bcurl\\b[^\\n|;]*\\s(?:(?:-(?!-)[A-Za-z]*k[A-Za-z]*(?![A-Za-z]))|(?:--insecure(?![\\w-])))|\\bwget\\b[^\\n|;]*\\s--no-check-certificate(?![\\w-])",
       "extensions": [
@@ -3647,6 +3621,117 @@
         "no_match": [
           "rejectUnauthorized: true",
           "opts.rejectUnauthorized = true"
+        ]
+      }
+    },
+    {
+      "id": "SA-PY-025",
+      "type": "regex",
+      "pattern": "^(?![ \\t]*#).*[(|&,=]\\s*CLONE_NEWUSER\\b",
+      "extensions": [
+        ".py"
+      ],
+      "title": "Kernel Exploit: User Namespace Flag (CLONE_NEWUSER)",
+      "severity": "high",
+      "confidence": 0.8,
+      "category": "kernel-exploit",
+      "explanation": "Kernel Exploit: User Namespace Flag (CLONE_NEWUSER) (kernel-exploit) detected in a .py file.",
+      "examples": {
+        "match": [
+          "os.unshare(CLONE_NEWUSER)",
+          "flags = CLONE_NEWUSER | CLONE_NEWNET",
+          "libc.unshare(CLONE_NEWUSER)"
+        ],
+        "no_match": [
+          "git clone origin main",
+          "CLONE_NEWUSER2",
+          "clone_newuser",
+          "# os.unshare(CLONE_NEWUSER) explained",
+          "msg = 'we never pass CLONE_NEWUSER'"
+        ]
+      }
+    },
+    {
+      "id": "SA-SH-020",
+      "type": "regex",
+      "pattern": "^(?![ \\t]*#).*(?:\\bunshare\\s+(?:-\\S+\\s+)*?(?:(?<!-)-[A-Za-z]*[Ur][A-Za-z]*\\b|--user\\b|--map-root-user\\b)|\\bnsenter\\s+(?:-\\S+\\s+)*?(?:-t\\s+0*1\\b|--target(?:=|\\s+)0*1\\b))",
+      "extensions": [
+        ".sh"
+      ],
+      "title": "Kernel Exploit: User Namespace Creation",
+      "severity": "high",
+      "confidence": 0.8,
+      "category": "kernel-exploit",
+      "explanation": "Kernel Exploit: User Namespace Creation (kernel-exploit) detected in a .sh file.",
+      "examples": {
+        "match": [
+          "unshare --user --map-root-user bash",
+          "unshare -Urm bash",
+          "nsenter -t 1 -m -u bash",
+          "nsenter --target=1 --mount bash",
+          "nsenter -t 01 -m bash",
+          "nsenter --target=001 -u sh"
+        ],
+        "no_match": [
+          "unshare",
+          "unshare --mount --propagation private bash",
+          "nsenter -t \"$pid\" -m bash",
+          "# unshare -Urn sh",
+          "share -x file"
+        ]
+      }
+    },
+    {
+      "id": "SA-SH-021",
+      "type": "regex",
+      "pattern": "^(?![ \\t]*#).*(?:\\btc\\s+(?:qdisc|class|filter|action)\\s+(?:add|change|replace)\\b|\\bact_pedit\\b|\\btc\\s+-b(?:atch)?\\s+\\S|\\$\\{?\\w+\\}?\\s+(?:qdisc|class|filter|action)\\s+(?:add|change|replace)\\b)",
+      "extensions": [
+        ".sh"
+      ],
+      "title": "Kernel Exploit: net/sched tc Configuration",
+      "severity": "high",
+      "confidence": 0.8,
+      "category": "kernel-exploit",
+      "explanation": "Kernel Exploit: net/sched tc Configuration (kernel-exploit) detected in a .sh file.",
+      "examples": {
+        "match": [
+          "tc qdisc add dev eth0 root handle 1: htb",
+          "tc action add action pedit munge ip ttl set 63",
+          "modprobe act_pedit",
+          "tc -batch /tmp/evil.tc",
+          "$TC qdisc add dev lo root netem"
+        ],
+        "no_match": [
+          "tc qdisc show",
+          "tc -s qdisc",
+          "etc config",
+          "# tc qdisc add dev lo root netem"
+        ]
+      }
+    },
+    {
+      "id": "SA-SH-026",
+      "type": "regex",
+      "pattern": "--dangerously-skip-permissions|\\bbypassPermissions\\b|--permission-mode[=\\s]+['\"`]?bypass",
+      "extensions": [
+        ".sh",
+        ".bash",
+        ".zsh"
+      ],
+      "title": "AI Agent CLI Permission Bypass Flag",
+      "severity": "critical",
+      "confidence": 0.9,
+      "category": "auth-bypass",
+      "explanation": "Shell wrapper passes --dangerously-skip-permissions / bypassPermissions to an AI coding-agent CLI, disabling its human-approval gate; relay-driven agent-execution malware uses this so attacker-supplied prompts run tool calls unchecked (AgentGate MCPA-2026-0063/0084).",
+      "examples": {
+        "match": [
+          "  --dangerously-skip-permissions \\",
+          "claude --permission-mode bypass -p \"$PROMPT\"",
+          "MODE=bypassPermissions"
+        ],
+        "no_match": [
+          "claude -p \"$PROMPT\"",
+          "echo setting permissions"
         ]
       }
     }
