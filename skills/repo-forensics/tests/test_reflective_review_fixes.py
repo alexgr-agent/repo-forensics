@@ -328,6 +328,12 @@ def _legacy_compounds(findings):
 # manufactured (extend this list with the reason).
 _MANUFACTURED_LEGACY_COMPOUNDS = {
     "RD-CP-006.py", "RD-CP-007.py", "RD-CP-008.py", "RD-CP-009.py",
+    # PR #44 sandbox / cloud-IDE detection probes (CURSOR_SANDBOX and cloud-IDE
+    # env markers): env reads with no outbound call anywhere. The legacy keyword
+    # model pairs the "environ" read with a "network"-flavoured word in the rule
+    # text; the typed model correctly declines, since reading an env var to
+    # detect a sandbox is not data exfiltration.
+    "RD-CP-010.py", "RD-CP-011.py", "RD-CP-016.py", "RD-CP-017.py",
     "RD-DYN-002.py", "RD-LOC-003.py", "RD-LOC-004.py",
     "SA-PY-014.py", "SA-SH-007.sh", "SA-SH-008.sh",
     "SC-SEC-012.txt", "SC-SEC-027.txt", "ST-PI-017.md",
