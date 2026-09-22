@@ -15,12 +15,17 @@ What it does:
 Signatures are detached, raw 64-byte Ed25519 over the file's literal bytes (no
 parse-and-reserialize). The verify side re-reads those exact bytes.
 
-Usage:
-    python3 scripts/sign_rulepacks.py --seed-hex <PRIVATE_SEED_HEX> \\
-        [--pub-hex <PUBLIC_KEY_HEX>] [--bundle-version N]
+Maintainer handoff for the committed unsigned candidate:
+    python3 scripts/sign_rulepacks.py \
+        --seed-file /path/to/offline-rulepack-seed \
+        --bundle-version 6 --allow-unchanged
 
-The private seed is supplied at sign time (kept offline); it is never stored in
-the repo. --pub-hex (optional) cross-checks the seed matches the pinned pubkey.
+Run that command from the repository root. Pinning --bundle-version 6 and using
+--allow-unchanged signs the exact committed candidate instead of creating a
+new envelope version. The command also refreshes the detached signature for
+iocs/latest.json from its unchanged on-disk bytes. The private seed is supplied
+at sign time (kept offline); it is never stored in the repo. --pub-hex may be
+added to cross-check that the seed matches the pinned public key.
 """
 
 import argparse
