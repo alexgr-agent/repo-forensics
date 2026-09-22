@@ -1052,18 +1052,73 @@ class TestOverridesRecursionGuard:
         # Depth guard returns partial result rather than crashing
         assert isinstance(result, dict)
 
-    def test_deeply_nested_overrides_scan_package_json(self, tmp_path):
-        """End-to-end: recursion-bomb overrides must not suppress the IOC
-        checks for the rest of the same file.
+    def test_deeply_nested_overrides_scan_package_json(self, tmp_path, monkeypatch):
+        """End-to-end: recursion-bomb package.json must surface a high
+        'Adversarial package.json' finding AND must not suppress IOC checks
+        for other files in the same repo.
 
-        Depth is 200 (=400 JSON levels), not thousands. It has to clear
-        _OVERRIDES_MAX_DEPTH (32) so the flattener's guard is genuinely
-        exercised, while staying under what the stdlib json codec can
-        represent at the default recursion limit of 1000 -- past ~480 levels
-        json.dumps/json.load raise RecursionError themselves, so a deeper
-        fixture never reaches the scanner at all and the test asserts nothing.
-        The unbounded case (2000 levels, no JSON round-trip) is covered
-        directly against _flatten_overrides by the sibling test above.
+        PR-introduced-broken as originally written (rebase note, 2026-09-22):
+        the original fixture built a 1000-deep JSON document expecting
+        `json.loads` to raise RecursionError against `sys.getrecursionlimit()`
+        (default 1000). CPython's `_json` C accelerator -- the normal build,
+        also the one this suite runs under -- does not use Python-level
+        recursion at all; it is bounded by the C stack, not
+        `sys.getrecursionlimit()`, so nothing here ever raised (verified: a
+        9999-deep document, just under the scanner's own 10,000 hard limit,
+        still parses cleanly). The retry-under-raised-recursion-limit code
+        this test exercises is real and correct (it matters for a
+        pure-Python json fallback, e.g. a restricted or non-standard Python
+        build without the C extension), but no depth this test could safely
+        use reaches it -- and probing deeper risks a native stack overflow
+        (a hard crash of the whole test process, not a catchable exception)
+        rather than a clean RecursionError. json.loads is monkeypatched to
+        fail once and then behave normally, which exercises the exact
+        production code path (the except/retry/chalk-detection sequence in
+        scan_package_json) deterministically and portably instead.
+        """
+        real_loads = json.loads
+        calls = {"n": 0}
+
+        def flaky_loads(*args, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RecursionError("simulated: adversarially deep JSON structure")
+            return real_loads(*args, **kwargs)
+
+        monkeypatch.setattr(scanner.json, "loads", flaky_loads)
+
+        pkg = tmp_path / "package.json"
+        pkg.write_text(json.dumps({
+            "dependencies": {"chalk": "5.6.1"},
+            "overrides": {"root": {"pkg": "1.0.0"}},
+        }))
+        findings = scanner.scan_package_json(str(pkg), "package.json")
+        # The hostile structure MUST be surfaced
+        adversarial = [f for f in findings if f.severity == "high" and "adversarial" in f.title.lower()]
+        assert len(adversarial) == 1, (
+            "recursion-bomb package.json must surface a high 'Adversarial package.json' finding"
+        )
+        # The IOC check for chalk@5.6.1 MUST still fire
+        criticals = [f for f in findings if f.severity == "critical" and "chalk" in f.title.lower()]
+        assert len(criticals) == 1, (
+            "chalk@5.6.1 IOC must still be detected despite recursion-bomb overrides"
+        )
+        # Both assertions above are satisfied only if the first (failing)
+        # parse was followed by a successful retry; other json.loads calls
+        # happen downstream in the same scan (vuln/ecosystem lookups), so the
+        # count itself is not asserted -- just that call 1 raised.
+        assert calls["n"] >= 2
+
+    def test_moderately_nested_overrides_never_hit_the_recursion_catch(self, tmp_path):
+        """End-to-end for the OTHER guard: overrides nested past
+        _OVERRIDES_MAX_DEPTH (32) but still well under what the stdlib json
+        codec can represent at the default recursion limit (~480 levels,
+        see test_deeply_nested_overrides_scan_package_json's sibling above
+        for the case that exceeds it). json.loads must not raise at all here
+        -- _flatten_overrides's own depth guard returns a partial result
+        instead -- so this exercises a different path than the RecursionError
+        catch/retry: no 'Adversarial package.json' finding, and the IOC check
+        for the rest of the same file still fires.
         """
         nested = {}
         cur = nested
@@ -1076,10 +1131,11 @@ class TestOverridesRecursionGuard:
             "overrides": {"root": nested},
         }))
         findings = scanner.scan_package_json(str(pkg), "package.json")
-        # The IOC check for chalk@5.6.1 MUST still fire
+        assert not any(f.severity == "high" and "adversarial" in f.title.lower()
+                       for f in findings), "json.loads should not have raised at this depth"
         criticals = [f for f in findings if f.severity == "critical" and "chalk" in f.title.lower()]
         assert len(criticals) == 1, (
-            "chalk@5.6.1 IOC must still be detected despite recursion-bomb overrides"
+            "chalk@5.6.1 IOC must still be detected despite moderately-nested overrides"
         )
 
     def test_circular_override_dict_does_not_loop(self):
