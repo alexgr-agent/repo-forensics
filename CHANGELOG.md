@@ -2,6 +2,32 @@
 
 All notable changes to repo-forensics. Versions follow semver.
 
+## [2.14.9] - 2026-09-22
+
+### Security: fix critical RCE via a scanned repo's git config (CVE-class: gpg.program)
+A repository under audit controls its own `.git/config`, and several git config
+keys name an external program git executes during ordinary read-only operations.
+`scan_git_forensics.py` read commit signature status with the `%G?` pretty
+format, which makes `git log` verify each commit's signature by running the
+repository's own `gpg.program` — arbitrary code execution triggered merely by
+scanning a hostile repo, with the scan reporting nothing. `verify_install.py`'s
+`git ls-files` similarly honored `core.fsmonitor`.
+
+- Added `forensics_core.run_git_hardened()`, the single sanctioned way to invoke
+  git in the scanner. It overrides every exec-capable config key
+  (`gpg.program`, `gpg.ssh.program`, `gpg.x509.program`, `core.fsmonitor`,
+  `core.hooksPath`, `core.sshCommand`, `core.pager`, `core.editor`,
+  `core.askpass`, `credential.helper`, `diff.external`, the `filter.lfs.*`
+  commands, `uploadpack.packObjectsHook`) with `-c`, disables system/global
+  config via env, and drops `GIT_CONFIG_*` injection vars.
+- Dropped `%G?` (signature status) from `get_git_log`: it is the RCE trigger and
+  is not a trustworthy signal for an untrusted third-party checkout anyway.
+- Routed `scan_git_forensics.py` (`get_git_log`, `scan_replace_refs`) and
+  `verify_install.py` (`get_tracked_files`) through the hardened runner.
+- Regression test `tests/test_gpg_rce_hotfix.py` builds a repo whose config arms
+  `gpg.program`/`core.fsmonitor` with a marker-writing script and asserts the
+  scanner never executes it.
+
 ## [2.14.8] - 2026-08-28
 
 ### Fix: re-signed release manifest (2.14.7 shipped an unverifiable one)

@@ -14,7 +14,6 @@ Created by Alex Greenshpun
 """
 
 import os
-import subprocess
 import sys
 import json
 
@@ -200,13 +199,13 @@ def get_tracked_files(skill_root):
     skip_files = {'.DS_Store', '.forensics-baseline.json', '.forensics-iocs.json',
                   'checksums.json', 'checksums.json.sig'}
 
-    # In a git repo, use git ls-files to avoid local-only artifacts
+    # In a git repo, use git ls-files to avoid local-only artifacts. Routed
+    # through the hardened runner: ls-files refreshes the index and so honors
+    # core.fsmonitor, an exec-capable config key that a hostile tree could set
+    # to run code during verification.
     try:
-        result = subprocess.run(
-            ['git', 'ls-files', '--cached'],
-            capture_output=True, text=True, timeout=5, cwd=skill_root,
-        )
-        if result.returncode == 0 and result.stdout.strip():
+        result = core.run_git_hardened(skill_root, 'ls-files', '--cached', timeout=5)
+        if result is not None and result.returncode == 0 and result.stdout.strip():
             git_files = []
             for rel in result.stdout.strip().splitlines():
                 if any(rel.startswith(d + '/') or rel.startswith(d + os.sep) for d in skip_dirs):

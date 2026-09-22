@@ -7,7 +7,6 @@ and unsigned commits.
 Created by Alex Greenshpun
 """
 
-import subprocess
 import sys
 import os
 import datetime
@@ -19,35 +18,28 @@ SCANNER_NAME = "git_forensics"
 
 
 def get_git_log(repo_path):
-    # Use null byte delimiter to prevent author name spoofing with '|'
-    # Minimal env prevents malicious .git/config from executing code via
-    # core.fsmonitor, core.hooksPath, pager.*, credential.helper, etc.
-    # -c flags override local .git/config to prevent RCE via core.fsmonitor,
-    # credential.helper, core.hooksPath, or core.sshCommand in malicious repos.
-    # This pattern is used by GitHub Actions runners for the same reason.
-    cmd = [
-        "git",
-        "-c", "core.fsmonitor=",
-        "-c", "core.hooksPath=",
-        "-c", "credential.helper=",
-        "-c", "core.sshCommand=",
-        "-c", "safe.directory=*",
-        "log", "--pretty=format:%H%x00%an%x00%ae%x00%aI%x00%cI%x00%G?", "-n", "1000",
-    ]
-    env = {
-        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
-        "HOME": os.environ.get("HOME", "/tmp"),
-        "LANG": "C.UTF-8",
-        "GIT_PAGER": "cat",
-        "GIT_CONFIG_NOSYSTEM": "1",
-        "GIT_CONFIG_GLOBAL": "/dev/null",
-        "GIT_TERMINAL_PROMPT": "0",
-    }
-    try:
-        result = subprocess.run(cmd, cwd=repo_path, capture_output=True, text=True, check=True, env=env)
-        return result.stdout.strip().split('\n')
-    except subprocess.CalledProcessError:
+    # Null byte delimiter prevents author-name spoofing with '|'.
+    #
+    # The pretty format deliberately does NOT include %G? (signature status):
+    # %G? makes git verify each commit's signature, which executes the repo's
+    # own gpg.program config value -- arbitrary code execution just from reading
+    # a hostile repo's history (the scanner runs inside the untrusted tree). The
+    # signature status of an untrusted checkout, verified against whatever keys
+    # happen to be in the scanning machine's keyring, is not a meaningful signal
+    # anyway (a real third-party signer's key is almost never present, so it
+    # reports "cannot check", and an attacker simply leaves commits unsigned).
+    # We drop it rather than trust config neutralization alone.
+    #
+    # The call still goes through the hardened runner, which overrides every
+    # exec-capable config key (gpg.program, core.fsmonitor, core.hooksPath, ...)
+    # so nothing the repo declares can run during `git log`.
+    result = core.run_git_hardened(
+        repo_path,
+        "log", "--pretty=format:%H%x00%an%x00%ae%x00%aI%x00%cI", "-n", "1000",
+    )
+    if result is None or result.returncode != 0:
         return []
+    return result.stdout.strip().split('\n')
 
 
 def analyze_commits(commits, repo_path):
@@ -58,7 +50,7 @@ def analyze_commits(commits, repo_path):
     for line in commits:
         try:
             parts = line.split('\x00')
-            if len(parts) < 6:
+            if len(parts) < 5:
                 continue
 
             commit_hash = parts[0][:12]
@@ -66,7 +58,6 @@ def analyze_commits(commits, repo_path):
             author_email = parts[2]
             author_date_str = parts[3]
             committer_date_str = parts[4]
-            gpg_status = parts[5] if len(parts) > 5 else 'N'
 
             if author_email not in authors:
                 authors[author_email] = set()
@@ -109,19 +100,10 @@ def analyze_commits(commits, repo_path):
                     category="time-anomaly"
                 ))
 
-            # GPG signature check
-            if gpg_status == 'N':
-                # Not signed, low severity (very common)
-                pass  # Don't flag, too noisy
-            elif gpg_status == 'B':
-                findings.append(core.Finding(
-                    scanner=SCANNER_NAME, severity="high",
-                    title="Bad GPG Signature",
-                    description=f"Commit {commit_hash} has an invalid/expired GPG signature",
-                    file=f"commit:{commit_hash}", line=0,
-                    snippet="GPG status: Bad signature",
-                    category="signature"
-                ))
+            # GPG signature status is intentionally not collected here: reading
+            # it (%G?) makes git execute the repo's own gpg.program, an RCE
+            # vector from an untrusted checkout, and the status is not a
+            # trustworthy signal for a third-party repo anyway. See get_git_log.
 
         except (ValueError, IndexError):
             continue
@@ -153,31 +135,10 @@ def scan_replace_refs(repo_path):
     exist, report a critical finding.
     """
     findings = []
-    env = {
-        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
-        "HOME": os.environ.get("HOME", "/tmp"),
-        "LANG": "C.UTF-8",
-        "GIT_PAGER": "cat",
-        "GIT_CONFIG_NOSYSTEM": "1",
-        "GIT_CONFIG_GLOBAL": "/dev/null",
-        "GIT_TERMINAL_PROMPT": "0",
-    }
-    cmd = [
-        "git",
-        "-c", "core.fsmonitor=",
-        "-c", "core.hooksPath=",
-        "-c", "credential.helper=",
-        "-c", "core.sshCommand=",
-        "-c", "safe.directory=*",
-        "for-each-ref", "refs/replace/",
-    ]
-    try:
-        result = subprocess.run(
-            cmd, cwd=repo_path, capture_output=True, text=True, check=True, env=env
-        )
-        output = result.stdout.strip()
-    except (subprocess.CalledProcessError, FileNotFoundError, OSError):
+    result = core.run_git_hardened(repo_path, "for-each-ref", "refs/replace/")
+    if result is None or result.returncode != 0:
         return findings
+    output = result.stdout.strip()
 
     if output:
         ref_lines = [ln for ln in output.splitlines() if ln.strip()]

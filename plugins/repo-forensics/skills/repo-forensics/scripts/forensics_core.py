@@ -16,8 +16,85 @@ import json
 import time
 import hashlib
 import fnmatch
+import subprocess
 import urllib.parse
 from dataclasses import dataclass, asdict
+
+# --- Hardened git invocation -------------------------------------------------
+# A repository we are auditing controls its own .git/config and any config
+# files inside its tree. Several git config keys name an EXTERNAL PROGRAM that
+# git executes during ordinary read-only operations -- gpg.program (run by
+# `git log --show-signature` / the `%G?` pretty format), core.fsmonitor (run by
+# status/ls-files/index refresh), core.hooksPath hooks, core.sshCommand,
+# core.pager, diff.external, and the LFS filter.* commands. Merely reading a
+# hostile repo's history must never run code the repo supplies, so this is the
+# ONLY sanctioned way to invoke git in this codebase. Every exec-capable key is
+# overridden to an inert value with `-c` (which wins over the repo's config),
+# system/global config is disabled via env so nothing outside the overrides can
+# reintroduce an exec key, and gpg*.program is pointed at `false` as a second
+# line of defense for any signature-verifying invocation.
+_GIT_EXEC_CONFIG_OVERRIDES = (
+    "core.fsmonitor=",
+    "core.hooksPath=/dev/null",
+    "core.sshCommand=",
+    "core.pager=cat",
+    "core.editor=true",
+    "core.askpass=",
+    "credential.helper=",
+    "gpg.program=false",
+    "gpg.ssh.program=false",
+    "gpg.x509.program=false",
+    "diff.external=",
+    "filter.lfs.process=",
+    "filter.lfs.clean=",
+    "filter.lfs.smudge=",
+    "uploadpack.packObjectsHook=",
+    "safe.directory=*",
+)
+
+
+def _hardened_git_env():
+    """Minimal environment for a hardened git call.
+
+    Deliberately does NOT inherit the parent environment wholesale: it drops any
+    GIT_CONFIG_COUNT / GIT_CONFIG_KEY_* / GIT_* config-injection variables and
+    forces system+global config off, so the only config git sees is the inert
+    `-c` override set. PATH/HOME are preserved so git and coreutils resolve.
+    """
+    return {
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "HOME": os.environ.get("HOME", "/tmp"),
+        "LANG": "C.UTF-8",
+        "GIT_PAGER": "cat",
+        "GIT_TERMINAL_PROMPT": "0",
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": "/dev/null",
+        "GIT_CONFIG_SYSTEM": "/dev/null",
+    }
+
+
+def run_git_hardened(repo_path, *git_args, timeout=15, check=False):
+    """Run a read-only git command that a hostile repo cannot turn into RCE.
+
+    Prepends the exec-capable-config overrides, uses the hardened env, and
+    swallows the ways a git call can fail (missing binary, non-zero exit,
+    timeout, OS error) by returning None. Callers pass only read-only
+    subcommands. This is the single choke point for every git subprocess in the
+    scanner; do not build a bare `["git", ...]` command anywhere else.
+    """
+    cmd = ["git"]
+    for override in _GIT_EXEC_CONFIG_OVERRIDES:
+        cmd += ["-c", override]
+    cmd += [str(a) for a in git_args]
+    try:
+        return subprocess.run(
+            cmd, cwd=repo_path, capture_output=True, text=True,
+            timeout=timeout, check=check, env=_hardened_git_env(),
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired,
+            FileNotFoundError, OSError):
+        return None
+
 
 # --- Severity System ---
 SEVERITY = {"critical": 4, "high": 3, "medium": 2, "low": 1}
