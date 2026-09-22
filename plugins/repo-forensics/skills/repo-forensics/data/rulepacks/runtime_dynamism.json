@@ -1276,8 +1276,8 @@
     {
       "id": "RD-CP-010",
       "type": "regex",
-      "pattern": "process\\.env\\.(?:CURSOR_SANDBOX|CODESPACES|GITPOD_WORKSPACE_ID|REPL_ID)\\b|process\\.env\\s*\\[\\s*[\\\"'](?:CURSOR_SANDBOX|CODESPACES|GITPOD_WORKSPACE_ID|REPL_ID)[\\\"']\\s*\\]",
-      "title": "Sandbox-presence probing: process.env sandbox marker",
+      "pattern": "process\\.env\\.(?:CURSOR_SANDBOX)\\b|process\\.env\\s*\\[\\s*[\\\"'](?:CURSOR_SANDBOX)[\\\"']\\s*\\]",
+      "title": "Sandbox-presence probing: process.env CURSOR_SANDBOX marker",
       "severity": "medium",
       "confidence": 0.55,
       "category": "environment-detection",
@@ -1285,22 +1285,21 @@
       "examples": {
         "match": [
           "if (process.env.CURSOR_SANDBOX) exit(0)",
-          "process.env.CODESPACES && benign()",
-          "const id = process.env.REPL_ID",
-          "if (process.env[\"GITPOD_WORKSPACE_ID\"]) exit(0)"
+          "process.env.CURSOR_SANDBOX && evade()",
+          "const s = process.env[\"CURSOR_SANDBOX\"]"
         ],
         "no_match": [
           "process.env.PORT",
-          "const c = process.env",
-          "process.env[\"NODE_ENV\"]"
+          "process.env[\"NODE_ENV\"]",
+          "process.env.CODESPACES"
         ]
       }
     },
     {
       "id": "RD-CP-011",
       "type": "regex",
-      "pattern": "\\benviron\\.get\\s*\\(\\s*[\\\"'](?:CURSOR_SANDBOX|CODESPACES|GITPOD_WORKSPACE_ID|REPL_ID)[\\\"']|\\benviron\\s*\\[\\s*[\\\"'](?:CURSOR_SANDBOX|CODESPACES|GITPOD_WORKSPACE_ID|REPL_ID)[\\\"']\\s*\\]",
-      "title": "Sandbox-presence probing: os.environ sandbox marker",
+      "pattern": "\\benviron\\.get\\s*\\(\\s*[\\\"'](?:CURSOR_SANDBOX)[\\\"']|\\benviron\\s*\\[\\s*[\\\"'](?:CURSOR_SANDBOX)[\\\"']\\s*\\]",
+      "title": "Sandbox-presence probing: os.environ CURSOR_SANDBOX marker",
       "severity": "medium",
       "confidence": 0.55,
       "category": "environment-detection",
@@ -1308,22 +1307,21 @@
       "examples": {
         "match": [
           "os.environ.get('CURSOR_SANDBOX')",
-          "os.environ.get( \"CODESPACES\" )",
-          "os.environ['REPL_ID']",
-          "environ.get(\"GITPOD_WORKSPACE_ID\")"
+          "os.environ['CURSOR_SANDBOX']",
+          "environ.get(\"CURSOR_SANDBOX\")"
         ],
         "no_match": [
-          "os.environ.get('PATH')",
-          "os.environ.get('CI')",
-          "os.environ['HOME']"
+          "os.environ.get('PORT')",
+          "os.environ['HOME']",
+          "os.environ.get('CODESPACES')"
         ]
       }
     },
     {
       "id": "RD-CP-012",
       "type": "regex",
-      "pattern": "\\bgetenv\\s*\\(\\s*[\\\"'](?:CURSOR_SANDBOX|CODESPACES|GITPOD_WORKSPACE_ID|REPL_ID)[\\\"']",
-      "title": "Sandbox-presence probing: os.getenv sandbox marker",
+      "pattern": "\\bgetenv\\s*\\(\\s*[\\\"'](?:CURSOR_SANDBOX)[\\\"']",
+      "title": "Sandbox-presence probing: os.getenv CURSOR_SANDBOX marker",
       "severity": "medium",
       "confidence": 0.55,
       "category": "environment-detection",
@@ -1331,20 +1329,20 @@
       "examples": {
         "match": [
           "os.getenv('CURSOR_SANDBOX')",
-          "os.getenv( 'GITPOD_WORKSPACE_ID' )",
-          "getenv(\"REPL_ID\")"
+          "getenv(\"CURSOR_SANDBOX\")",
+          "os.getenv( 'CURSOR_SANDBOX' )"
         ],
         "no_match": [
-          "os.getenv('HOME')",
-          "os.getenv('GITHUB_ACTIONS')",
-          "getenv('PATH')"
+          "os.getenv('PATH')",
+          "getenv(\"HOME\")",
+          "os.getenv('CODESPACES')"
         ]
       }
     },
     {
       "id": "RD-CP-013",
       "type": "regex",
-      "pattern": "(?:(?:\\bif\\b|&&|\\|\\||\\bexit\\b|\\breturn\\b|\\?|\\bunless\\b|\\bassert\\b|\\bwhile\\b)[^\\n]*(?:(?:os\\.path\\.(?:exists|isfile|isdir)|os\\.l?stat|fs\\.(?:existsSync|statSync|lstatSync|accessSync)|existsSync|statSync)\\s*\\(\\s*[\\\"'`]?(?:/\\.dockerenv|/run/\\.containerenv)\\b|(?:test|\\[\\[?)\\s+-[a-zA-Z]\\s+(?:/\\.dockerenv|/run/\\.containerenv)\\b|\\bstat\\s+(?:/\\.dockerenv|/run/\\.containerenv)\\b)|(?:(?:os\\.path\\.(?:exists|isfile|isdir)|os\\.l?stat|fs\\.(?:existsSync|statSync|lstatSync|accessSync)|existsSync|statSync)\\s*\\(\\s*[\\\"'`]?(?:/\\.dockerenv|/run/\\.containerenv)\\b|(?:test|\\[\\[?)\\s+-[a-zA-Z]\\s+(?:/\\.dockerenv|/run/\\.containerenv)\\b|\\bstat\\s+(?:/\\.dockerenv|/run/\\.containerenv)\\b)[^\\n]*(?:&&|\\|\\||\\bexit\\b|\\breturn\\b|\\?|\\bunless\\b|\\bor\\b|\\band\\b))",
+      "pattern": "(?:(?:\\bif\\b|&&|\\|\\||\\bexit\\b|\\breturn\\b|\\?|\\bunless\\b|\\bassert\\b|\\bwhile\\b)[^\\n]{0,200}(?:(?:os\\.path\\.(?:exists|isfile|isdir)|os\\.l?stat|fs\\.(?:existsSync|statSync|lstatSync|accessSync)|existsSync|statSync)\\s*\\(\\s*[\\\"'`]?(?:/\\.dockerenv|/run/\\.containerenv)\\b|(?:test|\\[\\[?)\\s+-[a-zA-Z]\\s+(?:/\\.dockerenv|/run/\\.containerenv)\\b|\\bstat\\s+(?:/\\.dockerenv|/run/\\.containerenv)\\b)|(?:(?:os\\.path\\.(?:exists|isfile|isdir)|os\\.l?stat|fs\\.(?:existsSync|statSync|lstatSync|accessSync)|existsSync|statSync)\\s*\\(\\s*[\\\"'`]?(?:/\\.dockerenv|/run/\\.containerenv)\\b|(?:test|\\[\\[?)\\s+-[a-zA-Z]\\s+(?:/\\.dockerenv|/run/\\.containerenv)\\b|\\bstat\\s+(?:/\\.dockerenv|/run/\\.containerenv)\\b)[^\\n]{0,200}(?:&&|\\|\\||\\bexit\\b|\\breturn\\b|\\?|\\bunless\\b|\\bor\\b|\\band\\b))",
       "title": "Sandbox-presence probing: container artifact check gating behavior",
       "severity": "medium",
       "confidence": 0.55,
@@ -1391,8 +1389,8 @@
     {
       "id": "RD-CP-015",
       "type": "regex",
-      "pattern": "\\$(?:\\{(?:CURSOR_SANDBOX|CODESPACES|GITPOD_WORKSPACE_ID|REPL_ID)(?::[-=?+][^}]*)?\\}|(?:CURSOR_SANDBOX|CODESPACES|GITPOD_WORKSPACE_ID|REPL_ID)\\b)",
-      "title": "Sandbox-presence probing: shell sandbox marker reference",
+      "pattern": "\\$(?:\\{(?:CURSOR_SANDBOX)(?::[-=?+][^}]*)?\\}|(?:CURSOR_SANDBOX)\\b)",
+      "title": "Sandbox-presence probing: shell CURSOR_SANDBOX marker",
       "severity": "medium",
       "confidence": 0.55,
       "category": "environment-detection",
@@ -1400,12 +1398,101 @@
       "examples": {
         "match": [
           "[ -n \"$CURSOR_SANDBOX\" ] && exit 0",
-          "echo ${CODESPACES}",
+          "echo ${CURSOR_SANDBOX}",
+          "[ -n \"${CURSOR_SANDBOX:-}\" ] && exit 0"
+        ],
+        "no_match": [
+          "echo $HOME",
+          "echo ${PATH}",
+          "[ -n \"$CODESPACES\" ] && true"
+        ]
+      }
+    },
+    {
+      "id": "RD-CP-016",
+      "type": "regex",
+      "pattern": "process\\.env\\.(?:CODESPACES|GITPOD_WORKSPACE_ID|REPL_ID)\\b|process\\.env\\s*\\[\\s*[\\\"'](?:CODESPACES|GITPOD_WORKSPACE_ID|REPL_ID)[\\\"']\\s*\\]",
+      "title": "Cloud-IDE-presence check: process.env cloud-IDE marker",
+      "severity": "low",
+      "confidence": 0.4,
+      "category": "cloud-ide-detection",
+      "explanation": "Cloud-IDE presence check (CODESPACES/GITPOD/REPL). Common in legitimate dev tooling; low-severity signal only.",
+      "examples": {
+        "match": [
+          "if (process.env.CODESPACES) forwardPort()",
+          "const id = process.env.REPL_ID",
+          "if (process.env[\"GITPOD_WORKSPACE_ID\"]) hint()"
+        ],
+        "no_match": [
+          "process.env.PORT",
+          "process.env[\"NODE_ENV\"]",
+          "process.env.CURSOR_SANDBOX"
+        ]
+      }
+    },
+    {
+      "id": "RD-CP-017",
+      "type": "regex",
+      "pattern": "\\benviron\\.get\\s*\\(\\s*[\\\"'](?:CODESPACES|GITPOD_WORKSPACE_ID|REPL_ID)[\\\"']|\\benviron\\s*\\[\\s*[\\\"'](?:CODESPACES|GITPOD_WORKSPACE_ID|REPL_ID)[\\\"']\\s*\\]",
+      "title": "Cloud-IDE-presence check: os.environ cloud-IDE marker",
+      "severity": "low",
+      "confidence": 0.4,
+      "category": "cloud-ide-detection",
+      "explanation": "Cloud-IDE presence check (CODESPACES/GITPOD/REPL). Common in legitimate dev tooling; low-severity signal only.",
+      "examples": {
+        "match": [
+          "os.environ.get('CODESPACES')",
+          "os.environ['REPL_ID']",
+          "environ.get(\"GITPOD_WORKSPACE_ID\")"
+        ],
+        "no_match": [
+          "os.environ.get('PORT')",
+          "os.environ['HOME']",
+          "os.environ.get('CURSOR_SANDBOX')"
+        ]
+      }
+    },
+    {
+      "id": "RD-CP-018",
+      "type": "regex",
+      "pattern": "\\bgetenv\\s*\\(\\s*[\\\"'](?:CODESPACES|GITPOD_WORKSPACE_ID|REPL_ID)[\\\"']",
+      "title": "Cloud-IDE-presence check: os.getenv cloud-IDE marker",
+      "severity": "low",
+      "confidence": 0.4,
+      "category": "cloud-ide-detection",
+      "explanation": "Cloud-IDE presence check (CODESPACES/GITPOD/REPL). Common in legitimate dev tooling; low-severity signal only.",
+      "examples": {
+        "match": [
+          "os.getenv('CODESPACES')",
+          "getenv(\"REPL_ID\")",
+          "os.getenv( 'GITPOD_WORKSPACE_ID' )"
+        ],
+        "no_match": [
+          "os.getenv('PATH')",
+          "getenv(\"HOME\")",
+          "os.getenv('CURSOR_SANDBOX')"
+        ]
+      }
+    },
+    {
+      "id": "RD-CP-019",
+      "type": "regex",
+      "pattern": "\\$(?:\\{(?:CODESPACES|GITPOD_WORKSPACE_ID|REPL_ID)(?::[-=?+][^}]*)?\\}|(?:CODESPACES|GITPOD_WORKSPACE_ID|REPL_ID)\\b)",
+      "title": "Cloud-IDE-presence check: shell cloud-IDE marker",
+      "severity": "low",
+      "confidence": 0.4,
+      "category": "cloud-ide-detection",
+      "explanation": "Cloud-IDE presence check (CODESPACES/GITPOD/REPL). Common in legitimate dev tooling; low-severity signal only.",
+      "examples": {
+        "match": [
+          "[ -n \"$CODESPACES\" ] && exit 0",
+          "echo ${REPL_ID}",
           "[ -n \"${GITPOD_WORKSPACE_ID:-}\" ] && exit 0"
         ],
         "no_match": [
           "echo $HOME",
-          "echo ${PATH:-/usr/bin}"
+          "echo ${PATH}",
+          "[ -n \"$CURSOR_SANDBOX\" ] && true"
         ]
       }
     }

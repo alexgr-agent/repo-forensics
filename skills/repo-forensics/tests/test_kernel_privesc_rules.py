@@ -167,8 +167,15 @@ class TestCapabilityPython:
         findings = _scan_py(tmp_path, "capset(hdrp, datap)\n")
         assert "SA-PY-029" in _rule_ids(findings)
 
-    def test_prctl_capbset(self, tmp_path):
+    def test_prctl_capbset_drop_is_benign(self, tmp_path):
+        # PR_CAPBSET_DROP drops a capability from the bounding set -- a hardening
+        # primitive, not privilege escalation. Carved out (PR #44 review).
         findings = _scan_py(tmp_path, "libc.prctl(PR_CAPBSET_DROP, 19, 0, 0, 0)\n")
+        assert "SA-PY-029" not in _rule_ids(findings)
+
+    def test_prctl_cap_ambient_raise(self, tmp_path):
+        # Raising an ambient capability is still flagged (PR_CAP*, not the DROP).
+        findings = _scan_py(tmp_path, "prctl(PR_CAP_AMBIENT_RAISE, 21, 0, 0)\n")
         assert "SA-PY-029" in _rule_ids(findings)
 
     def test_libcap_binding(self, tmp_path):
@@ -272,12 +279,25 @@ class TestCapabilityShell:
         assert "SA-SH-023" in _rule_ids(findings)
 
     def test_capsh(self, tmp_path):
-        findings = _scan_sh(tmp_path, "capsh --drop=cap_setpcap -- -c id\n")
+        # A capsh that grants/uses caps still fires; `capsh --drop=` (dropping a
+        # capability) is a hardening idiom and is carved out below.
+        findings = _scan_sh(tmp_path, "capsh --caps=cap_setuid+eip -- -c id\n")
         assert "SA-SH-023" in _rule_ids(findings)
+
+    def test_capsh_drop_is_benign(self, tmp_path):
+        findings = _scan_sh(tmp_path, "capsh --drop=cap_setpcap -- -c ./server\n")
+        assert "SA-SH-023" not in _rule_ids(findings)
 
     def test_setpriv(self, tmp_path):
         findings = _scan_sh(tmp_path, "setpriv --reuid 0 bash\n")
         assert "SA-SH-023" in _rule_ids(findings)
+
+    def test_setpriv_privilege_drop_is_benign(self, tmp_path):
+        # The standard container privilege-drop / hardening invocation.
+        findings = _scan_sh(
+            tmp_path,
+            'exec setpriv --reuid=app --regid=app --clear-groups --no-new-privs "$@"\n')
+        assert "SA-SH-023" not in _rule_ids(findings)
 
     def test_getcap_negative(self, tmp_path):
         findings = _scan_sh(tmp_path, "getcap /usr/bin/ping\n")
@@ -314,12 +334,12 @@ class TestSharedRootChain:
         ids = _rule_ids(findings)
         assert {"SA-SH-020", "SA-SH-021", "SA-SH-022", "SA-SH-023"} <= ids
         ours = [f for f in findings if f.rule_id and f.rule_id.startswith("SA-SH-02")]
-        # Exploit-shaped primitives are critical; the modprobe line also fires
-        # the demoted dual-use module-load rule at high (and SA-SH-021 at
-        # critical via act_pedit).
+        # PR #44 review: these dual-use kernel primitives are graded `high`
+        # (a warn/report signal), not `critical` (a hard install block), since
+        # each also appears in legitimate container/ops tooling. Criticality is
+        # reserved for a compound of them, not any one line.
         for f in ours:
-            expected = "high" if f.rule_id == "SA-SH-022" else "critical"
-            assert f.severity == expected, (f.rule_id, f.severity)
+            assert f.severity == "high", (f.rule_id, f.severity)
 
 
 class TestExtensionGating:

@@ -1,5 +1,117 @@
 [
   [
+    "Cloud-IDE-presence check: os.environ cloud-IDE marker",
+    "low",
+    "RD-CP-011.py",
+    6,
+    "cloud-ide-detection"
+  ],
+  [
+    "Cloud-IDE-presence check: os.environ cloud-IDE marker",
+    "low",
+    "RD-CP-017.py",
+    1,
+    "cloud-ide-detection"
+  ],
+  [
+    "Cloud-IDE-presence check: os.environ cloud-IDE marker",
+    "low",
+    "RD-CP-017.py",
+    2,
+    "cloud-ide-detection"
+  ],
+  [
+    "Cloud-IDE-presence check: os.environ cloud-IDE marker",
+    "low",
+    "RD-CP-017.py",
+    3,
+    "cloud-ide-detection"
+  ],
+  [
+    "Cloud-IDE-presence check: os.getenv cloud-IDE marker",
+    "low",
+    "RD-CP-012.py",
+    6,
+    "cloud-ide-detection"
+  ],
+  [
+    "Cloud-IDE-presence check: os.getenv cloud-IDE marker",
+    "low",
+    "RD-CP-018.py",
+    1,
+    "cloud-ide-detection"
+  ],
+  [
+    "Cloud-IDE-presence check: os.getenv cloud-IDE marker",
+    "low",
+    "RD-CP-018.py",
+    2,
+    "cloud-ide-detection"
+  ],
+  [
+    "Cloud-IDE-presence check: os.getenv cloud-IDE marker",
+    "low",
+    "RD-CP-018.py",
+    3,
+    "cloud-ide-detection"
+  ],
+  [
+    "Cloud-IDE-presence check: process.env cloud-IDE marker",
+    "low",
+    "RD-CP-010.py",
+    6,
+    "cloud-ide-detection"
+  ],
+  [
+    "Cloud-IDE-presence check: process.env cloud-IDE marker",
+    "low",
+    "RD-CP-016.py",
+    1,
+    "cloud-ide-detection"
+  ],
+  [
+    "Cloud-IDE-presence check: process.env cloud-IDE marker",
+    "low",
+    "RD-CP-016.py",
+    2,
+    "cloud-ide-detection"
+  ],
+  [
+    "Cloud-IDE-presence check: process.env cloud-IDE marker",
+    "low",
+    "RD-CP-016.py",
+    3,
+    "cloud-ide-detection"
+  ],
+  [
+    "Cloud-IDE-presence check: shell cloud-IDE marker",
+    "low",
+    "RD-CP-015.py",
+    6,
+    "cloud-ide-detection"
+  ],
+  [
+    "Cloud-IDE-presence check: shell cloud-IDE marker",
+    "low",
+    "RD-CP-019.py",
+    1,
+    "cloud-ide-detection"
+  ],
+  [
+    "Cloud-IDE-presence check: shell cloud-IDE marker",
+    "low",
+    "RD-CP-019.py",
+    2,
+    "cloud-ide-detection"
+  ],
+  [
+    "Cloud-IDE-presence check: shell cloud-IDE marker",
+    "low",
+    "RD-CP-019.py",
+    3,
+    "cloud-ide-detection"
+  ],
+  [
     "Counter-based activation threshold",
     "medium",
     "RD-TB-007.py",
@@ -112,689 +224,689 @@
     "environment-detection"
   ],
   [
-    "Environment-aware activation: os.environ.get('CI')",
+    "Environment-aware activation: os.environ.get('GITHUB_ACTIONS')",
     "medium",
-    "RD-CP-011.py",
+    "RD-CP-008.py",
+    1,
+    "environment-detection"
+  ],
+  [
+    "Environment-aware activation: os.environ.get('GITHUB_ACTIONS')",
+    "medium",
+    "RD-CP-008.py",
+    2,
+    "environment-detection"
+  ],
+  [
+    "Environment-aware activation: os.environ.get('GITHUB_ACTIONS')",
+    "medium",
+    "RD-CP-008.py",
+    3,
+    "environment-detection"
+  ],
+  [
+    "Environment-aware activation: os.environ.get('GITHUB_ACTIONS')",
+    "medium",
+    "RD-CP-009.py",
+    5,
+    "environment-detection"
+  ],
+  [
+    "Environment-aware activation: os.getenv('CI')",
+    "medium",
+    "RD-CP-006.py",
+    5,
+    "environment-detection"
+  ],
+  [
+    "Environment-aware activation: os.getenv('CI')",
+    "medium",
+    "RD-CP-007.py",
+    1,
+    "environment-detection"
+  ],
+  [
+    "Environment-aware activation: os.getenv('CI')",
+    "medium",
+    "RD-CP-007.py",
+    2,
+    "environment-detection"
+  ],
+  [
+    "Environment-aware activation: os.getenv('CI')",
+    "medium",
+    "RD-CP-007.py",
+    3,
+    "environment-detection"
+  ],
+  [
+    "Environment-aware activation: os.getenv('GITHUB_ACTIONS')",
+    "medium",
+    "RD-CP-008.py",
+    5,
+    "environment-detection"
+  ],
+  [
+    "Environment-aware activation: os.getenv('GITHUB_ACTIONS')",
+    "medium",
+    "RD-CP-009.py",
+    1,
+    "environment-detection"
+  ],
+  [
+    "Environment-aware activation: os.getenv('GITHUB_ACTIONS')",
+    "medium",
+    "RD-CP-009.py",
+    2,
+    "environment-detection"
+  ],
+  [
+    "Environment-aware activation: os.getenv('GITHUB_ACTIONS')",
+    "medium",
+    "RD-CP-009.py",
+    3,
+    "environment-detection"
+  ],
+  [
+    "Environment-aware activation: process.env.CI conditional",
+    "medium",
+    "RD-CP-004.py",
+    1,
+    "environment-detection"
+  ],
+  [
+    "Environment-aware activation: process.env.CI conditional",
+    "medium",
+    "RD-CP-004.py",
+    2,
+    "environment-detection"
+  ],
+  [
+    "Environment-aware activation: process.env.CI conditional",
+    "medium",
+    "RD-CP-004.py",
+    3,
+    "environment-detection"
+  ],
+  [
+    "Environment-aware activation: process.env.GITHUB_ACTIONS conditional",
+    "medium",
+    "RD-CP-005.py",
+    1,
+    "environment-detection"
+  ],
+  [
+    "Environment-aware activation: process.env.GITHUB_ACTIONS conditional",
+    "medium",
+    "RD-CP-005.py",
+    2,
+    "environment-detection"
+  ],
+  [
+    "Environment-aware activation: process.env.GITHUB_ACTIONS conditional",
+    "medium",
+    "RD-CP-005.py",
+    3,
+    "environment-detection"
+  ],
+  [
+    "HTTP fetch piped to eval()",
+    "critical",
+    "RD-FEX-003.py",
+    1,
+    "fetch-execute"
+  ],
+  [
+    "HTTP fetch piped to eval()",
+    "critical",
+    "RD-FEX-003.py",
+    2,
+    "fetch-execute"
+  ],
+  [
+    "HTTP fetch piped to eval()",
+    "critical",
+    "RD-FEX-003.py",
+    3,
+    "fetch-execute"
+  ],
+  [
+    "HTTP fetch piped to exec()",
+    "critical",
+    "RD-FEX-004.py",
+    1,
+    "fetch-execute"
+  ],
+  [
+    "HTTP fetch piped to exec()",
+    "critical",
+    "RD-FEX-004.py",
+    2,
+    "fetch-execute"
+  ],
+  [
+    "HTTP fetch piped to exec()",
+    "critical",
+    "RD-FEX-004.py",
+    3,
+    "fetch-execute"
+  ],
+  [
+    "HTTP response stored to variable (check for subsequent exec)",
+    "critical",
+    "RD-FEX-007.py",
+    1,
+    "fetch-execute"
+  ],
+  [
+    "HTTP response stored to variable (check for subsequent exec)",
+    "critical",
+    "RD-FEX-007.py",
+    2,
+    "fetch-execute"
+  ],
+  [
+    "HTTP response stored to variable (check for subsequent exec)",
+    "critical",
+    "RD-FEX-007.py",
+    3,
+    "fetch-execute"
+  ],
+  [
+    "Hardcoded future datetime comparison (potential time bomb)",
+    "medium",
+    "RD-TB-001.py",
+    1,
+    "time-bomb"
+  ],
+  [
+    "Hardcoded future datetime comparison (potential time bomb)",
+    "medium",
+    "RD-TB-001.py",
+    2,
+    "time-bomb"
+  ],
+  [
+    "Hardcoded future datetime comparison (potential time bomb)",
+    "medium",
+    "RD-TB-001.py",
+    3,
+    "time-bomb"
+  ],
+  [
+    "Locale gating: $LANG/$LC shell variable",
+    "medium",
+    "RD-LOC-008.py",
+    1,
+    "locale-gating"
+  ],
+  [
+    "Locale gating: $LANG/$LC shell variable",
+    "medium",
+    "RD-LOC-008.py",
+    2,
+    "locale-gating"
+  ],
+  [
+    "Locale gating: $LANG/$LC shell variable",
+    "medium",
+    "RD-LOC-008.py",
+    3,
+    "locale-gating"
+  ],
+  [
+    "Locale gating: GeoIP lookup",
+    "medium",
+    "RD-LOC-009.py",
+    1,
+    "locale-gating"
+  ],
+  [
+    "Locale gating: GeoIP lookup",
+    "medium",
+    "RD-LOC-009.py",
+    2,
+    "locale-gating"
+  ],
+  [
+    "Locale gating: GeoIP lookup",
+    "medium",
+    "RD-LOC-009.py",
+    3,
+    "locale-gating"
+  ],
+  [
+    "Locale gating: Intl locale resolution",
+    "medium",
+    "RD-LOC-007.py",
+    1,
+    "locale-gating"
+  ],
+  [
+    "Locale gating: Intl locale resolution",
+    "medium",
+    "RD-LOC-007.py",
+    2,
+    "locale-gating"
+  ],
+  [
+    "Locale gating: Intl locale resolution",
+    "medium",
+    "RD-LOC-007.py",
+    3,
+    "locale-gating"
+  ],
+  [
+    "Locale gating: country code reference",
+    "medium",
+    "RD-LOC-010.py",
+    1,
+    "locale-gating"
+  ],
+  [
+    "Locale gating: country code reference",
+    "medium",
+    "RD-LOC-010.py",
+    2,
+    "locale-gating"
+  ],
+  [
+    "Locale gating: country code reference",
+    "medium",
+    "RD-LOC-010.py",
+    3,
+    "locale-gating"
+  ],
+  [
+    "Locale gating: locale.getdefaultlocale()",
+    "medium",
+    "RD-LOC-001.py",
+    1,
+    "locale-gating"
+  ],
+  [
+    "Locale gating: locale.getdefaultlocale()",
+    "medium",
+    "RD-LOC-001.py",
+    2,
+    "locale-gating"
+  ],
+  [
+    "Locale gating: locale.getdefaultlocale()",
+    "medium",
+    "RD-LOC-001.py",
+    3,
+    "locale-gating"
+  ],
+  [
+    "Locale gating: locale.getlocale()",
+    "medium",
+    "RD-LOC-002.py",
+    1,
+    "locale-gating"
+  ],
+  [
+    "Locale gating: locale.getlocale()",
+    "medium",
+    "RD-LOC-002.py",
+    2,
+    "locale-gating"
+  ],
+  [
+    "Locale gating: locale.getlocale()",
+    "medium",
+    "RD-LOC-002.py",
+    3,
+    "locale-gating"
+  ],
+  [
+    "Locale gating: navigator.language",
+    "medium",
+    "RD-LOC-005.py",
+    1,
+    "locale-gating"
+  ],
+  [
+    "Locale gating: navigator.language",
+    "medium",
+    "RD-LOC-005.py",
+    2,
+    "locale-gating"
+  ],
+  [
+    "Locale gating: navigator.language",
+    "medium",
+    "RD-LOC-005.py",
+    3,
+    "locale-gating"
+  ],
+  [
+    "Locale gating: navigator.languages",
+    "medium",
+    "RD-LOC-006.py",
+    1,
+    "locale-gating"
+  ],
+  [
+    "Locale gating: navigator.languages",
+    "medium",
+    "RD-LOC-006.py",
+    2,
+    "locale-gating"
+  ],
+  [
+    "Locale gating: navigator.languages",
+    "medium",
+    "RD-LOC-006.py",
+    3,
+    "locale-gating"
+  ],
+  [
+    "Locale gating: os.environ LANG/LC variable",
+    "medium",
+    "RD-LOC-003.py",
+    1,
+    "locale-gating"
+  ],
+  [
+    "Locale gating: os.environ LANG/LC variable",
+    "medium",
+    "RD-LOC-003.py",
+    2,
+    "locale-gating"
+  ],
+  [
+    "Locale gating: os.environ LANG/LC variable",
+    "medium",
+    "RD-LOC-003.py",
+    3,
+    "locale-gating"
+  ],
+  [
+    "Locale gating: os.getenv LANG/LC variable",
+    "medium",
+    "RD-LOC-004.py",
+    1,
+    "locale-gating"
+  ],
+  [
+    "Locale gating: os.getenv LANG/LC variable",
+    "medium",
+    "RD-LOC-004.py",
+    2,
+    "locale-gating"
+  ],
+  [
+    "Locale gating: os.getenv LANG/LC variable",
+    "medium",
+    "RD-LOC-004.py",
+    3,
+    "locale-gating"
+  ],
+  [
+    "Probabilistic activation: Math.random() threshold gate",
+    "high",
+    "RD-CP-001.py",
+    4,
+    "probabilistic-activation"
+  ],
+  [
+    "Probabilistic activation: Math.random() threshold gate",
+    "high",
+    "RD-CP-002.py",
+    1,
+    "probabilistic-activation"
+  ],
+  [
+    "Probabilistic activation: Math.random() threshold gate",
+    "high",
+    "RD-CP-002.py",
+    2,
+    "probabilistic-activation"
+  ],
+  [
+    "Probabilistic activation: Math.random() threshold gate",
+    "high",
+    "RD-CP-002.py",
+    3,
+    "probabilistic-activation"
+  ],
+  [
+    "Probabilistic activation: Math.random() threshold with code execution",
+    "high",
+    "RD-CP-001.py",
+    1,
+    "probabilistic-activation"
+  ],
+  [
+    "Probabilistic activation: Math.random() threshold with code execution",
+    "high",
+    "RD-CP-001.py",
+    2,
+    "probabilistic-activation"
+  ],
+  [
+    "Probabilistic activation: Math.random() threshold with code execution",
+    "high",
+    "RD-CP-001.py",
+    3,
+    "probabilistic-activation"
+  ],
+  [
+    "Probabilistic activation: random.random() threshold gate",
+    "high",
+    "RD-CP-003.py",
+    1,
+    "probabilistic-activation"
+  ],
+  [
+    "Probabilistic activation: random.random() threshold gate",
+    "high",
+    "RD-CP-003.py",
+    2,
+    "probabilistic-activation"
+  ],
+  [
+    "Probabilistic activation: random.random() threshold gate",
+    "high",
+    "RD-CP-003.py",
+    3,
+    "probabilistic-activation"
+  ],
+  [
+    "Probabilistic activation: random.random() threshold gate",
+    "high",
+    "RD-TB-008.py",
+    1,
+    "probabilistic-activation"
+  ],
+  [
+    "Probabilistic activation: random.random() threshold gate",
+    "high",
+    "RD-TB-008.py",
+    3,
+    "probabilistic-activation"
+  ],
+  [
+    "Probabilistic activation: random.random() threshold gate",
+    "high",
+    "RD-TB-008.py",
+    4,
+    "probabilistic-activation"
+  ],
+  [
+    "Probabilistic trigger with code execution",
+    "medium",
+    "RD-TB-008.py",
+    1,
+    "time-bomb"
+  ],
+  [
+    "Probabilistic trigger with code execution",
+    "medium",
+    "RD-TB-008.py",
+    2,
+    "time-bomb"
+  ],
+  [
+    "Probabilistic trigger with code execution",
+    "medium",
+    "RD-TB-008.py",
+    3,
+    "time-bomb"
+  ],
+  [
+    "Sandbox-presence probing: container artifact check gating behavior",
+    "medium",
+    "RD-CP-013.py",
+    1,
+    "environment-detection"
+  ],
+  [
+    "Sandbox-presence probing: container artifact check gating behavior",
+    "medium",
+    "RD-CP-013.py",
+    2,
+    "environment-detection"
+  ],
+  [
+    "Sandbox-presence probing: container artifact check gating behavior",
+    "medium",
+    "RD-CP-013.py",
+    3,
+    "environment-detection"
+  ],
+  [
+    "Sandbox-presence probing: container artifact check gating behavior",
+    "medium",
+    "RD-CP-013.py",
+    4,
+    "environment-detection"
+  ],
+  [
+    "Sandbox-presence probing: container artifact check gating behavior",
+    "medium",
+    "RD-CP-013.py",
+    5,
+    "environment-detection"
+  ],
+  [
+    "Sandbox-presence probing: container artifact check gating behavior",
+    "medium",
+    "RD-CP-013.py",
     6,
     "environment-detection"
   ],
   [
-    "Environment-aware activation: os.environ.get('GITHUB_ACTIONS')",
+    "Sandbox-presence probing: os.environ CURSOR_SANDBOX marker",
     "medium",
-    "RD-CP-008.py",
+    "RD-CP-011.py",
     1,
     "environment-detection"
   ],
   [
-    "Environment-aware activation: os.environ.get('GITHUB_ACTIONS')",
+    "Sandbox-presence probing: os.environ CURSOR_SANDBOX marker",
     "medium",
-    "RD-CP-008.py",
+    "RD-CP-011.py",
     2,
     "environment-detection"
   ],
   [
-    "Environment-aware activation: os.environ.get('GITHUB_ACTIONS')",
+    "Sandbox-presence probing: os.environ CURSOR_SANDBOX marker",
     "medium",
-    "RD-CP-008.py",
+    "RD-CP-011.py",
     3,
     "environment-detection"
   ],
   [
-    "Environment-aware activation: os.environ.get('GITHUB_ACTIONS')",
+    "Sandbox-presence probing: os.environ CURSOR_SANDBOX marker",
     "medium",
-    "RD-CP-009.py",
-    5,
-    "environment-detection"
-  ],
-  [
-    "Environment-aware activation: os.getenv('CI')",
-    "medium",
-    "RD-CP-006.py",
-    5,
-    "environment-detection"
-  ],
-  [
-    "Environment-aware activation: os.getenv('CI')",
-    "medium",
-    "RD-CP-007.py",
-    1,
-    "environment-detection"
-  ],
-  [
-    "Environment-aware activation: os.getenv('CI')",
-    "medium",
-    "RD-CP-007.py",
-    2,
-    "environment-detection"
-  ],
-  [
-    "Environment-aware activation: os.getenv('CI')",
-    "medium",
-    "RD-CP-007.py",
-    3,
-    "environment-detection"
-  ],
-  [
-    "Environment-aware activation: os.getenv('GITHUB_ACTIONS')",
-    "medium",
-    "RD-CP-008.py",
-    5,
-    "environment-detection"
-  ],
-  [
-    "Environment-aware activation: os.getenv('GITHUB_ACTIONS')",
-    "medium",
-    "RD-CP-009.py",
-    1,
-    "environment-detection"
-  ],
-  [
-    "Environment-aware activation: os.getenv('GITHUB_ACTIONS')",
-    "medium",
-    "RD-CP-009.py",
-    2,
-    "environment-detection"
-  ],
-  [
-    "Environment-aware activation: os.getenv('GITHUB_ACTIONS')",
-    "medium",
-    "RD-CP-009.py",
-    3,
-    "environment-detection"
-  ],
-  [
-    "Environment-aware activation: os.getenv('GITHUB_ACTIONS')",
-    "medium",
-    "RD-CP-012.py",
-    5,
-    "environment-detection"
-  ],
-  [
-    "Environment-aware activation: process.env.CI conditional",
-    "medium",
-    "RD-CP-004.py",
-    1,
-    "environment-detection"
-  ],
-  [
-    "Environment-aware activation: process.env.CI conditional",
-    "medium",
-    "RD-CP-004.py",
-    2,
-    "environment-detection"
-  ],
-  [
-    "Environment-aware activation: process.env.CI conditional",
-    "medium",
-    "RD-CP-004.py",
-    3,
-    "environment-detection"
-  ],
-  [
-    "Environment-aware activation: process.env.GITHUB_ACTIONS conditional",
-    "medium",
-    "RD-CP-005.py",
-    1,
-    "environment-detection"
-  ],
-  [
-    "Environment-aware activation: process.env.GITHUB_ACTIONS conditional",
-    "medium",
-    "RD-CP-005.py",
-    2,
-    "environment-detection"
-  ],
-  [
-    "Environment-aware activation: process.env.GITHUB_ACTIONS conditional",
-    "medium",
-    "RD-CP-005.py",
-    3,
-    "environment-detection"
-  ],
-  [
-    "HTTP fetch piped to eval()",
-    "critical",
-    "RD-FEX-003.py",
-    1,
-    "fetch-execute"
-  ],
-  [
-    "HTTP fetch piped to eval()",
-    "critical",
-    "RD-FEX-003.py",
-    2,
-    "fetch-execute"
-  ],
-  [
-    "HTTP fetch piped to eval()",
-    "critical",
-    "RD-FEX-003.py",
-    3,
-    "fetch-execute"
-  ],
-  [
-    "HTTP fetch piped to exec()",
-    "critical",
-    "RD-FEX-004.py",
-    1,
-    "fetch-execute"
-  ],
-  [
-    "HTTP fetch piped to exec()",
-    "critical",
-    "RD-FEX-004.py",
-    2,
-    "fetch-execute"
-  ],
-  [
-    "HTTP fetch piped to exec()",
-    "critical",
-    "RD-FEX-004.py",
-    3,
-    "fetch-execute"
-  ],
-  [
-    "HTTP response stored to variable (check for subsequent exec)",
-    "critical",
-    "RD-FEX-007.py",
-    1,
-    "fetch-execute"
-  ],
-  [
-    "HTTP response stored to variable (check for subsequent exec)",
-    "critical",
-    "RD-FEX-007.py",
-    2,
-    "fetch-execute"
-  ],
-  [
-    "HTTP response stored to variable (check for subsequent exec)",
-    "critical",
-    "RD-FEX-007.py",
-    3,
-    "fetch-execute"
-  ],
-  [
-    "Hardcoded future datetime comparison (potential time bomb)",
-    "medium",
-    "RD-TB-001.py",
-    1,
-    "time-bomb"
-  ],
-  [
-    "Hardcoded future datetime comparison (potential time bomb)",
-    "medium",
-    "RD-TB-001.py",
-    2,
-    "time-bomb"
-  ],
-  [
-    "Hardcoded future datetime comparison (potential time bomb)",
-    "medium",
-    "RD-TB-001.py",
-    3,
-    "time-bomb"
-  ],
-  [
-    "Locale gating: $LANG/$LC shell variable",
-    "medium",
-    "RD-LOC-008.py",
-    1,
-    "locale-gating"
-  ],
-  [
-    "Locale gating: $LANG/$LC shell variable",
-    "medium",
-    "RD-LOC-008.py",
-    2,
-    "locale-gating"
-  ],
-  [
-    "Locale gating: $LANG/$LC shell variable",
-    "medium",
-    "RD-LOC-008.py",
-    3,
-    "locale-gating"
-  ],
-  [
-    "Locale gating: GeoIP lookup",
-    "medium",
-    "RD-LOC-009.py",
-    1,
-    "locale-gating"
-  ],
-  [
-    "Locale gating: GeoIP lookup",
-    "medium",
-    "RD-LOC-009.py",
-    2,
-    "locale-gating"
-  ],
-  [
-    "Locale gating: GeoIP lookup",
-    "medium",
-    "RD-LOC-009.py",
-    3,
-    "locale-gating"
-  ],
-  [
-    "Locale gating: Intl locale resolution",
-    "medium",
-    "RD-LOC-007.py",
-    1,
-    "locale-gating"
-  ],
-  [
-    "Locale gating: Intl locale resolution",
-    "medium",
-    "RD-LOC-007.py",
-    2,
-    "locale-gating"
-  ],
-  [
-    "Locale gating: Intl locale resolution",
-    "medium",
-    "RD-LOC-007.py",
-    3,
-    "locale-gating"
-  ],
-  [
-    "Locale gating: country code reference",
-    "medium",
-    "RD-LOC-010.py",
-    1,
-    "locale-gating"
-  ],
-  [
-    "Locale gating: country code reference",
-    "medium",
-    "RD-LOC-010.py",
-    2,
-    "locale-gating"
-  ],
-  [
-    "Locale gating: country code reference",
-    "medium",
-    "RD-LOC-010.py",
-    3,
-    "locale-gating"
-  ],
-  [
-    "Locale gating: locale.getdefaultlocale()",
-    "medium",
-    "RD-LOC-001.py",
-    1,
-    "locale-gating"
-  ],
-  [
-    "Locale gating: locale.getdefaultlocale()",
-    "medium",
-    "RD-LOC-001.py",
-    2,
-    "locale-gating"
-  ],
-  [
-    "Locale gating: locale.getdefaultlocale()",
-    "medium",
-    "RD-LOC-001.py",
-    3,
-    "locale-gating"
-  ],
-  [
-    "Locale gating: locale.getlocale()",
-    "medium",
-    "RD-LOC-002.py",
-    1,
-    "locale-gating"
-  ],
-  [
-    "Locale gating: locale.getlocale()",
-    "medium",
-    "RD-LOC-002.py",
-    2,
-    "locale-gating"
-  ],
-  [
-    "Locale gating: locale.getlocale()",
-    "medium",
-    "RD-LOC-002.py",
-    3,
-    "locale-gating"
-  ],
-  [
-    "Locale gating: navigator.language",
-    "medium",
-    "RD-LOC-005.py",
-    1,
-    "locale-gating"
-  ],
-  [
-    "Locale gating: navigator.language",
-    "medium",
-    "RD-LOC-005.py",
-    2,
-    "locale-gating"
-  ],
-  [
-    "Locale gating: navigator.language",
-    "medium",
-    "RD-LOC-005.py",
-    3,
-    "locale-gating"
-  ],
-  [
-    "Locale gating: navigator.languages",
-    "medium",
-    "RD-LOC-006.py",
-    1,
-    "locale-gating"
-  ],
-  [
-    "Locale gating: navigator.languages",
-    "medium",
-    "RD-LOC-006.py",
-    2,
-    "locale-gating"
-  ],
-  [
-    "Locale gating: navigator.languages",
-    "medium",
-    "RD-LOC-006.py",
-    3,
-    "locale-gating"
-  ],
-  [
-    "Locale gating: os.environ LANG/LC variable",
-    "medium",
-    "RD-LOC-003.py",
-    1,
-    "locale-gating"
-  ],
-  [
-    "Locale gating: os.environ LANG/LC variable",
-    "medium",
-    "RD-LOC-003.py",
-    2,
-    "locale-gating"
-  ],
-  [
-    "Locale gating: os.environ LANG/LC variable",
-    "medium",
-    "RD-LOC-003.py",
-    3,
-    "locale-gating"
-  ],
-  [
-    "Locale gating: os.getenv LANG/LC variable",
-    "medium",
-    "RD-LOC-004.py",
-    1,
-    "locale-gating"
-  ],
-  [
-    "Locale gating: os.getenv LANG/LC variable",
-    "medium",
-    "RD-LOC-004.py",
-    2,
-    "locale-gating"
-  ],
-  [
-    "Locale gating: os.getenv LANG/LC variable",
-    "medium",
-    "RD-LOC-004.py",
-    3,
-    "locale-gating"
-  ],
-  [
-    "Probabilistic activation: Math.random() threshold gate",
-    "high",
-    "RD-CP-001.py",
-    4,
-    "probabilistic-activation"
-  ],
-  [
-    "Probabilistic activation: Math.random() threshold gate",
-    "high",
-    "RD-CP-002.py",
-    1,
-    "probabilistic-activation"
-  ],
-  [
-    "Probabilistic activation: Math.random() threshold gate",
-    "high",
-    "RD-CP-002.py",
-    2,
-    "probabilistic-activation"
-  ],
-  [
-    "Probabilistic activation: Math.random() threshold gate",
-    "high",
-    "RD-CP-002.py",
-    3,
-    "probabilistic-activation"
-  ],
-  [
-    "Probabilistic activation: Math.random() threshold with code execution",
-    "high",
-    "RD-CP-001.py",
-    1,
-    "probabilistic-activation"
-  ],
-  [
-    "Probabilistic activation: Math.random() threshold with code execution",
-    "high",
-    "RD-CP-001.py",
-    2,
-    "probabilistic-activation"
-  ],
-  [
-    "Probabilistic activation: Math.random() threshold with code execution",
-    "high",
-    "RD-CP-001.py",
-    3,
-    "probabilistic-activation"
-  ],
-  [
-    "Probabilistic activation: random.random() threshold gate",
-    "high",
-    "RD-CP-003.py",
-    1,
-    "probabilistic-activation"
-  ],
-  [
-    "Probabilistic activation: random.random() threshold gate",
-    "high",
-    "RD-CP-003.py",
-    2,
-    "probabilistic-activation"
-  ],
-  [
-    "Probabilistic activation: random.random() threshold gate",
-    "high",
-    "RD-CP-003.py",
-    3,
-    "probabilistic-activation"
-  ],
-  [
-    "Probabilistic activation: random.random() threshold gate",
-    "high",
-    "RD-TB-008.py",
-    1,
-    "probabilistic-activation"
-  ],
-  [
-    "Probabilistic activation: random.random() threshold gate",
-    "high",
-    "RD-TB-008.py",
-    3,
-    "probabilistic-activation"
-  ],
-  [
-    "Probabilistic activation: random.random() threshold gate",
-    "high",
-    "RD-TB-008.py",
-    4,
-    "probabilistic-activation"
-  ],
-  [
-    "Probabilistic trigger with code execution",
-    "medium",
-    "RD-TB-008.py",
-    1,
-    "time-bomb"
-  ],
-  [
-    "Probabilistic trigger with code execution",
-    "medium",
-    "RD-TB-008.py",
-    2,
-    "time-bomb"
-  ],
-  [
-    "Probabilistic trigger with code execution",
-    "medium",
-    "RD-TB-008.py",
-    3,
-    "time-bomb"
-  ],
-  [
-    "Sandbox-presence probing: container artifact check gating behavior",
-    "medium",
-    "RD-CP-013.py",
-    1,
-    "environment-detection"
-  ],
-  [
-    "Sandbox-presence probing: container artifact check gating behavior",
-    "medium",
-    "RD-CP-013.py",
-    2,
-    "environment-detection"
-  ],
-  [
-    "Sandbox-presence probing: container artifact check gating behavior",
-    "medium",
-    "RD-CP-013.py",
-    3,
-    "environment-detection"
-  ],
-  [
-    "Sandbox-presence probing: container artifact check gating behavior",
-    "medium",
-    "RD-CP-013.py",
-    4,
-    "environment-detection"
-  ],
-  [
-    "Sandbox-presence probing: container artifact check gating behavior",
-    "medium",
-    "RD-CP-013.py",
-    5,
-    "environment-detection"
-  ],
-  [
-    "Sandbox-presence probing: container artifact check gating behavior",
-    "medium",
-    "RD-CP-013.py",
+    "RD-CP-017.py",
     6,
     "environment-detection"
   ],
   [
-    "Sandbox-presence probing: os.environ sandbox marker",
-    "medium",
-    "RD-CP-011.py",
-    1,
-    "environment-detection"
-  ],
-  [
-    "Sandbox-presence probing: os.environ sandbox marker",
-    "medium",
-    "RD-CP-011.py",
-    2,
-    "environment-detection"
-  ],
-  [
-    "Sandbox-presence probing: os.environ sandbox marker",
-    "medium",
-    "RD-CP-011.py",
-    3,
-    "environment-detection"
-  ],
-  [
-    "Sandbox-presence probing: os.environ sandbox marker",
-    "medium",
-    "RD-CP-011.py",
-    4,
-    "environment-detection"
-  ],
-  [
-    "Sandbox-presence probing: os.getenv sandbox marker",
+    "Sandbox-presence probing: os.getenv CURSOR_SANDBOX marker",
     "medium",
     "RD-CP-012.py",
     1,
     "environment-detection"
   ],
   [
-    "Sandbox-presence probing: os.getenv sandbox marker",
+    "Sandbox-presence probing: os.getenv CURSOR_SANDBOX marker",
     "medium",
     "RD-CP-012.py",
     2,
     "environment-detection"
   ],
   [
-    "Sandbox-presence probing: os.getenv sandbox marker",
+    "Sandbox-presence probing: os.getenv CURSOR_SANDBOX marker",
     "medium",
     "RD-CP-012.py",
     3,
     "environment-detection"
   ],
   [
-    "Sandbox-presence probing: process.env sandbox marker",
+    "Sandbox-presence probing: os.getenv CURSOR_SANDBOX marker",
+    "medium",
+    "RD-CP-018.py",
+    6,
+    "environment-detection"
+  ],
+  [
+    "Sandbox-presence probing: process.env CURSOR_SANDBOX marker",
     "medium",
     "RD-CP-010.py",
     1,
     "environment-detection"
   ],
   [
-    "Sandbox-presence probing: process.env sandbox marker",
+    "Sandbox-presence probing: process.env CURSOR_SANDBOX marker",
     "medium",
     "RD-CP-010.py",
     2,
     "environment-detection"
   ],
   [
-    "Sandbox-presence probing: process.env sandbox marker",
+    "Sandbox-presence probing: process.env CURSOR_SANDBOX marker",
     "medium",
     "RD-CP-010.py",
     3,
     "environment-detection"
   ],
   [
-    "Sandbox-presence probing: process.env sandbox marker",
+    "Sandbox-presence probing: process.env CURSOR_SANDBOX marker",
     "medium",
-    "RD-CP-010.py",
-    4,
+    "RD-CP-016.py",
+    6,
     "environment-detection"
   ],
   [
-    "Sandbox-presence probing: shell sandbox marker reference",
+    "Sandbox-presence probing: shell CURSOR_SANDBOX marker",
     "medium",
     "RD-CP-015.py",
     1,
     "environment-detection"
   ],
   [
-    "Sandbox-presence probing: shell sandbox marker reference",
+    "Sandbox-presence probing: shell CURSOR_SANDBOX marker",
     "medium",
     "RD-CP-015.py",
     2,
     "environment-detection"
   ],
   [
-    "Sandbox-presence probing: shell sandbox marker reference",
+    "Sandbox-presence probing: shell CURSOR_SANDBOX marker",
     "medium",
     "RD-CP-015.py",
     3,
+    "environment-detection"
+  ],
+  [
+    "Sandbox-presence probing: shell CURSOR_SANDBOX marker",
+    "medium",
+    "RD-CP-019.py",
+    6,
     "environment-detection"
   ],
   [

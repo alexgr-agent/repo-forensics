@@ -595,12 +595,12 @@
     {
       "id": "SA-PY-025",
       "type": "regex",
-      "pattern": "^(?![ \\t]*#).*\\bCLONE_NEWUSER\\b",
+      "pattern": "^(?![ \\t]*#).*[(|&,=]\\s*CLONE_NEWUSER\\b",
       "extensions": [
         ".py"
       ],
       "title": "Kernel Exploit: User Namespace Flag (CLONE_NEWUSER)",
-      "severity": "critical",
+      "severity": "high",
       "confidence": 0.8,
       "category": "kernel-exploit",
       "explanation": "Kernel Exploit: User Namespace Flag (CLONE_NEWUSER) (kernel-exploit) detected in a .py file.",
@@ -614,7 +614,8 @@
           "git clone origin main",
           "CLONE_NEWUSER2",
           "clone_newuser",
-          "# os.unshare(CLONE_NEWUSER) explained"
+          "# os.unshare(CLONE_NEWUSER) explained",
+          "msg = 'we never pass CLONE_NEWUSER'"
         ]
       }
     },
@@ -710,19 +711,18 @@
     {
       "id": "SA-PY-029",
       "type": "regex",
-      "pattern": "^(?![ \\t]*#).*(?:\\b(?:capset|capget|cap_set_proc|cap_set_flag)\\s*\\(|\\bPR_CAP\\w+\\b|getattr\\s*\\([^,]+,\\s*[\\\"'](?:capset|capget)[\\\"']|\\bfrom\\s+[\\w.]+\\s+import\\s+[^#\\n]*\\b(?:capset|capget)\\s+as\\s+\\w+)",
+      "pattern": "^(?![ \\t]*#).*(?:\\b(?:capset|capget|cap_set_proc|cap_set_flag)\\s*\\(|\\bPR_CAP(?!BSET_DROP\\b)\\w+\\b|getattr\\s*\\([^,]+,\\s*[\\\"'](?:capset|capget)[\\\"']|\\bfrom\\s+[\\w.]+\\s+import\\s+[^#\\n]*\\b(?:capset|capget)\\s+as\\s+\\w+)",
       "extensions": [
         ".py"
       ],
       "title": "Kernel Exploit: Capability Manipulation",
-      "severity": "critical",
+      "severity": "high",
       "confidence": 0.8,
       "category": "kernel-exploit",
       "explanation": "Kernel Exploit: Capability Manipulation (kernel-exploit) detected in a .py file.",
       "examples": {
         "match": [
           "capset(hdrp, datap)",
-          "libc.prctl(PR_CAPBSET_DROP, 19, 0, 0, 0)",
           "cap.cap_set_proc()",
           "getattr(libc, \"capset\")(hdrp, datap)",
           "from ctypes import capset as _cs"
@@ -730,19 +730,20 @@
         "no_match": [
           "capacity(x)",
           "prctl(PR_SET_NAME, name)",
-          "PR_CAP"
+          "PR_CAP",
+          "libc.prctl(PR_CAPBSET_DROP, 19, 0, 0, 0)"
         ]
       }
     },
     {
       "id": "SA-PY-030",
       "type": "regex",
-      "pattern": "^(?![ \\t]*#).*(?:\\bio_uring_\\w+\\s*\\(|\\bliburing\\b|getattr\\s*\\([^,]+,\\s*[\\\"']io_uring_\\w+[\\\"']|\\bsyscall\\s*\\(\\s*425\\s*[,)])",
+      "pattern": "^(?![ \\t]*#).*(?:\\bio_uring_\\w+\\s*\\(|(?:CDLL|cdll\\.\\w+|dlopen|LoadLibrary\\w*)\\s*\\(\\s*[\\\"'][^\\\"']*liburing|getattr\\s*\\([^,]+,\\s*[\\\"']io_uring_\\w+[\\\"']|\\bsyscall\\s*\\(\\s*425\\s*[,)])",
       "extensions": [
         ".py"
       ],
       "title": "Kernel Exploit: io_uring Usage",
-      "severity": "critical",
+      "severity": "high",
       "confidence": 0.8,
       "category": "kernel-exploit",
       "explanation": "Kernel Exploit: io_uring Usage (kernel-exploit) detected in a .py file.",
@@ -757,7 +758,8 @@
         "no_match": [
           "# io_uring is fast",
           "uring(x)",
-          "during_setup()"
+          "during_setup()",
+          "DEPS = ['liburing']"
         ]
       }
     },
@@ -3180,7 +3182,7 @@
         ".sh"
       ],
       "title": "Kernel Exploit: User Namespace Creation",
-      "severity": "critical",
+      "severity": "high",
       "confidence": 0.8,
       "category": "kernel-exploit",
       "explanation": "Kernel Exploit: User Namespace Creation (kernel-exploit) detected in a .sh file.",
@@ -3210,7 +3212,7 @@
         ".sh"
       ],
       "title": "Kernel Exploit: net/sched tc Configuration",
-      "severity": "critical",
+      "severity": "high",
       "confidence": 0.8,
       "category": "kernel-exploit",
       "explanation": "Kernel Exploit: net/sched tc Configuration (kernel-exploit) detected in a .sh file.",
@@ -3233,7 +3235,7 @@
     {
       "id": "SA-SH-022",
       "type": "regex",
-      "pattern": "^(?![ \\t]*#)(?![ \\t]*(?:function[ \\t]+)?(?:modprobe|insmod)[ \\t]*(?:\\([ \\t]*\\))?[ \\t]*\\{)(?:(?![ \\t]*echo\\b).*?|[ \\t]*echo\\b[^\\n]*?(?:;|&&|\\|\\||\\||&|\\$\\(|`|<\\(|>\\()[^\\n]*?)(?:\\b(?:modprobe|insmod)\\s+(?!-(?:n|l|L|S)\\b|--(?:show|list|dry-run|showconfig|version|help)\\b)(?!\\$)\\S|\\bmod(?:\\\"{2}|'{2})probe\\s+\\S|\\bin(?:\\\"{2}|'{2})smod\\s+\\S)",
+      "pattern": "(?:^|[;&|`]|&&|\\|\\||\\$\\(|<\\(|>\\(|\\bthen\\b|\\bdo\\b)[ \\t]*(?:sudo[ \\t]+)*(?:modprobe|insmod)[ \\t]+(?!-(?:n|l|L|S)\\b|--(?:show|list|dry-run|showconfig|version|help)\\b)(?!\\$)(?!\\([ \\t]*\\)[ \\t]*\\{)\\S|\\bmod(?:\\\"{2}|'{2})probe[ \\t]+\\S|\\bin(?:\\\"{2}|'{2})smod[ \\t]+\\S",
       "extensions": [
         ".sh"
       ],
@@ -3263,26 +3265,29 @@
     {
       "id": "SA-SH-023",
       "type": "regex",
-      "pattern": "^(?![ \\t]*#).*(?:\\bsetcap\\s+\\S|\\bsetpriv\\s+\\S|\\bcapsh\\s+(?!--(?:print|decode|supports|has[ab=]|help|version)\\b)\\S)",
+      "pattern": "^(?![ \\t]*#).*(?:\\bsetcap\\s+\\S|\\bsetpriv\\s+(?![^\\n]{0,200}--no-new-privs\\b)\\S|\\bcapsh\\s+(?!--(?:print|decode|supports|has[ab=]|help|version|drop)\\b)\\S)",
       "extensions": [
         ".sh"
       ],
       "title": "Kernel Exploit: Capability Manipulation",
-      "severity": "critical",
+      "severity": "high",
       "confidence": 0.8,
       "category": "kernel-exploit",
       "explanation": "Kernel Exploit: Capability Manipulation (kernel-exploit) detected in a .sh file.",
       "examples": {
         "match": [
           "setcap cap_net_admin+ep /tmp/x",
-          "capsh --drop=cap_setpcap -- -c id",
-          "setpriv --reuid 0 bash"
+          "setcap cap_sys_admin+ep /tmp/payload",
+          "setpriv --reuid 0 bash",
+          "capsh --caps=cap_setuid+eip -- -c id"
         ],
         "no_match": [
           "getcap /usr/bin/ping",
           "capsh --print",
           "# capsh --drop=all",
-          "capsh --decode=00000000a80425fb"
+          "capsh --decode=00000000a80425fb",
+          "capsh --drop=cap_setpcap -- -c id",
+          "exec setpriv --reuid=app --regid=app --clear-groups --no-new-privs \"$@\""
         ]
       }
     },

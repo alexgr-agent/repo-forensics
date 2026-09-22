@@ -39,11 +39,11 @@ class TestProcessEnvMarkers:
 
     def test_codespaces_logical_and(self, tmp_path):
         findings = _scan(tmp_path, "process.env.CODESPACES && benign()\n", "a.js")
-        assert "RD-CP-010" in _rule_ids(findings)
+        assert "RD-CP-016" in _rule_ids(findings)
 
     def test_repl_id_read(self, tmp_path):
         findings = _scan(tmp_path, "const id = process.env.REPL_ID\n", "a.mjs")
-        assert "RD-CP-010" in _rule_ids(findings)
+        assert "RD-CP-016" in _rule_ids(findings)
 
     def test_unrelated_env_negative(self, tmp_path):
         findings = _scan(tmp_path, "const p = process.env.PORT\n", "a.js")
@@ -57,7 +57,7 @@ class TestPythonEnvMarkers:
 
     def test_getenv_gitpod(self, tmp_path):
         findings = _scan(tmp_path, "import os\nos.getenv('GITPOD_WORKSPACE_ID')\n", "a.py")
-        assert "RD-CP-012" in _rule_ids(findings)
+        assert "RD-CP-018" in _rule_ids(findings)
 
     def test_unrelated_env_negative(self, tmp_path):
         findings = _scan(tmp_path, "import os\nos.environ.get('PATH')\nos.getenv('HOME')\n", "a.py")
@@ -169,7 +169,7 @@ class TestShellEnvMarkers:
 
     def test_braced_codespaces(self, tmp_path):
         findings = _scan(tmp_path, "echo ${CODESPACES}\n", "a.bash")
-        assert "RD-CP-015" in _rule_ids(findings)
+        assert "RD-CP-019" in _rule_ids(findings)
 
     def test_negative(self, tmp_path):
         findings = _scan(tmp_path, "echo $HOME\n", "a.sh")
@@ -189,7 +189,7 @@ class TestAccessFormEvasion:
 
     def test_process_env_subscript(self, tmp_path):
         findings = _scan(tmp_path, 'if (process.env["CODESPACES"]) exit(0)\n', "a.js")
-        assert "RD-CP-010" in _rule_ids(findings)
+        assert "RD-CP-016" in _rule_ids(findings)
 
     def test_environ_subscript(self, tmp_path):
         findings = _scan(tmp_path, 'flag = os.environ["CURSOR_SANDBOX"]\n', "a.py")
@@ -197,11 +197,11 @@ class TestAccessFormEvasion:
 
     def test_environ_get_after_from_import(self, tmp_path):
         findings = _scan(tmp_path, "from os import environ\nenviron.get(\"GITPOD_WORKSPACE_ID\")\n", "a.py")
-        assert "RD-CP-011" in _rule_ids(findings)
+        assert "RD-CP-017" in _rule_ids(findings)
 
     def test_getenv_after_from_import(self, tmp_path):
         findings = _scan(tmp_path, "from os import getenv\ngetenv(\"REPL_ID\")\n", "a.py")
-        assert "RD-CP-012" in _rule_ids(findings)
+        assert "RD-CP-018" in _rule_ids(findings)
 
     def test_os_getenv_still_fires(self, tmp_path):
         findings = _scan(tmp_path, "os.getenv('CURSOR_SANDBOX')\n", "a.py")
@@ -214,11 +214,11 @@ class TestAccessFormEvasion:
 
     def test_shell_default_expansion(self, tmp_path):
         findings = _scan(tmp_path, '[ -n "${GITPOD_WORKSPACE_ID:-}" ] && exit 0\n', "a.sh")
-        assert "RD-CP-015" in _rule_ids(findings)
+        assert "RD-CP-019" in _rule_ids(findings)
 
     def test_shell_error_expansion(self, tmp_path):
         findings = _scan(tmp_path, 'echo "${CODESPACES:?required}"\n', "a.sh")
-        assert "RD-CP-015" in _rule_ids(findings)
+        assert "RD-CP-019" in _rule_ids(findings)
 
     def test_shell_unrelated_expansion_negative(self, tmp_path):
         findings = _scan(tmp_path, 'echo "${PATH:-/usr/bin}"\n', "a.sh")

@@ -530,7 +530,7 @@ def test_c1_all_shipped_packs_load_fully():
         "skill_threats": 124,
         "mcp_security": 44,
         "shared": 5,
-        "runtime_dynamism": 66,
+        "runtime_dynamism": 70,
     }
     for name, count in expected.items():
         pack = rule_loader.load_pack(name)

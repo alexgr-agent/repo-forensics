@@ -1226,58 +1226,58 @@
   ],
   [
     "Kernel Exploit: Capability Manipulation",
-    "critical",
+    "high",
     "SA-PY-029.py",
     1,
     "kernel-exploit"
   ],
   [
     "Kernel Exploit: Capability Manipulation",
-    "critical",
+    "high",
     "SA-PY-029.py",
     2,
     "kernel-exploit"
   ],
   [
     "Kernel Exploit: Capability Manipulation",
-    "critical",
+    "high",
     "SA-PY-029.py",
     3,
     "kernel-exploit"
   ],
   [
     "Kernel Exploit: Capability Manipulation",
-    "critical",
+    "high",
     "SA-PY-029.py",
     4,
     "kernel-exploit"
   ],
   [
     "Kernel Exploit: Capability Manipulation",
-    "critical",
-    "SA-PY-029.py",
-    5,
-    "kernel-exploit"
-  ],
-  [
-    "Kernel Exploit: Capability Manipulation",
-    "critical",
+    "high",
     "SA-SH-023.sh",
     1,
     "kernel-exploit"
   ],
   [
     "Kernel Exploit: Capability Manipulation",
-    "critical",
+    "high",
     "SA-SH-023.sh",
     2,
     "kernel-exploit"
   ],
   [
     "Kernel Exploit: Capability Manipulation",
-    "critical",
+    "high",
     "SA-SH-023.sh",
     3,
+    "kernel-exploit"
+  ],
+  [
+    "Kernel Exploit: Capability Manipulation",
+    "high",
+    "SA-SH-023.sh",
+    4,
     "kernel-exploit"
   ],
   [
@@ -1380,70 +1380,70 @@
   ],
   [
     "Kernel Exploit: User Namespace Creation",
-    "critical",
+    "high",
     "SA-SH-020.sh",
     1,
     "kernel-exploit"
   ],
   [
     "Kernel Exploit: User Namespace Creation",
-    "critical",
+    "high",
     "SA-SH-020.sh",
     2,
     "kernel-exploit"
   ],
   [
     "Kernel Exploit: User Namespace Creation",
-    "critical",
+    "high",
     "SA-SH-020.sh",
     3,
     "kernel-exploit"
   ],
   [
     "Kernel Exploit: User Namespace Creation",
-    "critical",
+    "high",
     "SA-SH-020.sh",
     4,
     "kernel-exploit"
   ],
   [
     "Kernel Exploit: User Namespace Creation",
-    "critical",
+    "high",
     "SA-SH-020.sh",
     5,
     "kernel-exploit"
   ],
   [
     "Kernel Exploit: User Namespace Creation",
-    "critical",
+    "high",
     "SA-SH-020.sh",
     6,
     "kernel-exploit"
   ],
   [
     "Kernel Exploit: User Namespace Flag (CLONE_NEWUSER)",
-    "critical",
+    "high",
     "SA-PY-025.py",
     1,
     "kernel-exploit"
   ],
   [
     "Kernel Exploit: User Namespace Flag (CLONE_NEWUSER)",
-    "critical",
+    "high",
     "SA-PY-025.py",
     2,
     "kernel-exploit"
   ],
   [
     "Kernel Exploit: User Namespace Flag (CLONE_NEWUSER)",
-    "critical",
+    "high",
     "SA-PY-025.py",
     3,
     "kernel-exploit"
   ],
   [
     "Kernel Exploit: User Namespace Flag (CLONE_NEWUSER)",
-    "critical",
+    "high",
     "SA-PY-026.py",
     1,
     "kernel-exploit"
@@ -1513,35 +1513,35 @@
   ],
   [
     "Kernel Exploit: io_uring Usage",
-    "critical",
+    "high",
     "SA-PY-030.py",
     1,
     "kernel-exploit"
   ],
   [
     "Kernel Exploit: io_uring Usage",
-    "critical",
+    "high",
     "SA-PY-030.py",
     2,
     "kernel-exploit"
   ],
   [
     "Kernel Exploit: io_uring Usage",
-    "critical",
+    "high",
     "SA-PY-030.py",
     3,
     "kernel-exploit"
   ],
   [
     "Kernel Exploit: io_uring Usage",
-    "critical",
+    "high",
     "SA-PY-030.py",
     4,
     "kernel-exploit"
   ],
   [
     "Kernel Exploit: io_uring Usage",
-    "critical",
+    "high",
     "SA-PY-030.py",
     5,
     "kernel-exploit"
@@ -1604,63 +1604,63 @@
   ],
   [
     "Kernel Exploit: net/sched tc Configuration",
-    "critical",
+    "high",
     "SA-SH-021.sh",
     1,
     "kernel-exploit"
   ],
   [
     "Kernel Exploit: net/sched tc Configuration",
-    "critical",
+    "high",
     "SA-SH-021.sh",
     2,
     "kernel-exploit"
   ],
   [
     "Kernel Exploit: net/sched tc Configuration",
-    "critical",
+    "high",
     "SA-SH-021.sh",
     3,
     "kernel-exploit"
   ],
   [
     "Kernel Exploit: net/sched tc Configuration",
-    "critical",
+    "high",
     "SA-SH-021.sh",
     4,
     "kernel-exploit"
   ],
   [
     "Kernel Exploit: net/sched tc Configuration",
-    "critical",
+    "high",
     "SA-SH-021.sh",
     5,
     "kernel-exploit"
   ],
   [
     "Kernel Exploit: net/sched tc Configuration",
-    "critical",
+    "high",
     "SA-SH-022.sh",
     1,
     "kernel-exploit"
   ],
   [
     "Kernel Exploit: net/sched tc Configuration",
-    "critical",
+    "high",
     "SA-SH-022.sh",
     4,
     "kernel-exploit"
   ],
   [
     "Kernel Exploit: net/sched tc Configuration",
-    "critical",
+    "high",
     "SA-SH-022.sh",
     5,
     "kernel-exploit"
   ],
   [
     "Kernel Exploit: net/sched tc Configuration",
-    "critical",
+    "high",
     "SA-SH-022.sh",
     11,
     "kernel-exploit"

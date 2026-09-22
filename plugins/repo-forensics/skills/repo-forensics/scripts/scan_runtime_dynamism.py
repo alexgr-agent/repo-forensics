@@ -51,6 +51,7 @@ _CATEGORY_SEVERITY = {
     "worm-propagation": "critical",
     "probabilistic-activation": "high",
     "environment-detection": "medium",
+    "cloud-ide-detection": "low",
     "locale-gating": "medium",
 }
 
