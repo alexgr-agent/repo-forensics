@@ -4,14 +4,12 @@ All notable changes to repo-forensics. Versions follow semver.
 
 ## [2.14.9] - 2026-09-22
 
-### Security: fix critical RCE via a scanned repo's git config (CVE-class: gpg.program)
+### Security: fix critical RCE via a scanned repository's git config
 A repository under audit controls its own `.git/config`, and several git config
-keys name an external program git executes during ordinary read-only operations.
-`scan_git_forensics.py` read commit signature status with the `%G?` pretty
-format, which makes `git log` verify each commit's signature by running the
-repository's own `gpg.program` — arbitrary code execution triggered merely by
-scanning a hostile repo, with the scan reporting nothing. `verify_install.py`'s
-`git ls-files` similarly honored `core.fsmonitor`.
+keys name an external program that git executes during ordinary read-only
+operations. The scanner invoked git in ways that honored those repo-controlled
+keys, so **scanning a hostile repository could execute attacker-chosen code**,
+silently, with the scan reporting nothing. **Update immediately.**
 
 - Added `forensics_core.run_git_hardened()`, the single sanctioned way to invoke
   git in the scanner. It overrides every exec-capable config key
