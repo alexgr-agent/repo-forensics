@@ -104,6 +104,94 @@ def scan_css_steganography(file_path, rel_path):
     return findings
 
 
+# Extensions where a trailing backslash is a real line-continuation the
+# interpreter honors, so a split token must be rejoined before matching. For
+# every other language (JS/TS/JSON/...) a `\` at EOL is not a statement
+# continuation, and joining there only mis-attributes a finding to a preceding
+# `//`-comment line -- so those files are scanned physical-line-for-physical-
+# line, exactly as before this pack existed.
+_CONTINUATION_EXTS = frozenset({
+    ".sh", ".bash", ".zsh", ".ksh", ".py", ".pyw", ".mk", "makefile",
+    ".c", ".h", ".cc", ".cpp", ".cxx", ".hpp",
+})
+
+
+def _trailing_backslash_count(s):
+    n = 0
+    for ch in reversed(s):
+        if ch == "\\":
+            n += 1
+        else:
+            break
+    return n
+
+
+def _logical_lines(lines, ext=None):
+    r"""Join backslash-continued physical lines into logical lines for matching.
+
+    A trailing (odd count of) backslash is a shell/Python/make/C line
+    continuation that lets an attacker split a matched token across physical
+    lines (`unshare \\\n-Urn sh`), dodging every per-line pattern. Joining
+    restores the logical line the interpreter actually sees. Yields
+    (start_index, text); start_index is the 0-based physical line where the
+    yielded text begins so findings keep accurate line numbers.
+
+    Two safety properties that prior revisions lacked:
+
+    * The join is CAPPED at MAX_LINE_LENGTH. clip_line() truncates any line
+      past that bound, so an unbounded join let an attacker pad a continued
+      statement past 10k and push the real payload into the clipped tail --
+      a FALSE NEGATIVE that plain physical-line scanning (main's behavior)
+      never had. Once the running join reaches the cap we stop joining and
+      yield the remaining physical lines of the group individually, so every
+      physical line is still scanned. (Regression fix, PR #44 review.)
+    * Joining only happens for languages where `\` at EOL is a real
+      continuation (_CONTINUATION_EXTS). Elsewhere each physical line is
+      yielded unchanged -- byte-for-byte the pre-pack behavior.
+
+    A comment line never starts a continuation join (a trailing `\` in a
+    comment is inert), and an EVEN number of trailing backslashes is a literal
+    backslash, not a continuation.
+    """
+    n = len(lines)
+    join_lang = (ext or "").lower() in _CONTINUATION_EXTS
+    i = 0
+    while i < n:
+        start = i
+        raw = lines[i]
+        stripped = raw.rstrip("\r\n")
+        if (not join_lang
+                or stripped.lstrip().startswith("#")
+                or _trailing_backslash_count(stripped) % 2 == 0
+                or i + 1 >= n):
+            yield start, raw
+            i += 1
+            continue
+        # Accumulate a continuation group, bounded by MAX_LINE_LENGTH.
+        parts = []
+        joined_len = 0
+        capped = False
+        while (_trailing_backslash_count(stripped) % 2 == 1 and i + 1 < n):
+            seg = stripped[:-1]
+            if joined_len + len(seg) > core.MAX_LINE_LENGTH:
+                capped = True
+                break
+            parts.append(seg)
+            joined_len += len(seg)
+            i += 1
+            stripped = lines[i].rstrip("\r\n")
+        if capped:
+            # Cap hit: emit what we joined so far, then let the loop scan the
+            # remaining physical lines of the group one by one, so a payload
+            # past the 10k bound is never clipped out of every match.
+            if parts:
+                yield start, "".join(parts)
+            continue
+        parts.append(lines[i])
+        yield start, "".join(parts)
+        i += 1
+
+
 def scan_file(file_path, rel_path):
     global _pack_error_emitted
 
@@ -130,7 +218,7 @@ def scan_file(file_path, rel_path):
     try:
         with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
             lines = f.readlines()
-            for i, line in enumerate(lines):
+            for i, line in _logical_lines(lines, ext):
                 line = core.clip_line(line)
                 for rule in rules:
                     if rule.regex.search(line):
@@ -181,8 +269,10 @@ def scan_text(text, rel_path, ext=None):
     rules = _PACK.rules_for_extension(ext)
     findings = []
     # split('\n') for parity with scan_file's readlines() (line numbers + no
-    # Unicode-line-boundary split-evasion).
-    for i, line in enumerate(text.split('\n')):
+    # Unicode-line-boundary split-evasion). _logical_lines applies the same
+    # continuation joining as scan_file so in-memory text cannot smuggle a
+    # split token past the per-line patterns either.
+    for i, line in _logical_lines(text.split('\n'), ext):
         line = core.clip_line(line)
         for rule in rules:
             if rule.regex.search(line):
