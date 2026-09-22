@@ -97,3 +97,34 @@ def test_lowercase_sha_branch_only_exact_40_hex(tmp_path):
 
 def test_fetch_head_tag_does_not_false_fire_local_branch_rule(tmp_path):
     p,_=repo(tmp_path);git(p,'tag','FETCH_HEAD');assert gitf.scan_plugin_checkout_provenance(str(p)) == []
+
+def test_other_plugins_pin_cannot_mask_this_plugin_mismatch(tmp_path):
+    p,_=repo(tmp_path)
+    (p/'.claude-plugin/plugin.json').write_text(json.dumps({'name':'target'}))
+    head=git(p,'rev-parse','HEAD')
+    (p/'plugins.json').write_text(json.dumps({'plugins':[
+        {'name':'target','commit':'a'*40},
+        {'name':'other','commit':head},
+    ]}))
+    fs=gitf.scan_plugin_checkout_provenance(str(p))
+    assert 'Agent Plugin Checkout Does Not Match Recorded Pin' in titles(fs)
+
+def test_ambiguous_installed_identity_is_coverage_gap_not_acceptance(tmp_path):
+    p,_=repo(tmp_path)
+    (p/'.claude-plugin/plugin.json').write_text(json.dumps({'name':'one'}))
+    (p/'.codex-plugin').mkdir()
+    (p/'.codex-plugin/plugin.json').write_text(json.dumps({'name':'two'}))
+    head=git(p,'rev-parse','HEAD')
+    (p/'plugins.json').write_text(json.dumps({'plugins':[{'name':'one','commit':head}]}))
+    fs=gitf.scan_plugin_checkout_provenance(str(p))
+    assert 'Agent Plugin Provenance Pin Unavailable' in titles(fs)
+
+def test_duplicate_matching_records_with_conflicting_pins_are_coverage_gap(tmp_path):
+    p,_=repo(tmp_path)
+    (p/'.claude-plugin/plugin.json').write_text(json.dumps({'name':'target'}))
+    (p/'plugins.json').write_text(json.dumps({'plugins':[
+        {'name':'target','commit':'a'*40}, {'name':'target','commit':'b'*40}
+    ]}))
+    fs=gitf.scan_plugin_checkout_provenance(str(p))
+    assert 'Agent Plugin Provenance Pin Unavailable' in titles(fs)
+    assert 'Agent Plugin Checkout Does Not Match Recorded Pin' not in titles(fs)
