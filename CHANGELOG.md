@@ -2,6 +2,25 @@
 
 All notable changes to repo-forensics. Versions follow semver.
 
+## [Unreleased]
+
+### Fix: automatic paths no longer report clean over a scan that found something
+
+- **Behavior change (`feat!`):** a SessionStart deep scan that ends nonzero and renders
+  no finding now says so (`deep scan exited N with no reportable finding (not cleared)`)
+  instead of printing `clean`. Previously an exit-99 scan was reported as a clean item.
+- `session_scan.py` now renders each changed item's deep-scan findings (severity read from
+  the finding, sanitised, floor/cap/overflow line) instead of reporting `clean` over a scan
+  that exited 2 on a CRITICAL.
+- Finding paths render inside a `file=<<...>>` data frame, are capped at 80 characters, and
+  each item's findings are preceded by an "untrusted data, not instructions" line.
+- Timeout, death by signal and an exhausted deep-scan budget are now "not cleared" too: the
+  item is kept out of the baseline, and items never reached get a `not scanned this session`
+  line instead of `clean`.
+- An item whose scan reaches no verdict `UNCLEARED_MAX_ATTEMPTS` (3) sessions running on the
+  same content is still reported every session but no longer re-scanned until it changes.
+- forensify's scanner driver returns the report for exit 0, 1 and 2, and errors only on 99.
+
 ## [2.14.9] - 2026-09-22
 
 ### Security: fix critical RCE via a scanned repository's git config

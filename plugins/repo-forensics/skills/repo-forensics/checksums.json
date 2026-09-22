@@ -79,7 +79,7 @@
     "scripts/scan_skill_threats.py": "05452f244b1c0f5259d2f45a41593c1a1b82d7caad39f6b1efb0b87f02c09729",
     "scripts/scan_splitstream.py": "4fd98a612442a8c241e8796f984e6ecce3e43be7334355bf84f2ad408f556319",
     "scripts/scan_yara.py": "0272b4de75c8af5c461bfda86287254f1be9dfd31cfa20e2ebe91a55a8a35256",
-    "scripts/session_scan.py": "e0c4c5326059733126fa3bbb00ead2adc2f0df5f43e81958f015d24918ddefe7",
+    "scripts/session_scan.py": "a137fa799f197d06365c5602cf4683143cc6a17b6c236c189e667d01f613291a",
     "scripts/validate_manifests.py": "a0926bc0a0b86ca59a2d66036a8bce403d4d4a0793bf799af8554e3c36ef43c9",
     "scripts/verify_install.py": "7fd9a2d819b480a6260bceccdd51960f14a8457f55cbc70016206ab80d699818",
     "scripts/vuln_feed.py": "0b56e20969beb8fbc59650114a34ac8743d1a0862ff3ae56b07e92d2e368a141"
@@ -111,5 +111,9 @@
     ".cursor-plugin/hooks.json": "77dcb9cd64b52604cbc607a867b1069187ad6ab2ba6e0e77bbab58206bc1707f",
     ".cursor-plugin/plugin.json": "1bccb46a0a5034001352676db8e79e8f16533b19b2ccb37390e4ae705d65d0da"
   },
-  "manifest_count": 5
+  "manifest_count": 5,
+  "repo_source_manifests": {
+    ".agents/plugins/marketplace.json": "1fb6dcd1f514fe8787cf52c0d3f8982ac509b0c1e09fe70c1a0cd1590d6fb15e"
+  },
+  "source_manifest_count": 1
 }
