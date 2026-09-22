@@ -52,11 +52,21 @@ EXEC_SIGNATURES = [sig for sig, desc in MAGIC_NUMBERS.items() if desc in _EXEC_D
 def _is_valid_pe(content, offset):
     """A real PE has 'PE\\x00\\x00' at the location its e_lfanew field points to.
     A bare 'MZ' pair (2 bytes) appears routinely inside compressed audio,
-    so require the structural marker too before treating it as an executable."""
+    so require the structural marker too before treating it as an executable.
+
+    e_lfanew (the DWORD at MZ+0x3C) is RELATIVE to the MZ header, so the PE
+    signature sits at ``offset + e_lfanew`` -- not at an absolute file offset.
+    Reading it absolutely turns a real embedded PE into a missed detection
+    (false negative) and lets an attacker forge a validation by planting
+    'PE\\x00\\x00' at absolute e_lfanew. The upper bound matches scan_embedded_pe
+    (1 MB) so the two PE checks agree on what a plausible DOS stub looks like."""
     if offset + 0x40 > len(content):
         return False
     e_lfanew = int.from_bytes(content[offset + 0x3C:offset + 0x40], "little")
-    return 0 < e_lfanew < 4096 and content[e_lfanew:e_lfanew + 4] == b'PE\x00\x00'
+    if not 0 < e_lfanew <= 1024 * 1024:
+        return False
+    pe_sig_loc = offset + e_lfanew
+    return content[pe_sig_loc:pe_sig_loc + 4] == b'PE\x00\x00'
 
 
 def _find_embedded_executable(content, search_from):
