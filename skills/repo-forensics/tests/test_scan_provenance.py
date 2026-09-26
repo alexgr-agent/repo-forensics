@@ -396,6 +396,18 @@ class TestGhTargetIsolation:
     def test_gh_skips_when_temp_root_is_inside_target(self, tmp_path, monkeypatch):
         target = tmp_path / "target"
         target.mkdir()
+        _have_tool(monkeypatch, present=("gh",))
+        monkeypatch.setattr(scanner.tempfile, "gettempdir", lambda: str(target))
+        monkeypatch.setattr(scanner.tempfile, "TemporaryDirectory", lambda **kwargs:
+                            pytest.fail("must not create a directory in the target"))
+        monkeypatch.setattr(scanner.subprocess, "run", lambda *args, **kwargs:
+                            pytest.fail("gh must not run from inside the target"))
+        assert scanner.probe_gh(str(target)) == "unchecked"
+        assert list(target.iterdir()) == []
+
+    def test_gh_skips_if_temp_directory_resolves_into_target(self, tmp_path, monkeypatch):
+        target = tmp_path / "target"
+        target.mkdir()
         state = target / "unsafe-temp"
         state.mkdir()
         _have_tool(monkeypatch, present=("gh",))

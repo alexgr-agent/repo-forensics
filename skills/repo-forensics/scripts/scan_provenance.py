@@ -325,18 +325,24 @@ def probe_gh(repo_path, deadline=None):
     """gh attestation verify: GitHub artifact attestation (SLSA provenance)."""
     if not shutil.which("gh"):
         return "unchecked"
+
+    def inside_target(path, target):
+        try:
+            return os.path.commonpath((target, os.path.realpath(path))) == target
+        except ValueError:
+            # Paths on different Windows drives cannot contain one another.
+            return False
+
     verdict = "unchecked"
     try:
+        target = os.path.realpath(repo_path)
+        # Check before creating anything. A caller can place TMPDIR inside the
+        # scanned tree; even a temporary directory there would mutate it.
+        if inside_target(tempfile.gettempdir(), target):
+            return "unchecked"
         with tempfile.TemporaryDirectory(prefix="repo-forensics-gh-") as state_dir:
-            target = os.path.realpath(repo_path)
-            state = os.path.realpath(state_dir)
-            try:
-                if os.path.commonpath((target, state)) == target:
-                    return "unchecked"
-            except ValueError:
-                # Different Windows drives are disjoint; neither can contain
-                # the other, so the isolated directory is safe to use.
-                pass
+            if inside_target(state_dir, target):
+                return "unchecked"
             # gh may resolve config and state paths relative to cwd on Windows
             # when APPDATA/LOCALAPPDATA are absent. Keep every writable location
             # in this disposable directory, never in the scanned artifact.
