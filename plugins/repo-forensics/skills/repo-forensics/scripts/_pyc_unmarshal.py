@@ -1,31 +1,26 @@
 #!/usr/bin/env python3
-"""_pyc_unmarshal.py — isolated subprocess: unmarshal + disassemble a .pyc.
+"""_pyc_unmarshal.py — isolated subprocess: parse and inspect a .pyc.
 
-This runs as a DISPOSABLE CHILD of scan_bytecode.py. marshal.loads is
-documented by CPython as unsafe against erroneous or maliciously constructed
-data and can abort the interpreter at the C level (SIGSEGV/SIGABRT) — a crash a
-parent try/except cannot catch. By doing the unmarshal here, in a throwaway
-process under CPU + address-space rlimits and a deny-default OS sandbox, a
-hostile .pyc cannot access host files, network, or spawn processes. The parent
-maps any non-zero/negative exit to an "unanalyzable bytecode" finding and the
-scan continues. This is the U2 user-safety property
-(KTD6): never let attacker-controlled bytecode crash or hang the real scan.
+This runs as a DISPOSABLE CHILD of scan_bytecode.py. It parses the bounded
+marshal stream in Python instead of passing attacker-controlled code objects
+to CPython's native deserializer. Resource limits and a deny-default OS
+sandbox remain in place. Unknown or malformed data fails closed, and the
+parent reports the bytecode as unanalyzable.
 
 Usage:  _pyc_unmarshal.py <pyc_path> <header_len>
 Output: a text blob (NAME/CONST/OP lines) on stdout; exit 0 on success,
         non-zero on any failure. Bounded: memory, CPU, recursion depth,
         code-object count, output size.
 
-The child only ever DISASSEMBLES the code object (dis). It never exec()s,
-eval()s, or otherwise runs it.
+The child reads names, string constants, and import opcodes. It never
+constructs, executes, or evaluates a code object.
 """
 
 import dis
 import ctypes
 import ctypes.util
-import marshal
+import importlib.util
 import sys
-import types
 
 try:
     import resource
@@ -38,6 +33,7 @@ MAX_CODE_OBJECTS = 5000              # bound nested-code fan-out
 MAX_DEPTH = 50                       # bound nesting depth
 MAX_OUTPUT_CHARS = 4 * 1024 * 1024   # 4 MB blob cap
 MAX_INPUT_BYTES = 5 * 1024 * 1024
+MAX_PARSED_OBJECTS = MAX_INPUT_BYTES  # Every parsed object consumes at least one byte.
 SANDBOX_UNAVAILABLE = 5
 ANALYSIS_LIMIT = 6
 
@@ -149,6 +145,215 @@ def _esc(value):
             .replace("\n", "\\n").replace("\r", "\\r"))
 
 
+_PENDING = object()
+_NULL = object()
+
+
+class _Sequence:
+    __slots__ = ("kind", "items")
+
+    def __init__(self, kind):
+        self.kind = kind
+        self.items = []
+
+    def __iter__(self):
+        return iter(self.items)
+
+    def __len__(self):
+        return len(self.items)
+
+    def __getitem__(self, index):
+        return self.items[index]
+
+
+class _DecodedCode:
+    __slots__ = ("co_code", "co_consts", "co_names")
+
+    def __init__(self, bytecode, consts, names):
+        if (not isinstance(bytecode, bytes) or not isinstance(consts, _Sequence)
+                or consts.kind not in "()"):
+            raise ValueError("malformed code object")
+        if not isinstance(names, _Sequence) or names.kind not in "()":
+            raise ValueError("malformed code names")
+        self.co_code = bytecode
+        self.co_consts = consts
+        self.co_names = names
+
+
+class _Reader:
+    """Bounded subset of CPython's marshal format, with no object construction.
+
+    The two code layouts are from CPython 3.8-3.10 and 3.11-3.14. The caller
+    requires the input magic to match this interpreter, so its opcode table and
+    code layout agree with the file. Container references can be cyclic;
+    references to incomplete code objects are rejected.
+    """
+
+    def __init__(self, data):
+        self.data = data
+        self.pos = 0
+        self.refs = []
+        self.objects = 0
+
+    def take(self, n):
+        if n < 0 or n > len(self.data) - self.pos:
+            raise ValueError("truncated marshal stream")
+        value = self.data[self.pos:self.pos + n]
+        self.pos += n
+        return value
+
+    def byte(self):
+        return self.take(1)[0]
+
+    def int32(self):
+        return int.from_bytes(self.take(4), "little", signed=True)
+
+    def count(self):
+        n = self.int32()
+        if n < 0 or n > len(self.data) - self.pos:
+            raise ValueError("invalid marshal object count")
+        return n
+
+    def length(self):
+        n = self.int32()
+        if n < 0 or n > len(self.data) - self.pos:
+            raise ValueError("invalid marshal data length")
+        return n
+
+    def sequence(self, n, depth, kind, index):
+        value = _Sequence(kind)
+        if index is not None:
+            self.refs[index] = value
+        for _ in range(n):
+            item = self.read(depth + 1)
+            if item is _NULL:
+                raise ValueError("null in marshal sequence")
+            value.items.append(item)
+        return value
+
+    def code(self, depth):
+        if not (3, 8) <= sys.version_info[:2] <= (3, 14):
+            raise ValueError("unsupported bytecode version")
+        # CPython writes fixed-width integers before the object fields.
+        for _ in range(5 if sys.version_info >= (3, 11) else 6):
+            self.int32()
+        bytecode = self.read(depth + 1)
+        consts = self.read(depth + 1)
+        names = self.read(depth + 1)
+        if sys.version_info >= (3, 11):
+            for _ in range(5):  # locals names/kinds, filename, name, qualname
+                self.read(depth + 1)
+            self.int32()  # first line
+            self.read(depth + 1)  # line table
+            self.read(depth + 1)  # exception table
+        else:
+            for _ in range(5):  # varnames, freevars, cellvars, filename, name
+                self.read(depth + 1)
+            self.int32()  # first line
+            self.read(depth + 1)  # line table
+        return _DecodedCode(bytecode, consts, names)
+
+    def read(self, depth=0):
+        self.objects += 1
+        if depth > MAX_DEPTH or self.objects > MAX_PARSED_OBJECTS:
+            raise AnalysisLimitExceeded("marshal traversal limit exceeded")
+        tag = self.byte()
+        flag, kind = bool(tag & 0x80), chr(tag & 0x7f)
+        if kind == "r":
+            index = self.int32()
+            if index < 0 or index >= len(self.refs) or self.refs[index] is _PENDING:
+                raise ValueError("invalid marshal reference")
+            # CPython ignores FLAG_REF on a reference; it does not add a slot.
+            return self.refs[index]
+        index = len(self.refs) if flag else None
+        if flag:
+            self.refs.append(_PENDING)
+        if kind == "0":
+            value = _NULL
+        elif kind in "NFTS.":
+            value = None
+        elif kind == "i":
+            value = self.int32()
+        elif kind == "I":
+            self.take(8)
+            value = None
+        elif kind == "l":
+            digits = abs(self.int32())
+            if digits > (len(self.data) - self.pos) // 2:
+                raise ValueError("invalid integer digit count")
+            self.take(digits * 2)
+            value = None
+        elif kind in "gy":
+            self.take(8 if kind == "g" else 16)
+            value = None
+        elif kind in "fx":
+            for _ in range(1 if kind == "f" else 2):
+                self.take(self.byte())
+            value = None
+        elif kind == "s":
+            value = self.take(self.length())
+        elif kind in "utaAzZ":
+            n = self.byte() if kind in "zZ" else self.length()
+            value = self.take(n).decode("utf-8", "surrogatepass")
+        elif kind in "()[<>":
+            n = self.byte() if kind == ")" else self.count()
+            value = self.sequence(n, depth, kind, index)
+        elif kind == "{":
+            if index is not None:
+                self.refs[index] = None
+            while True:
+                key = self.read(depth + 1)
+                if key is _NULL:
+                    break
+                self.read(depth + 1)
+            value = None
+        elif kind == ":":
+            value = self.sequence(3, depth, kind, index)
+        elif kind == "c":
+            value = self.code(depth)
+        else:
+            raise ValueError("unknown marshal type")
+        if index is not None:
+            self.refs[index] = value
+        return value
+
+
+def _instructions(code):
+    if len(code.co_code) % 2:
+        raise ValueError("odd-length wordcode")
+    extended = 0
+    caches = getattr(dis, "_inline_cache_entries", None)
+    offset = 0
+    while offset < len(code.co_code):
+        op, arg = code.co_code[offset:offset + 2]
+        arg |= extended
+        name = dis.opname[op]
+        if name == "EXTENDED_ARG":
+            if arg > 0xffffff:
+                raise AnalysisLimitExceeded("opcode argument limit exceeded")
+            extended = arg << 8
+        else:
+            extended = 0
+        if name == "IMPORT_NAME":
+            if arg >= len(code.co_names):
+                raise ValueError("invalid import name index")
+            target = code.co_names[arg]
+            yield name, target if isinstance(target, str) else None
+        else:
+            # The parent consumes only import argvals; co_names and co_consts
+            # are emitted separately for every opcode and string constant.
+            yield name, None
+        if isinstance(caches, list):
+            cache_count = caches[op]
+        elif isinstance(caches, dict):
+            cache_count = caches.get(name, 0)
+        else:
+            cache_count = 0
+        offset += 2 * (1 + cache_count)
+    if offset != len(code.co_code):
+        raise ValueError("truncated inline cache")
+
+
 def _walk_code(code, out, seen, depth):
     """Recursively collect names, string constants, and opcodes. dis does NOT
     recurse into nested code objects, so we walk co_consts ourselves — an
@@ -159,16 +364,17 @@ def _walk_code(code, out, seen, depth):
         raise AnalysisLimitExceeded("bytecode traversal limit exceeded")
     seen.add(id(code))
 
-    for name in getattr(code, "co_names", ()):  # attrs, globals, imports
-        out.append("NAME " + _esc(name))
-    for const in getattr(code, "co_consts", ()):
+    for name in code.co_names:  # attrs, globals, imports
+        if isinstance(name, str):
+            out.append("NAME " + _esc(name))
+    for const in code.co_consts:
         if isinstance(const, str):
             out.append("CONST " + _esc(const))
-    for instr in dis.get_instructions(code):
-        arg = (" " + _esc(instr.argval)) if isinstance(instr.argval, str) else ""
-        out.append("OP " + instr.opname + arg)
-    for const in getattr(code, "co_consts", ()):
-        if isinstance(const, types.CodeType):
+    for opname, argval in _instructions(code):
+        arg = (" " + _esc(argval)) if isinstance(argval, str) else ""
+        out.append("OP " + opname + arg)
+    for const in code.co_consts:
+        if isinstance(const, _DecodedCode):
             _walk_code(const, out, seen, depth + 1)
 
 
@@ -183,8 +389,11 @@ def main():
         sys.exit(2)
 
     with open(pyc_path, "rb") as f:
+        magic = f.read(4)
         f.seek(header_len)
         raw = f.read(MAX_INPUT_BYTES + 1)
+    if magic != importlib.util.MAGIC_NUMBER:
+        sys.exit(4)
     if len(raw) > MAX_INPUT_BYTES:
         sys.exit(ANALYSIS_LIMIT)
 
@@ -196,8 +405,8 @@ def main():
         sys.exit(SANDBOX_UNAVAILABLE)
 
     # Parse only after the OS has removed the child's host capabilities.
-    code = marshal.loads(raw)
-    if not isinstance(code, types.CodeType):
+    code = _Reader(raw).read()
+    if not isinstance(code, _DecodedCode):
         sys.exit(3)
 
     out = _BoundedLines()
@@ -218,7 +427,6 @@ if __name__ == "__main__":
     except AnalysisLimitExceeded:
         sys.exit(ANALYSIS_LIMIT)
     except BaseException:
-        # Any failure (EOFError/ValueError/MemoryError from a corrupt or hostile
-        # marshal stream, recursion errors, etc.) is a non-zero exit the parent
-        # reads as "unanalyzable". No traceback noise, no partial output.
+        # Any malformed or unsupported stream is an unanalyzable finding in the
+        # parent. No traceback noise and no partial output.
         sys.exit(4)

@@ -22,6 +22,11 @@ def _compile_to_pyc(src_code, directory, name="mod"):
     return src, pyc
 
 
+def _decode_fixture(pyc):
+    # Trusted compiler output exercises the same parser path as production.
+    return child._Reader(pyc.read_bytes()[16:]).read()
+
+
 def _cats(findings):
     return {f.category for f in findings}
 
@@ -168,6 +173,11 @@ class TestBytecodeDetection:
         findings = scanner.scan_repo(str(tmp_path))
         assert findings == []
 
+    def test_large_string_constant_remains_analyzable(self, tmp_path):
+        code = "data = " + repr("a" * 120000) + "\n"
+        _compile_to_pyc(code, tmp_path)
+        assert scanner.scan_repo(str(tmp_path)) == []
+
     def test_benign_orphan_outside_vendor_is_low_note(self, tmp_path):
         code = "def add(a, b):\n    return a + b\n"
         src, _pyc = _compile_to_pyc(code, tmp_path)
@@ -237,18 +247,20 @@ class TestSiblingResolution:
 
 class TestBytecodeSandbox:
     @pytest.mark.parametrize("limit", ["MAX_DEPTH", "MAX_CODE_OBJECTS"])
-    def test_traversal_limit_never_returns_partial_success(self, monkeypatch, limit):
+    def test_traversal_limit_never_returns_partial_success(self, tmp_path, monkeypatch, limit):
+        _, pyc = _compile_to_pyc("def nested():\n    return 1\n", tmp_path)
+        code = _decode_fixture(pyc)
         monkeypatch.setattr(child, limit, 0)
-        code = compile("def nested():\n    return 1\n", "trusted-test.py", "exec")
         with pytest.raises(ValueError, match="traversal limit"):
             child._walk_code(code, [], set(), 0)
 
-    def test_bad_disassembly_never_returns_partial_success(self, monkeypatch):
+    def test_bad_opcode_walk_never_returns_partial_success(self, tmp_path, monkeypatch):
         def bad_instructions(_):
             raise ValueError("malformed opcode")
-        monkeypatch.setattr(child.dis, "get_instructions", bad_instructions)
+        monkeypatch.setattr(child, "_instructions", bad_instructions)
+        _, pyc = _compile_to_pyc("x = 1\n", tmp_path)
         with pytest.raises(ValueError, match="malformed opcode"):
-            child._walk_code(compile("x = 1", "trusted-test.py", "exec"), [], set(), 0)
+            child._walk_code(_decode_fixture(pyc), [], set(), 0)
 
     def test_output_limit_never_returns_partial_success(self, tmp_path, monkeypatch):
         _, pyc = _compile_to_pyc("x = 'output exceeds cap'\n", tmp_path)
@@ -271,9 +283,22 @@ class TestBytecodeSandbox:
     def test_analysis_limit_maps_to_incomplete_reason(self, monkeypatch):
         monkeypatch.setattr(scanner.subprocess, "run", lambda *args, **kwargs:
                             subprocess.CompletedProcess(args[0], child.ANALYSIS_LIMIT, b"", b""))
-        blob, error = scanner._disassemble("input.pyc", 16)
+        blob, error, retry = scanner._disassemble("input.pyc", 16)
         assert blob is None
+        assert retry is False
         assert "safety limit" in error and "incomplete" in error
+
+    def test_cross_version_parse_failure_retries_other_interpreter(self, monkeypatch):
+        calls = []
+        def parse(_path, _header, interpreter=None):
+            calls.append(interpreter)
+            if interpreter is None:
+                return None, "could not parse bytecode", True
+            return "NAME os", None, False
+        monkeypatch.setattr(scanner, "_disassemble", parse)
+        monkeypatch.setattr(scanner, "_alt_interpreters", lambda: ("python-other",))
+        assert scanner._disassemble_best("input.pyc", 16) == ("NAME os", None)
+        assert calls == [None, "python-other"]
 
     def test_sandbox_unavailable_is_visible_in_scan(self, tmp_path, monkeypatch):
         _compile_to_pyc("value = 42\n", tmp_path)
@@ -287,16 +312,57 @@ class TestBytecodeSandbox:
         monkeypatch.setattr(child.sys, "platform", "unsupported")
         assert child._apply_sandbox() is False
 
-    def test_no_sandbox_never_unmarshals(self, tmp_path, monkeypatch):
-        pyc = tmp_path / "input.pyc"
-        pyc.write_bytes(b"untrusted")
+    def test_no_sandbox_never_parses(self, tmp_path, monkeypatch):
+        _, pyc = _compile_to_pyc("value = 1\n", tmp_path)
         monkeypatch.setattr(child.sys, "argv", ["child", str(pyc), "0"])
         monkeypatch.setattr(child, "_apply_limits", lambda: None)
         monkeypatch.setattr(child, "_apply_sandbox", lambda: False)
-        monkeypatch.setattr(child.marshal, "loads", lambda _: pytest.fail("parsed without sandbox"))
+        monkeypatch.setattr(child._Reader, "read", lambda *_: pytest.fail("parsed without sandbox"))
         with pytest.raises(SystemExit) as exc:
             child.main()
         assert exc.value.code == child.SANDBOX_UNAVAILABLE
+
+    def test_cyclic_marshal_container_is_bounded(self):
+        # CPython accepts container back-references; keep scanning safely.
+        raw = b"\xa9\x01\x72\x00\x00\x00\x00"
+        value = child._Reader(raw).read()
+        assert value[0] is value
+
+    def test_flagged_reference_does_not_shift_reference_indexes(self):
+        raw = (b"\xa9\x04" + b"\xfa\x01x" + b"\xf2\x01\x00\x00\x00"
+               + b"\xfa\x01y" + b"r\x02\x00\x00\x00")
+        assert list(child._Reader(raw).read()) == ["x", "x", "y", "y"]
+
+    def test_large_container_is_not_rejected_by_arbitrary_object_cap(self):
+        raw = b"(" + (100001).to_bytes(4, "little") + b"N" * 100001
+        assert len(child._Reader(raw).read()) == 100001
+
+    def test_inline_cache_bytes_cannot_forge_import(self, tmp_path):
+        _, pyc = _compile_to_pyc("x = object()\ny = x.real\n", tmp_path)
+        code = _decode_fixture(pyc)
+        opcodes = bytearray(code.co_code)
+        cache_sizes = child.dis._inline_cache_entries
+        for offset in range(0, len(opcodes), 2):
+            name = child.dis.opname[opcodes[offset]]
+            count = (cache_sizes[opcodes[offset]] if isinstance(cache_sizes, list)
+                     else cache_sizes.get(name, 0))
+            if count:
+                opcodes[offset + 2:offset + 4] = bytes([child.dis.opmap["IMPORT_NAME"], 255])
+                break
+        else:
+            pytest.skip("interpreter has no inline caches")
+        code.co_code = bytes(opcodes)
+        out = child._BoundedLines()
+        child._walk_code(code, out, set(), 0)
+        assert not any(line.startswith("OP IMPORT_NAME") for line in out)
+
+    def test_unused_non_string_name_does_not_hide_other_imports(self, tmp_path):
+        _, pyc = _compile_to_pyc("import os\n", tmp_path)
+        code = _decode_fixture(pyc)
+        code.co_names.items.append(42)
+        out = child._BoundedLines()
+        child._walk_code(code, out, set(), 0)
+        assert "OP IMPORT_NAME os" in out
 
     def test_missing_linux_library_fails_closed(self, monkeypatch):
         monkeypatch.setattr(child.sys, "platform", "linux")
@@ -311,8 +377,9 @@ class TestBytecodeSandbox:
             assert kwargs["stdin"] == subprocess.DEVNULL
             return subprocess.CompletedProcess(command, child.SANDBOX_UNAVAILABLE, b"", b"")
         monkeypatch.setattr(scanner.subprocess, "run", run)
-        blob, error = scanner._disassemble("input.pyc", 16)
+        blob, error, retry = scanner._disassemble("input.pyc", 16)
         assert blob is None
+        assert retry is False
         assert "OS sandbox unavailable" in error
 
     @pytest.mark.skipif(sys.platform not in ("darwin", "linux"), reason="native sandbox unavailable")

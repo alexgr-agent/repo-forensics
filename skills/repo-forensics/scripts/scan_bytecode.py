@@ -11,9 +11,9 @@ This scanner reaches .pyc (including inside __pycache__) via
 core.walk_aux(reach_pycache=True), and for each one:
   - identifies it by magic and derives the header length from the magic
     (16 bytes for 3.7+ per PEP 552, 12 for 3.3-3.6, 8 for older),
-  - unmarshals + disassembles it in an ISOLATED SUBPROCESS (_pyc_unmarshal.py)
-    so hostile bytecode that crashes the interpreter at the C level can only
-    kill the child, never this scan (KTD6 user-safety),
+  - parses bounded marshal fields in an ISOLATED SUBPROCESS (_pyc_unmarshal.py)
+    without invoking CPython's native code-object deserializer; a hostile file
+    cannot crash or hang the parent scan (KTD6 user-safety),
   - runs the shared SAST + trifecta patterns over the disassembly text
     (opcodes + co_names + string co_consts) -> `bytecode-hidden-logic`,
   - flags orphan .pyc (no sibling .py) but only ELEVATES it when a primitive
@@ -334,8 +334,7 @@ def _unanalyzable(rel_path, reason):
 
 
 def _disassemble(pyc_path, header_len, interpreter=None):
-    """Run the isolated unmarshal+dis child. Returns (blob, error_reason).
-    Exactly one of the two is truthy."""
+    """Run the isolated bounded parser. Return blob, error, and retry eligibility."""
     try:
         proc = subprocess.run(
             [interpreter or sys.executable, "-I", "-S", _UNMARSHAL, pyc_path, str(header_len)],
@@ -345,33 +344,32 @@ def _disassemble(pyc_path, header_len, interpreter=None):
             close_fds=True,
         )
     except subprocess.TimeoutExpired:
-        return None, "disassembly timed out"
+        return None, "disassembly timed out", False
     except OSError as exc:
-        return None, f"subprocess failed: {exc}"
+        return None, f"subprocess failed: {exc}", False
     if proc.returncode != 0:
         if proc.returncode == 5:
-            return None, "OS sandbox unavailable; unsafe bytecode disassembly was skipped"
+            return None, "OS sandbox unavailable; unsafe bytecode disassembly was skipped", False
         if proc.returncode == 6:
-            return None, "bytecode analysis exceeded a safety limit; coverage is incomplete"
-        # Negative returncode == killed by signal (the C-level crash we isolate).
+            return None, "bytecode analysis exceeded a safety limit; coverage is incomplete", False
+        # Negative returncode means a child was killed by a signal.
         if proc.returncode < 0:
-            return None, f"interpreter crash unmarshalling bytecode (signal {-proc.returncode})"
-        return None, "could not unmarshal bytecode (corrupt or cross-version)"
+            return None, f"bytecode parser crashed (signal {-proc.returncode})", False
+        return None, "could not parse bytecode (corrupt or cross-version)", True
     # surrogatepass matches the child's encoding so a lone-surrogate constant
     # round-trips instead of being mangled.
-    return proc.stdout.decode("utf-8", "surrogatepass"), None
+    return proc.stdout.decode("utf-8", "surrogatepass"), None, False
 
 
 def _disassemble_best(pyc_path, header_len):
-    """Disassemble with the host interpreter; on a cross-version unmarshal
-    failure, fall back to each OTHER installed interpreter so a .pyc compiled for
-    a different Python can still be decoded for analysis. Best-effort: detection
-    never depends on this succeeding (KTD-2)."""
-    blob, error = _disassemble(pyc_path, header_len)
-    if error is None or "unmarshal" not in error:
+    """Parse with the host interpreter; on a cross-version format mismatch,
+    fall back to each other installed interpreter. The parser uses that
+    interpreter's magic and opcode table (KTD-2)."""
+    blob, error, retry = _disassemble(pyc_path, header_len)
+    if not retry:
         return blob, error
     for interp in _alt_interpreters():
-        alt_blob, alt_error = _disassemble(pyc_path, header_len, interp)
+        alt_blob, alt_error, _ = _disassemble(pyc_path, header_len, interp)
         if alt_error is None:
             return alt_blob, None
     return blob, error
@@ -447,7 +445,7 @@ def scan_pyc(pyc_path, rel_path):
                     scanner=SCANNER_NAME, severity="medium",
                     title="Opaque bytecode shadowing source",
                     description=(
-                        "A .pyc that no installed interpreter can unmarshal sits "
+                        "A .pyc that no installed interpreter can parse sits "
                         "next to a readable .py source. Python loads cached "
                         "bytecode over source when the header validates, so review "
                         "whether this is a poisoned cache or a benign artifact "

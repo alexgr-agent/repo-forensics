@@ -28,8 +28,9 @@ All notable changes to repo-forensics. Versions follow semver.
   process cannot start; report the launch failure instead of a clean result.
 - Keep the Git config plant scan within its wall-clock budget on large source
   files by tracking active `.git` bindings without rescanning prior bindings.
-- Run bytecode disassembly only after a deny-default OS sandbox is active and
-  report incomplete coverage when isolation or analysis limits prevent it.
+- Parse bytecode names, constants, and import opcodes without CPython's native
+  code-object deserializer, inside a deny-default OS sandbox. Report incomplete
+  coverage when isolation or analysis limits prevent parsing.
   Restrict macOS dynamic hook execution with a deny-default Seatbelt profile.
 - Reject signed rule-pack overlays that omit active shipped rules without an
   explicit retirement, preserving those detections when a cache is stale.
