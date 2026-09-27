@@ -300,6 +300,14 @@ class TestBytecodeSandbox:
         assert scanner._disassemble_best("input.pyc", 16) == ("NAME os", None)
         assert calls == [None, "python-other"]
 
+    def test_only_magic_mismatch_retries_other_interpreter(self, monkeypatch):
+        for code, retry in ((child.MAGIC_MISMATCH, True), (4, False)):
+            monkeypatch.setattr(scanner.subprocess, "run", lambda *args, **kwargs:
+                                subprocess.CompletedProcess(args[0], code, b"", b""))
+            blob, error, should_retry = scanner._disassemble("input.pyc", 16)
+            assert blob is None and error
+            assert should_retry is retry
+
     def test_sandbox_unavailable_is_visible_in_scan(self, tmp_path, monkeypatch):
         _compile_to_pyc("value = 42\n", tmp_path)
         monkeypatch.setattr(scanner, "_disassemble_best", lambda *args: (
@@ -332,6 +340,36 @@ class TestBytecodeSandbox:
         raw = (b"\xa9\x04" + b"\xfa\x01x" + b"\xf2\x01\x00\x00\x00"
                + b"\xfa\x01y" + b"r\x02\x00\x00\x00")
         assert list(child._Reader(raw).read()) == ["x", "x", "y", "y"]
+
+    def test_flagged_singleton_does_not_shift_reference_indexes(self):
+        # CPython accepts FLAG_REF on a singleton but does not register it.
+        raw = (b"(\x03\x00\x00\x00" + b"\xce" + b"\xe1\x01\x00\x00\x00a"
+               + b"r\x00\x00\x00\x00")
+        assert list(child._Reader(raw).read()) == [None, "a", "a"]
+
+    def test_ascii_tags_preserve_non_utf8_bytes(self):
+        assert child._Reader(b"\xfa\x01\x80").read() == "\x80"
+
+    def test_nested_constant_containers_are_walked(self, tmp_path):
+        _, pyc = _compile_to_pyc("import os\n", tmp_path)
+        nested = _decode_fixture(pyc)
+        _, outer_pyc = _compile_to_pyc("value = 1\n", tmp_path, name="outer")
+        outer = _decode_fixture(outer_pyc)
+        consts = child._Sequence("(")
+        consts.items.extend(["hidden-marker", nested])
+        consts.items.append(consts)  # Cyclic references remain bounded.
+        outer.co_consts.items.append(consts)
+        out = child._BoundedLines()
+        child._walk_code(outer, out, set(), 0)
+        assert "CONST hidden-marker" in out
+        assert "OP IMPORT_NAME os" in out
+
+    @pytest.mark.skipif(sys.version_info < (3, 11), reason="no inline caches")
+    def test_missing_inline_cache_table_fails_closed(self, tmp_path, monkeypatch):
+        _, pyc = _compile_to_pyc("import os\n", tmp_path)
+        monkeypatch.setattr(child.dis, "_inline_cache_entries", None)
+        with pytest.raises(child.AnalysisLimitExceeded, match="inline cache table"):
+            list(child._instructions(_decode_fixture(pyc)))
 
     def test_large_container_is_not_rejected_by_arbitrary_object_cap(self):
         raw = b"(" + (100001).to_bytes(4, "little") + b"N" * 100001

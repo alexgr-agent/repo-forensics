@@ -36,6 +36,7 @@ MAX_INPUT_BYTES = 5 * 1024 * 1024
 MAX_PARSED_OBJECTS = MAX_INPUT_BYTES  # Every parsed object consumes at least one byte.
 SANDBOX_UNAVAILABLE = 5
 ANALYSIS_LIMIT = 6
+MAGIC_MISMATCH = 7
 
 
 class AnalysisLimitExceeded(ValueError):
@@ -265,8 +266,9 @@ class _Reader:
                 raise ValueError("invalid marshal reference")
             # CPython ignores FLAG_REF on a reference; it does not add a slot.
             return self.refs[index]
-        index = len(self.refs) if flag else None
-        if flag:
+        # CPython does not register singleton tags in the reference table.
+        index = len(self.refs) if flag and kind not in "0NFTS." else None
+        if index is not None:
             self.refs.append(_PENDING)
         if kind == "0":
             value = _NULL
@@ -294,7 +296,8 @@ class _Reader:
             value = self.take(self.length())
         elif kind in "utaAzZ":
             n = self.byte() if kind in "zZ" else self.length()
-            value = self.take(n).decode("utf-8", "surrogatepass")
+            encoding = "latin-1" if kind in "aAzZ" else "utf-8"
+            value = self.take(n).decode(encoding, "surrogatepass")
         elif kind in "()[<>":
             n = self.byte() if kind == ")" else self.count()
             value = self.sequence(n, depth, kind, index)
@@ -323,6 +326,8 @@ def _instructions(code):
         raise ValueError("odd-length wordcode")
     extended = 0
     caches = getattr(dis, "_inline_cache_entries", None)
+    if sys.version_info >= (3, 11) and (not isinstance(caches, (list, dict)) or not caches):
+        raise AnalysisLimitExceeded("inline cache table unavailable")
     offset = 0
     while offset < len(code.co_code):
         op, arg = code.co_code[offset:offset + 2]
@@ -344,11 +349,16 @@ def _instructions(code):
             # are emitted separately for every opcode and string constant.
             yield name, None
         if isinstance(caches, list):
+            if op >= len(caches):
+                raise AnalysisLimitExceeded("inline cache table incomplete")
             cache_count = caches[op]
         elif isinstance(caches, dict):
+            # Current CPython's dictionary lists only opcodes with caches.
             cache_count = caches.get(name, 0)
         else:
             cache_count = 0
+        if not isinstance(cache_count, int) or cache_count < 0:
+            raise AnalysisLimitExceeded("invalid inline cache count")
         offset += 2 * (1 + cache_count)
     if offset != len(code.co_code):
         raise ValueError("truncated inline cache")
@@ -367,15 +377,29 @@ def _walk_code(code, out, seen, depth):
     for name in code.co_names:  # attrs, globals, imports
         if isinstance(name, str):
             out.append("NAME " + _esc(name))
-    for const in code.co_consts:
-        if isinstance(const, str):
-            out.append("CONST " + _esc(const))
     for opname, argval in _instructions(code):
         arg = (" " + _esc(argval)) if isinstance(argval, str) else ""
         out.append("OP " + opname + arg)
+    seen_containers = set()
+
+    def walk_const(const, const_depth):
+        if const_depth > MAX_DEPTH:
+            raise AnalysisLimitExceeded("bytecode traversal limit exceeded")
+        if isinstance(const, str):
+            out.append("CONST " + _esc(const))
+        elif isinstance(const, _DecodedCode):
+            _walk_code(const, out, seen, const_depth)
+        elif isinstance(const, _Sequence):
+            if id(const) in seen_containers:
+                return
+            if len(seen_containers) >= MAX_CODE_OBJECTS:
+                raise AnalysisLimitExceeded("bytecode traversal limit exceeded")
+            seen_containers.add(id(const))
+            for item in const:
+                walk_const(item, const_depth + 1)
+
     for const in code.co_consts:
-        if isinstance(const, _DecodedCode):
-            _walk_code(const, out, seen, depth + 1)
+        walk_const(const, depth + 1)
 
 
 def main():
@@ -393,7 +417,7 @@ def main():
         f.seek(header_len)
         raw = f.read(MAX_INPUT_BYTES + 1)
     if magic != importlib.util.MAGIC_NUMBER:
-        sys.exit(4)
+        sys.exit(MAGIC_MISMATCH)
     if len(raw) > MAX_INPUT_BYTES:
         sys.exit(ANALYSIS_LIMIT)
 

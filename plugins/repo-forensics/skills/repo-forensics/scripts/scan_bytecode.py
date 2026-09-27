@@ -348,6 +348,8 @@ def _disassemble(pyc_path, header_len, interpreter=None):
     except OSError as exc:
         return None, f"subprocess failed: {exc}", False
     if proc.returncode != 0:
+        if proc.returncode == 7:
+            return None, "could not parse bytecode (cross-version)", True
         if proc.returncode == 5:
             return None, "OS sandbox unavailable; unsafe bytecode disassembly was skipped", False
         if proc.returncode == 6:
@@ -355,7 +357,7 @@ def _disassemble(pyc_path, header_len, interpreter=None):
         # Negative returncode means a child was killed by a signal.
         if proc.returncode < 0:
             return None, f"bytecode parser crashed (signal {-proc.returncode})", False
-        return None, "could not parse bytecode (corrupt or cross-version)", True
+        return None, "could not parse bytecode (corrupt or unsupported)", False
     # surrogatepass matches the child's encoding so a lone-surrogate constant
     # round-trips instead of being mangled.
     return proc.stdout.decode("utf-8", "surrogatepass"), None, False
