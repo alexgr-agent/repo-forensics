@@ -373,6 +373,23 @@ class TestPluginManifestTracking:
         assert "SYMLINK SKIPPED" in report_text
         assert "SOURCE MANIFEST SKIPPED" in report_text
 
+    def test_nested_marketplace_mirror_skips_source_only_catalog(self, tmp_path):
+        source_root = tmp_path / "source"
+        source_root.mkdir()
+        skill_root = self._build_repo_with_manifests(source_root)
+        verify_install.generate_checksums(skill_root)
+
+        mirror_root = tmp_path / "plugins" / "repo-forensics"
+        mirror_root.mkdir(parents=True)
+        shutil.copytree(source_root / "skills", mirror_root / "skills")
+        shutil.copytree(source_root / ".claude-plugin", mirror_root / ".claude-plugin")
+        shutil.copytree(source_root / ".codex-plugin", mirror_root / ".codex-plugin")
+
+        passed, report = verify_install.verify_checksums(
+            str(mirror_root / "skills" / "repo-forensics"))
+        assert passed, "\n".join(report)
+        assert "SOURCE MANIFEST SKIPPED" in "\n".join(report)
+
 
 class TestWindowsPathNormalization:
     """The non-git fallback in get_tracked_files must emit forward-slash keys.

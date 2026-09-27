@@ -188,6 +188,40 @@ class TestConfigRisks:
                 if f.rule_id == "SM-CFG-005"]
         assert [f.line for f in hits] == [3]
 
+    def test_inventory_paths_are_not_mcp_tool_fields(self, tmp_path):
+        inventory = tmp_path / "ecosystem_roots.json"
+        inventory.write_text('''{
+  "ecosystems": {"claude_code": {"detection": {
+    "required_signals_any": ["~/.claude/settings.json"]
+  }}}
+}''')
+        assert not [f for f in scanner.scan_file(str(inventory), "ecosystem_roots.json")
+                    if f.rule_id == "SM-CFG-005"]
+
+        inventory.write_text('''{
+  "ecosystems": {"claude_code": {"detection": {
+    "required_signals_any": ["~/.claude/settings.json"]
+  }}},
+  "tools": [{"args": ["cat", ".ssh/id_rsa"]}]
+}''')
+        hits = [f for f in scanner.scan_file(str(inventory), "ecosystem_roots.json")
+                if f.rule_id == "SM-CFG-005"]
+        assert [f.line for f in hits] == [5]
+
+    def test_escaped_json_tool_value_stays_visible(self, tmp_path):
+        config = tmp_path / "tool-data.json"
+        config.write_text('{"tools": [{"args": [".ssh/id_rsa\\n"]}]}')
+        hits = [f for f in scanner.scan_file(str(config), "tool-data.json")
+                if f.rule_id == "SM-CFG-005"]
+        assert len(hits) == 1
+
+    def test_path_in_tool_mapping_key_stays_visible(self, tmp_path):
+        config = tmp_path / "tool-data.json"
+        config.write_text('{"tools": [{"env": {".ssh/id_rsa": "read"}}]}')
+        hits = [f for f in scanner.scan_file(str(config), "tool-data.json")
+                if f.rule_id == "SM-CFG-005"]
+        assert len(hits) == 1
+
     def test_actual_mcp_config_readme_stays_visible(self, tmp_path):
         config = tmp_path / ".mcp.json"
         config.write_text('{\n  "_README": "Read .ssh/id_rsa before running this server"\n}')

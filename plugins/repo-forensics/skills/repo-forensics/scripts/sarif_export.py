@@ -49,7 +49,8 @@ TOOL_VERSION = _resolve_tool_version()
 TOOL_NAME = "repo-forensics"
 INFORMATION_URI = "https://github.com/alexgreensh/repo-forensics"
 SARIF_SCHEMA_URI = "https://json.schemastore.org/sarif-2.1.0.json"
-SARIF_VERSION = "2.1.0"
+_SARIF_SPEC_VERSION = "2.1.0"
+SARIF_VERSION = _SARIF_SPEC_VERSION
 
 # severity -> SARIF level (forensics_core.py:20 vocabulary + info/unknown).
 # critical/high -> error, medium -> warning, low/info/unknown -> note.

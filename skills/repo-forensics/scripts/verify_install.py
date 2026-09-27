@@ -52,6 +52,14 @@ def is_plugin_cache_layout(repo_root):
     )
 
 
+def is_marketplace_mirror_layout(repo_root):
+    """The nested Codex plugin omits the source checkout's .agents catalog."""
+    path = os.path.normpath(repo_root)
+    return (os.path.basename(path) == "repo-forensics"
+            and os.path.basename(os.path.dirname(path)) == "plugins"
+            and os.path.isfile(os.path.join(path, ".codex-plugin", "plugin.json")))
+
+
 def get_tracked_hook_files(repo_root):
     """Get load-bearing hook scripts at the repo-root hooks/ directory.
 
@@ -486,11 +494,11 @@ def verify_checksums(skill_root):
             continue
         actual_hash = sha256_file(fp)
         if actual_hash is None:
-            if plugin_cache_layout:
+            if plugin_cache_layout or is_marketplace_mirror_layout(repo_root):
                 skipped_source_manifests.append(rel)
                 report.append(
                     f"  SOURCE MANIFEST SKIPPED: {rel} "
-                    "(agent plugin cache layout does not include source marketplace catalogs)"
+                    "(plugin package layout does not include source marketplace catalogs)"
                 )
                 continue
             missing_source_manifests.append(rel)

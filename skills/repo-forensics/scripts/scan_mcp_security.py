@@ -535,6 +535,35 @@ def is_mcp_related(file_path, rel_path, content_sample):
     return any(sig in content_sample for sig in MCP_SIGNALS)
 
 
+def _active_json_tool_values(content):
+    """Return values in executable/tool fields, or None for unparseable JSON."""
+    if len(content) > 2 * 1024 * 1024:
+        return None  # Keep the original findings when structure is too costly to prove.
+    try:
+        document = json_module.loads(content)
+    except (ValueError, RecursionError):
+        return None
+    active_keys = {"mcpservers", "tools", "tool", "args", "command", "env",
+                   "description", "instructions"}
+    values = set()
+    pending = [(document, False)]
+    while pending:
+        node, active = pending.pop()
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if active and isinstance(key, str):
+                    values.add(key)
+                pending.append((value, active or str(key).lower() in active_keys))
+        elif isinstance(node, list):
+            pending.extend((value, active) for value in node)
+        elif active and isinstance(node, str) and node:
+            values.add(node)
+    path_rule = next((rule.regex for rule in MCP_CONFIG_RULES
+                      if rule.id == 'SM-CFG-005'), None)
+    return {form for value in values if path_rule and path_rule.search(value)
+            for form in (value, json_module.dumps(value, ensure_ascii=False)[1:-1])}
+
+
 def scan_file(file_path, rel_path):
     """Scan a single file for MCP attack surface patterns."""
     ext = os.path.splitext(file_path)[1].lower()
@@ -599,9 +628,12 @@ def scan_file(file_path, rel_path):
                                       "mcp-config-risk", "critical")
         if ext == '.json' and basename not in ('settings.json', 'claude_desktop_config.json', '.mcp.json'):
             lines = content.split('\n')
+            active_values = _active_json_tool_values(content)
             config_findings = [f for f in config_findings
                                if not (f.rule_id == 'SM-CFG-005' and 1 <= f.line <= len(lines)
-                                       and re.match(r'^\s*"_README"\s*:', lines[f.line - 1]))]
+                                       and (re.match(r'^\s*"_README"\s*:', lines[f.line - 1])
+                                            or (active_values is not None and not any(
+                                                value in lines[f.line - 1] for value in active_values))))]
         findings.extend(config_findings)
 
     # Category H: MCP tool name collision detection

@@ -2,6 +2,23 @@
 
 All notable changes to repo-forensics. Versions follow semver.
 
+## [2.14.13] - 2026-09-27
+
+### Fix: grade defensive examples and inventory data by context
+
+- Ignore sensitive path references in JSON inventory fields when they are not
+  used by an executable or MCP tool. Keep path references in tool commands,
+  arguments, descriptions, instructions, and environment values visible.
+- Grade Action input expressions in `env:` mappings as high severity while
+  keeping expressions directly in shell `run:` blocks critical.
+- Grade narrowly identified, quoted safety examples in Python docstrings and
+  the cited research taxonomy as advisory evidence. Live commands and added
+  instructions remain critical.
+- Preserve the SARIF 2.1.0 protocol version while avoiding a false package
+  version mismatch in Version Master.
+- Verify the nested Codex marketplace payload without requiring the source
+  checkout's `.agents` marketplace catalog, which that payload does not ship.
+
 ## [2.14.12] - 2026-09-27
 
 ### Security: verify plugin checkout provenance and disabled TLS settings
