@@ -720,7 +720,8 @@ def test_expected_builtin_not_phantom(tmp_path, mod):
 
 
 @pytest.mark.parametrize("src", ["export default (\n" * 30000, "import \n" * 30000,
-                                 "require(/* " * 20000, "const r = require\n" * 20000 + "r(" * 20000])
+                                 "require(/* " * 20000, "const r = require\n" * 20000 + "r(" * 20000],
+                         ids=["export-default-open", "import-bare", "require-comment-open", "require-alias-call"])
 def test_manifest_extractor_is_linear_on_pathological_input(tmp_path, src):
     import time
     p = tmp_path / "x.js"
@@ -839,7 +840,8 @@ def test_oversized_padding_marker_covers_every_call_form(tmp_path, call):
     assert "unparsed-comment-padded-import" in _phantoms(repo)
 
 
-@pytest.mark.parametrize("src", ["import /* ' */ x from 'm'\n" * 20000, "import /* \n" * 20000])
+@pytest.mark.parametrize("src", ["import /* ' */ x from 'm'\n" * 20000, "import /* \n" * 20000],
+                         ids=["quote-in-comment", "unterminated-comment"])
 def test_quote_comment_clause_scan_is_linear(tmp_path, src):
     import time
     p = tmp_path / "x.mjs"
