@@ -52,7 +52,22 @@ def hook_bash():
     bash = _working_bash()
     if bash is None:
         pytest.skip('No working Bash: install Git for Windows; WSL launcher without a distribution cannot run hook tests')
+    if os.name == 'nt':
+        _probe_hook_python(bash)
     return bash
+
+
+def _probe_hook_python(bash):
+    probe = subprocess.run(
+        [bash, (ROOT / 'hooks/run_pre_scan.sh').as_posix()],
+        input=json.dumps({'tool_name': 'Bash', 'tool_input': {'command': 'git status'}}).encode('utf-8'),
+        capture_output=True, timeout=10, check=False,
+        env=dict(os.environ, CLAUDE_PLUGIN_ROOT=ROOT.as_posix()))
+    diagnostic = (b'repo-forensics: no usable Python 3 interpreter found\n'
+                  b'  tried: python3, python, py -3, FHS/Nix direct paths, codex runtime\n')
+    if probe.returncode == 127 and probe.stderr.replace(b'\r\n', b'\n') == diagnostic:
+        pytest.skip('Git Bash is usable, but the hook launcher rejects the Windows CI hostedtoolcache Python location: no usable Python 3 interpreter found')
+    assert probe.returncode == 0, ('Hook environment probe failed', probe.returncode, probe.stdout, probe.stderr)
 
 
 BAD = [
@@ -313,3 +328,29 @@ def test_bash_resolver_continues_after_timeout(monkeypatch):
         return subprocess.CompletedProcess(argv, 0, b'', b'')
     monkeypatch.setattr(subprocess, 'run', run)
     assert _working_bash(windows=True) == r'C:\Tools\Git\usr\bin\bash.exe'
+
+
+@pytest.mark.parametrize('newline', [b'\n', b'\r\n'])
+def test_hook_probe_skips_exact_missing_interpreter(monkeypatch, newline):
+    monkeypatch.setattr(subprocess, 'run', lambda argv, **kwargs: subprocess.CompletedProcess(argv, 127, b'', newline.join([b'repo-forensics: no usable Python 3 interpreter found', b'  tried: python3, python, py -3, FHS/Nix direct paths, codex runtime', b''])))
+    with pytest.raises(pytest.skip.Exception, match='hostedtoolcache'):
+        _probe_hook_python('bash')
+
+
+@pytest.mark.parametrize('code,stderr', [(127, b'permission denied'), (1, b'no usable Python 3 interpreter found'), (2, b'blocked'), (127, b'no usable Python 3 interpreter found'),
+    (127, b'prefixrepo-forensics: no usable Python 3 interpreter foundsuffix'),
+    (127, b'UNRELATED ERROR: repo-forensics: no usable Python 3 interpreter found but Python IS available\n'),
+    (127, b'repo-forensics: no usable Python 3 interpreter found\n  tried: python3, python, py -3, FHS/Nix direct paths, codex runtime\nextra error\n')])
+def test_hook_probe_other_failure_not_skipped(monkeypatch, code, stderr):
+    monkeypatch.setattr(subprocess, 'run', lambda argv, **kwargs: subprocess.CompletedProcess(argv, code, b'', stderr))
+    with pytest.raises(AssertionError, match='Hook environment probe failed'):
+        _probe_hook_python('bash')
+
+
+def test_hook_probe_success(monkeypatch):
+    def run(argv, **kwargs):
+        assert json.loads(kwargs['input'])['tool_input']['command'] == 'git status'
+        assert argv[1].endswith('/hooks/run_pre_scan.sh')
+        return subprocess.CompletedProcess(argv, 0, b'{}', b'')
+    monkeypatch.setattr(subprocess, 'run', run)
+    _probe_hook_python('bash')
