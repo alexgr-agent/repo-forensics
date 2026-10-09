@@ -210,6 +210,361 @@ def is_inert_quote_carrier(command):
     return not PIPE_TO_SHELL.search(residue)
 
 
+# PowerShell download/execution gate. Deliberately duplicated in auto_scan:
+# pre_scan must not import the post-hook (scanner fan-out / recursion risk).
+_PS_FETCH = frozenset(('irm', 'iwr', 'curl', 'wget', 'invoke-restmethod',
+                       'invoke-webrequest', 'start-bitstransfer'))
+_PS_HINT = re.compile(r'(?:irm|iwr|curl|wget|invoke-restmethod|invoke-webrequest|start-bitstransfer|downloadstring|downloadfile|powershell|pwsh)', re.IGNORECASE)
+_PS_EXEC = frozenset(('iex', 'invoke-expression'))
+_PS_SHELL = frozenset(('sh', 'bash', 'zsh', 'dash', 'ksh', 'csh', 'tcsh', 'fish'))
+_PS_HOST = frozenset(('powershell', 'powershell.exe', 'pwsh', 'pwsh.exe'))
+_PS_ENCODED = frozenset(('e', 'ec', 'en', 'enc', 'enco', 'encod', 'encode',
+                         'encoded', 'encodedc', 'encodedco', 'encodedcom',
+                         'encodedcomm', 'encodedcomma', 'encodedcomman',
+                         'encodedcommand'))
+
+
+def _ps_tokens(command, dialect='shell'):
+    """A bounded lexical view, not a PowerShell evaluator. Never runs code.
+
+    Keep literal strings separate from code; command/Invoke-Expression strings
+    are inspected only at their execution sites. Remove PowerShell backtick
+    escapes from names and join escaped line continuations. Comments are inert.
+    """
+    tokens = []
+    i, n = 0, len(command)
+    while i < n:
+        c = command[i]
+        if c.isspace():
+            start = i
+            while i < n and command[i].isspace():
+                i += 1
+            if '\n' in command[start:i] and tokens and tokens[-1] != ('symbol', '|') and command[i:i + 1] != '|':
+                tokens.append(('symbol', ';'))
+        elif command.startswith('<#', i):
+            end = command.find('#>', i + 2)
+            i = n if end < 0 else end + 2
+        elif c == '#':
+            end = command.find('\n', i)
+            if end >= 0 and tokens and tokens[-1] != ('symbol', '|'):
+                tokens.append(('symbol', ';'))
+            i = n if end < 0 else end + 1
+        elif c in "'\"":
+            quote, value = c, []
+            i += 1
+            while i < n:
+                if command[i] == quote:
+                    if i + 1 < n and command[i + 1] == quote:
+                        value.append(quote)
+                        i += 2
+                        continue
+                    i += 1
+                    break
+                if dialect == 'shell' and quote == '"' and command[i] == '\\' and i + 1 < n and command[i + 1] in ('"', '\\'):
+                    # Shell -c strings escape nested quotes with backslashes.
+                    value.append(command[i + 1])
+                    i += 2
+                    continue
+                if quote == '"' and command[i] == '`' and i + 1 < n:
+                    # Retain the escape marker so an escaped dollar is inert.
+                    value.append('`')
+                    i += 1
+                value.append(command[i])
+                i += 1
+            tokens.append(('double' if quote == '"' else 'string', ''.join(value)))
+        elif c in '|;(){}&,=':
+            tokens.append(('symbol', c))
+            i += 1
+        else:
+            value = []
+            while i < n and not command[i].isspace() and command[i] not in "'\"|;(){}&,=#":
+                if command[i] == '`' and i + 1 < n:
+                    i += 1
+                    if command[i] in '\r\n':
+                        if command[i] == '\r' and i + 1 < n and command[i + 1] == '\n':
+                            i += 1
+                        i += 1
+                        continue
+                value.append(command[i])
+                i += 1
+            tokens.append(('word', ''.join(value).lower()))
+    return tokens
+
+
+def _ps_name(tokens, index):
+    kind, value = tokens[index]
+    # Quoted names are invoked ONLY after &, never just because text names a tool.
+    if kind in ('string', 'double') and not (index and tokens[index - 1] in (('symbol', '&'), ('word', '.'))):
+        return ''
+    if kind not in ('word', 'string', 'double'):
+        return ''
+    return value.lower().replace('`', '').replace('\\', '/').rsplit('/', 1)[-1]
+
+
+def _ps_fetches(tokens):
+    for i, (kind, value) in enumerate(tokens):
+        name = _ps_name(tokens, i)
+        if name in _PS_FETCH:
+            # Require a command/expression position, not an argument or URL.
+            if i == 0 or tokens[i - 1][1] in ('(', '|', ';', '{', '&', '=', '.', '-command', '-c', '/c', '/command'):
+                return True
+        if kind == 'word' and ('.downloadstring' in value or '.downloadfile' in value) and (value.startswith('$') or (value.startswith('.') and i and tokens[i - 1][1] == ')')):
+            return True
+    return False
+
+
+def _ps_subexpressions(value):
+    i = 0
+    while i < len(value):
+        if value[i] == '`':
+            i += 2
+        elif value.startswith('$(', i):
+            start, balance = i + 2, 1
+            i += 2
+            while i < len(value) and balance:
+                if value[i] == '`':
+                    i += 2
+                    continue
+                if value[i] == '(':
+                    balance += 1
+                elif value[i] == ')':
+                    balance -= 1
+                i += 1
+            yield value[start:i - 1] if not balance else value[start:i]
+        else:
+            i += 1
+
+
+def _ps_pipe_before(tokens, index, start):
+    while index > start and tokens[index - 1][1] in ('&', 'sudo'):
+        index -= 1
+    return index > start and tokens[index - 1][1] == '|'
+
+
+def _ps_literal_heredoc_directives(line):
+    """Read quoted shell heredoc delimiters outside strings and comments."""
+    i = 0
+    while i < len(line):
+        c = line[i]
+        if c == '#':
+            break
+        if c == '\\':
+            i += 2
+            continue
+        if c in "'\"":
+            quote = c
+            i += 1
+            while i < len(line):
+                if quote == '"' and line[i] == '\\':
+                    i += 2
+                    continue
+                if line[i] == quote:
+                    i += 1
+                    break
+                i += 1
+            continue
+        if line.startswith('<<', i) and (i == 0 or line[i - 1] != '<') and line[i + 2:i + 3] != '<':
+            match = re.match(r"<<(-?)\s*(['\"])([^'\"\r\n]+)\2", line[i:])
+            if match and (i + match.end() == len(line) or line[i + match.end()].isspace() or line[i + match.end()] in '<>|;&()'):
+                yield match.group(3), bool(match.group(1))
+                i += match.end()
+                continue
+        i += 1
+
+
+def _ps_remove_heredoc_operators(line):
+    # The directive lexer already checked quote/comment context. Replace only
+    # accepted operators, preserving other header expressions for inspection.
+    result, i = [], 0
+    while i < len(line):
+        c = line[i]
+        if c == '#':
+            result.append(line[i:])
+            break
+        if c == '\\':
+            result.append(line[i:i + 2])
+            i += 2
+            continue
+        if c in "'\"":
+            quote, start = c, i
+            i += 1
+            while i < len(line):
+                if quote == '"' and line[i] == '\\':
+                    i += 2
+                    continue
+                if line[i] == quote:
+                    i += 1
+                    break
+                i += 1
+            result.append(line[start:i])
+            continue
+        if line.startswith('<<', i) and (i == 0 or line[i - 1] != '<') and line[i + 2:i + 3] != '<':
+            match = re.match(r"<<(-?)\s*(['\"])([^'\"\r\n]+)\2", line[i:])
+            if match and (i + match.end() == len(line) or line[i + match.end()].isspace() or line[i + match.end()] in '<>|;&()'):
+                result.append(' ')
+                i += match.end()
+                continue
+        result.append(c)
+        i += 1
+    return ''.join(result)
+
+
+def _ps_shell_quote_state(line, quote=None):
+    i = 0
+    while i < len(line):
+        c = line[i]
+        if quote is None and c == '#':
+            break
+        if c == '\\' and quote != "'":
+            i += 2
+            continue
+        if quote:
+            if c == quote:
+                quote = None
+        elif c in "'\"":
+            quote = c
+        i += 1
+    return quote
+
+
+def _ps_without_literal_heredocs(command):
+    # Only quoted delimiters have inert shell bodies. Unquoted bodies expand
+    # command substitutions and remain visible to the gate.
+    lines = command.splitlines(keepends=True)
+    output, pending = [], []
+    quote = None
+    for line in lines:
+        if pending:
+            delimiter, strip_tabs = pending[0]
+            check = line.rstrip('\r\n')
+            if strip_tabs:
+                check = check.lstrip('\t')
+            if check == delimiter:
+                pending.pop(0)
+            output.append('\n')
+            continue
+        output.append(line)
+        inside_quote = quote is not None
+        quote = _ps_shell_quote_state(line, quote)
+        # Mask only doc-writing cat/tee bodies. Shell consumers execute their
+        # stdin, and a quoted << inside a string is not a heredoc operator.
+        if inside_quote or not re.match(r'^\s*(?:cat|tee)\b', line) or re.search(r'[|;&]', line):
+            continue
+        pending.extend(_ps_literal_heredoc_directives(line))
+        if pending:
+            output[-1] = _ps_remove_heredoc_operators(line)
+
+    return ''.join(output)
+
+
+def detects_powershell_execution(command, depth=0, heredocs_masked=False, dialect='shell'):
+    """Block coupled remote fetch+execution and opaque EncodedCommand calls.
+
+    This intentionally does not claim general PowerShell deobfuscation or
+    dataflow analysis. Recursion is limited to quoted executable code bodies.
+    """
+    if not command or depth > 8:
+        return False
+    # Reject non-candidates before allocating the lexical view on the hot path.
+    if not _PS_HINT.search(command.replace('`', '')):
+        return False
+    if not heredocs_masked and dialect == 'shell':
+        command = _ps_without_literal_heredocs(command)
+    tokens = _ps_tokens(command, dialect)
+    # Inspect only the balanced executable subexpression, not trailing prose.
+    for kind, value in tokens:
+        if kind == 'double':
+            for expression in _ps_subexpressions(value):
+                if detects_powershell_execution(expression, depth + 1, dialect=dialect):
+                    return True
+    # Cheap bracket pairing prevents quadratic rescans of nested expressions.
+    ends, stack = {}, []
+    for i, (kind, value) in enumerate(tokens):
+        if kind == 'symbol' and value == '(':
+            stack.append(i)
+        elif kind == 'symbol' and value == ')' and stack:
+            ends[stack.pop()] = i
+    remote_vars = set()
+    start = 0
+    for stop in range(len(tokens) + 1):
+        if stop < len(tokens) and tokens[stop] != ('symbol', ';'):
+            continue
+        segment = tokens[start:stop]
+        if len(segment) >= 3 and segment[0][0] == 'word' and segment[0][1].startswith('$') and segment[1][1] == '=':
+            if _ps_fetches(segment[2:]) or any(kind == 'double' and any(_ps_fetches(_ps_tokens(expr, dialect)) for expr in _ps_subexpressions(value)) for kind, value in segment[2:]):
+                remote_vars.add(segment[0][1])
+            else:
+                remote_vars.discard(segment[0][1])
+        for j in range(start, stop):
+            name = _ps_name(tokens, j)
+            positioned = j == start or tokens[j - 1][1] in ('(', '|', '{', '&', '.', 'sudo', 'env', '-command', '-c', '/c', '/command')
+            if (name in _PS_HOST or name in _PS_SHELL) and positioned:
+                for k in range(j + 1, stop):
+                    kind, value = tokens[k]
+                    if kind == 'symbol' and value in ('|', ')', '}'):
+                        break
+                    if kind == 'word' and value in ('-f', '-file'):
+                        break
+                    if name in _PS_HOST and kind == 'word' and value.lstrip('-/').split(':', 1)[0] in _PS_ENCODED and value.startswith(('-', '/')):
+                        return True
+                    if kind == 'word' and value in ('-c', '-command', '-commandwithargs', '/c', '/command', '/commandwithargs'):
+                        if k + 1 < stop and tokens[k + 1][0] in ('string', 'double'):
+                            if detects_powershell_execution(tokens[k + 1][1], depth + 1, dialect='powershell' if name in _PS_HOST else 'shell'):
+                                return True
+                        break
+                if _ps_pipe_before(tokens, j, start) and _ps_fetches(tokens[start:j]):
+                    return True
+            executor = name in _PS_EXEC and positioned
+            method = tokens[j][0] == 'word' and ((tokens[j][1].startswith('$') and '.invokescript' in tokens[j][1]) or (tokens[j][1].startswith('.invokescript') and j > start and tokens[j - 1][1] == ')') or '[scriptblock]::create' == tokens[j][1])
+            if method and (j + 1 >= stop or tokens[j + 1] != ('symbol', '(')):
+                continue
+            if method and '[scriptblock]::create' == tokens[j][1]:
+                # Creating a block is inert until invoked with & or .Invoke().
+                k = j + 1
+                end = ends.get(k, stop)
+                before = j - 1
+                while before >= start and tokens[before][1] == '(':
+                    before -= 1
+                invoked = before >= start and tokens[before] in (('symbol', '&'), ('word', '.'))
+                after = end + 1
+                while after < stop and tokens[after][1] == ')':
+                    after += 1
+                invoked = invoked or (after < stop and tokens[after][1].startswith('.invoke'))
+                if not invoked:
+                    continue
+            if not (executor or method):
+                continue
+            if _ps_pipe_before(tokens, j, start):
+                upstream = tokens[start:j]
+                if _ps_fetches(upstream):
+                    return True
+                if executor and any(kind in ('string', 'double') and detects_powershell_execution(value, depth + 1, dialect='powershell') for kind, value in upstream):
+                    return True
+            k = j + 1
+            # Execution cmdlet flags can precede the expression.
+            while k < stop and tokens[k][0] == 'word' and tokens[k][1].startswith('-'):
+                k += 1
+                if k < stop and tokens[k][0] == 'word' and not tokens[k][1].startswith('$'):
+                    k += 1
+            if k < stop and tokens[k] == ('symbol', '('):
+                end = ends.get(k, stop)
+                body = tokens[k + 1:end]
+            else:
+                body = tokens[k:stop]
+            if _ps_fetches(body) or any(kind == 'word' and value in remote_vars for kind, value in body):
+                return True
+            if executor and any(value == '$_' for kind, value in body) and _ps_fetches(tokens[start:j]):
+                return True
+            if executor and body and body[0][0] == 'double':
+                if any(_ps_fetches(_ps_tokens(expr, dialect)) or any(kind == 'word' and value in remote_vars for kind, value in _ps_tokens(expr, dialect)) for expr in _ps_subexpressions(body[0][1])) or any(re.search(r'(?<!`)' + re.escape(var) + r'(?![\w:])', body[0][1], re.IGNORECASE) for var in remote_vars):
+                    return True
+            if executor and body and body[0][0] in ('string', 'double'):
+                if detects_powershell_execution(body[0][1], depth + 1, dialect='powershell'):
+                    return True
+        start = stop + 1
+    return False
+
+
 def detect_install_command(command):
     """Match command against install/clone patterns.
     Returns (pattern_type, match_obj) or (None, None)."""
@@ -217,7 +572,8 @@ def detect_install_command(command):
         return None, None
 
     # Check pipe-to-shell first (instant CRITICAL)
-    if PIPE_TO_SHELL.search(command) and not is_inert_quote_carrier(command):
+    executable = _ps_without_literal_heredocs(command)
+    if detects_powershell_execution(executable, heredocs_masked=True) or (PIPE_TO_SHELL.search(executable) and not is_inert_quote_carrier(executable)):
         return 'pipe_to_shell', None
 
     for pattern, ptype in INSTALL_PATTERNS:
@@ -700,9 +1056,9 @@ def build_pipe_to_shell_warning(command):
         'severity': 'critical',
         'title': 'Pipe-to-Shell Execution Detected',
         'description': (
-            'Command pipes remote content directly to shell execution. '
-            'This bypasses all package manager security checks and can execute '
-            'arbitrary code. NEVER pipe untrusted URLs to shell.'
+            'Command executes downloaded content or uses an opaque PowerShell '
+            'EncodedCommand. This bypasses package manager security checks '
+            'and can execute arbitrary code.'
         ),
         'file': 'N/A',
         'line': 0,
