@@ -2,6 +2,25 @@
 
 All notable changes to repo-forensics. Versions follow semver.
 
+## [Unreleased]
+
+### Fix: gate published IOC feed signatures (issue #54)
+
+- Add `ioc_manager.py --verify-published [DIR]`: verifies `latest.json` and
+  `rulepacks.json` against their detached signatures with the pinned key only,
+  exits 1 on any missing, malformed, tampered, or non-verifying pair. New CI
+  workflow `verify-ioc-feed.yml` runs it on every push and PR (checked-out bytes). The daily scheduled run instead FETCHES and verifies the LIVE published artifacts (`ioc_manager.py --verify-live`): exit 1 (red) when a live feed verifiably fails or is 404, exit 3 (warning only, job passes) when only network failures prevent a verdict.
+- A refused refresh now names the cause (published feed does not verify), says
+  the last-known-good cache is preserved but marked stale with its age, and the
+  refresh state file records that detail. A refused refresh writes a persistent
+  marker so a still-fresh last-known-good cache reads as stale and `get_iocs`
+  reports `_ioc_degraded`/`_ioc_refresh_refused` until a verified refresh
+  clears it. Only a verification failure, an HTTP 404/410 for the `.sig`, or a completed response that is oversized or not valid JSON counts as a refusal (and as exit 1 in `--verify-live`); timeouts and other network failures never mark it. Fetches also re-validate every redirect target (https + allowlisted host) and refuse off-pin redirects. Verification is never bypassed.
+- **Maintainer action:** the currently published `iocs/latest.json` does not
+  verify against the pinned key and must be re-signed with the offline release
+  key (`python3 scripts/sign_rulepacks.py --ioc-only --seed-file <offline-seed-file>`; `--ioc-only` re-signs just `iocs/latest.json` and leaves the rule-pack bundle untouched). If `rulepacks.json` ever fails the gate, re-sign it with `python3 scripts/sign_rulepacks.py --allow-unchanged --seed-file <offline-seed-file>` (`--ioc-only` cannot repair it). Until then clients stay on the stale cache
+  plus hardcoded IOCs, and the new CI gate stays red by design.
+
 ## [2.14.13] - 2026-09-27
 
 ### Fix: grade defensive examples and inventory data by context

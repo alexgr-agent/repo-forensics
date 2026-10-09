@@ -103,6 +103,17 @@ def _write_and_sign(path, raw_bytes, priv, pub):
         f.write(sig)
 
 
+def _sign_latest(priv, pub):
+    with open(_LATEST_PATH, "rb") as f:
+        latest_bytes = f.read()
+    sig = _ed25519_sign.sign(latest_bytes, priv, pub)
+    with open(_LATEST_PATH + ".sig", "wb") as f:
+        f.write(sig)
+    print(f"[+] signed {_LATEST_PATH} ({len(latest_bytes)} bytes) -> .sig")
+    print(f"[i] pubkey: {pub.hex()}")
+    return 0
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description="Build + sign feeds (dev-only).")
     key = ap.add_mutually_exclusive_group()
@@ -115,11 +126,16 @@ def main(argv=None):
                     help="Bundle envelope version (default: prior + 1).")
     ap.add_argument("--allow-unchanged", action="store_true",
                     help="Permit re-signing a bundle with no pack-content changes.")
+    ap.add_argument("--ioc-only", action="store_true",
+                    help="Re-sign ONLY iocs/latest.json over its exact on-disk bytes; "
+                         "does not build, rewrite, or re-sign the rule-pack bundle.")
     ap.add_argument("--allow-unsigned-overwrite", action="store_true",
                     help="Permit --build-only to replace bundle bytes that an "
                          "existing .sig still covers (re-sign offline before publish).")
     args = ap.parse_args(argv)
 
+    if args.ioc_only and args.build_only:
+        ap.error("--ioc-only cannot be combined with --build-only")
     if not args.build_only and not (args.seed_hex or args.seed_file):
         ap.error("--seed-file (preferred) or --seed-hex is required unless --build-only is used")
     if args.seed_file:
@@ -138,6 +154,12 @@ def main(argv=None):
         print(f"[!] seed-derived pubkey {pub.hex()} != --pub-hex {args.pub_hex}",
               file=sys.stderr)
         return 1
+
+    if args.ioc_only:
+        if not os.path.isfile(_LATEST_PATH):
+            print(f"[!] {_LATEST_PATH} missing; nothing to sign", file=sys.stderr)
+            return 1
+        return _sign_latest(priv, pub)
 
     os.makedirs(_IOCS_DIR, exist_ok=True)
 
@@ -183,12 +205,7 @@ def main(argv=None):
 
     # 3. Sign the IOC feed over its EXACT on-disk bytes (no reserialize).
     if os.path.isfile(_LATEST_PATH):
-        with open(_LATEST_PATH, "rb") as f:
-            latest_bytes = f.read()
-        sig = _ed25519_sign.sign(latest_bytes, priv, pub)
-        with open(_LATEST_PATH + ".sig", "wb") as f:
-            f.write(sig)
-        print(f"[+] signed {_LATEST_PATH} ({len(latest_bytes)} bytes) -> .sig")
+        _sign_latest(priv, pub)
     else:
         print(f"[!] {_LATEST_PATH} missing; skipped IOC signing", file=sys.stderr)
 

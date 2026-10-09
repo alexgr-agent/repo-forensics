@@ -1,0 +1,53 @@
+name: Verify IOC Feed Signatures
+
+# push / pull_request: verify the checked-out iocs/ bytes (catches an edit that
+#   was not re-signed before it merges).
+# schedule: fetch and verify the LIVE published artifacts that clients download
+#   (raw.githubusercontent.com main). Checkout bytes cannot rot between commits;
+#   the live feed can (stale CDN, a bad publish), and that is what issue #54 hit.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '17 5 * * *'
+
+permissions:
+  contents: read
+
+jobs:
+  verify-checkout:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Verify checked-out feed signatures
+        run: |
+          python3 skills/repo-forensics/scripts/ioc_manager.py --verify-published iocs || {
+            echo "::error::A published feed in iocs/ does not verify against the pinned release key. The log above names the failing file. A maintainer re-signs from the repo root: for latest.json run \`python3 scripts/sign_rulepacks.py --ioc-only --seed-file <offline-seed-file>\`; for rulepacks.json run \`python3 scripts/sign_rulepacks.py --allow-unchanged --seed-file <offline-seed-file>\` (also re-signs latest.json). Commit the .sig files. Do not change the pinned key or skip this check."
+            exit 1
+          }
+
+  verify-live:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      # Exit 1 = a live artifact verifiably fails (red). Exit 3 = only network
+      # failures, verdict unknown: warn, do not alarm.
+      - name: Verify live published feeds
+        run: |
+          rc=0
+          python3 skills/repo-forensics/scripts/ioc_manager.py --verify-live || rc=$?
+          if [ "$rc" -eq 3 ]; then
+            echo "::warning::Could not download the live feeds; verdict unknown (not a signature failure). Will retry on the next run."
+            exit 0
+          fi
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::A LIVE published feed does not verify against the pinned release key; clients are refusing refresh and running on a stale cache. A maintainer must re-sign (see the log above for the exact command) and push the .sig files."
+            exit "$rc"
+          fi

@@ -432,13 +432,25 @@ def check_ioc_packages(package_names, iocs=None):
     # (fail-open) to avoid blocking legitimate work, but the degraded flag
     # tells the operator to run `ioc_manager.py --update` to refresh.
     if iocs.get('_ioc_degraded'):
-        print(
-            "[repo-forensics] WARNING: IOC database unavailable, operating without "
-            "threat intelligence. Remote feed cache is absent or stale. Run "
-            "`python3 ioc_manager.py --update` to refresh. Only hardcoded IOCs "
-            "are active; recently-discovered malicious packages may not be detected.",
-            file=sys.stderr,
-        )
+        if (iocs.get('_ioc_refresh_refused') and iocs.get('_ioc_cache_served')
+                and not iocs.get('_ioc_signature_invalid')):
+            msg = ("[repo-forensics] WARNING: the latest IOC feed refresh was refused "
+                   "(published feed did not verify). Scanning with the last verified "
+                   "cached feed plus hardcoded IOCs; it is stale, so recently-discovered "
+                   "malicious packages may not be detected. A maintainer must re-sign the "
+                   "published feed.")
+        elif iocs.get('_ioc_refresh_refused'):
+            msg = ("[repo-forensics] WARNING: the latest IOC feed refresh was refused "
+                   "(published feed did not verify) and no verified cached feed is "
+                   "available. Only hardcoded IOCs are active; recently-discovered "
+                   "malicious packages may not be detected. A maintainer must re-sign "
+                   "the published feed.")
+        else:
+            msg = ("[repo-forensics] WARNING: IOC database unavailable, operating without "
+                   "threat intelligence. Remote feed cache is absent or stale. Run "
+                   "`python3 ioc_manager.py --update` to refresh. Only hardcoded IOCs "
+                   "are active; recently-discovered malicious packages may not be detected.")
+        print(msg, file=sys.stderr)
 
     malicious_npm = iocs.get('malicious_npm', set())
     malicious_pypi = iocs.get('malicious_pypi', set())

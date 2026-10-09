@@ -270,6 +270,9 @@ def _import_module_by_path(name, path):
     return mod
 
 
+_LAST_IOC_DETAIL = [""]
+
+
 def _refresh_iocs(scripts_dir):
     """Refresh IOC cache. Returns True on success.
     Imports under canonical name 'ioc_manager' so any internal self-imports
@@ -282,6 +285,7 @@ def _refresh_iocs(scripts_dir):
             return False
         ok, msg = ioc_manager.update_iocs()
         _log(f"IOC: ok={ok} msg={msg}")
+        _LAST_IOC_DETAIL[0] = "" if ok else str(msg)
         return bool(ok)
     except Exception as e:
         _log(f"IOC refresh exception: {type(e).__name__}: {e}")
@@ -455,6 +459,8 @@ def _worker_main():
                                       critical=rulepacks_critical),
         }
         feeds["rulepacks"]["detail"] = rulepack_detail
+        if not ok_ioc and _LAST_IOC_DETAIL[0]:
+            feeds["ioc"]["detail"] = _LAST_IOC_DETAIL[0]
         critical_ok = ok_ioc and ok_kev and not rulepacks_critical
         advisory_failed = [n for n, r in feeds.items() if not r["ok"] and not r["critical"]]
         if critical_ok:
@@ -472,7 +478,9 @@ def _worker_main():
             _write_state(status="degraded", last_attempt=started,
                          duration_ms=int((finished - started) * 1000), feeds=feeds,
                          marker_written=False, run_id=run_id,
-                         last_error="failed critical feeds: " + ", ".join(failed))
+                         last_error="failed critical feeds: " + ", ".join(failed)
+                                       + ((" (ioc: " + feeds["ioc"]["detail"] + ")")
+                                          if "ioc" in failed and feeds["ioc"].get("detail") else ""))
         _log(f"refresh done (ioc={ok_ioc}, kev={ok_kev}, rulepacks={ok_rulepacks})")
     finally:
         if _alarm_armed:
