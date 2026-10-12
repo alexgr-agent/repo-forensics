@@ -4,7 +4,13 @@ All notable changes to repo-forensics. Versions follow semver.
 
 ## [Unreleased]
 
+## [2.14.14] - 2026-10-13
+
 ### Fixed
+- Preserve exact Node package-name case for self-reference exemptions.
+- Count overlapping environment gates once and retain dangerous IIFE evidence beyond the full-analysis cap.
+- Refuse oversized pre-execution input and failed or empty scanner verdicts.
+- Mark missing IOC feed bytes stale and classify forbidden-scheme redirects as refusals.
 - Pre-execution hooks scan every command even while another pre-scan is running. The shared concurrency and debounce guard now applies only to advisory auto and session scans, including when Cursor evidence logging is enabled.
 
 ### Fix: gate published IOC feed signatures (issue #54)
@@ -18,7 +24,7 @@ All notable changes to repo-forensics. Versions follow semver.
   refresh state file records that detail. A refused refresh writes a persistent
   marker so a still-fresh last-known-good cache reads as stale and `get_iocs`
   reports `_ioc_degraded`/`_ioc_refresh_refused` until a verified refresh
-  clears it. Only a verification failure, an HTTP 404/410 for the `.sig`, or a completed response that is oversized or not valid JSON counts as a refusal (and as exit 1 in `--verify-live`); timeouts and other network failures never mark it. Fetches also re-validate every redirect target (https + allowlisted host) and refuse off-pin redirects. Verification is never bypassed.
+  clears it. Only a verification failure, an HTTP 404/410 for the feed or `.sig`, or a completed response that is oversized or not valid JSON counts as a refusal (and as exit 1 in `--verify-live`); timeouts and other network failures never mark it. Fetches also re-validate every redirect target (https + allowlisted host) and refuse off-pin redirects. Verification is never bypassed.
 - **Maintainer action:** the currently published `iocs/latest.json` does not
   verify against the pinned key and must be re-signed with the offline release
   key (`python3 scripts/sign_rulepacks.py --ioc-only --seed-file <offline-seed-file>`; `--ioc-only` re-signs just `iocs/latest.json` and leaves the rule-pack bundle untouched). If `rulepacks.json` ever fails the gate, re-sign it with `python3 scripts/sign_rulepacks.py --allow-unchanged --seed-file <offline-seed-file>` (`--ioc-only` cannot repair it). Until then clients stay on the stale cache

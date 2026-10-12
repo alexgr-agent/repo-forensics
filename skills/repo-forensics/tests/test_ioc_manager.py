@@ -24,6 +24,13 @@ import pytest
 import ioc_manager
 
 
+@pytest.fixture(autouse=True)
+def _isolate_fetch_diagnostics(monkeypatch):
+    # Mocked fetches do not reset the real fetcher's module-level flags.
+    monkeypatch.setattr(ioc_manager, "_last_fetch_absent", False)
+    monkeypatch.setattr(ioc_manager, "_last_fetch_rejected", False)
+
+
 # ---------------------------------------------------------------------------
 # Hardcoded IOC availability (fallback path)
 # ---------------------------------------------------------------------------

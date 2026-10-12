@@ -154,7 +154,7 @@ def parse_python_requirements(repo_path):
     return declared
 
 
-def parse_node_dependencies(repo_path):
+def parse_node_dependencies(repo_path, preserve_case=False):
     """Parse declared Node.js dependencies from package.json."""
     declared = set()
     pkg_path = os.path.join(repo_path, 'package.json')
@@ -167,7 +167,7 @@ def parse_node_dependencies(repo_path):
                             'optionalDependencies'):
                 if dep_key in data and isinstance(data[dep_key], dict):
                     for pkg in data[dep_key]:
-                        declared.add(pkg.lower())
+                        declared.add(pkg if preserve_case else pkg.lower())
         except (OSError, json.JSONDecodeError, AttributeError):
             pass
 
@@ -175,7 +175,7 @@ def parse_node_dependencies(repo_path):
 
 
 def _own_package_name(repo_path):
-    """Lowercased package.json "name", only when the package can resolve
+    """Exact package.json "name", only when the package can resolve
     itself.
 
     Node resolves `import 'name'` to the package's own files only through a
@@ -189,7 +189,7 @@ def _own_package_name(repo_path):
             data = json.load(f)
         name = data.get('name')
         if isinstance(name, str) and data.get('exports'):
-            return name.lower()
+            return name
     except (OSError, json.JSONDecodeError, AttributeError):
         pass
     return None
@@ -486,7 +486,7 @@ def _walk_partial(content, regex_mode):
 _LINE_END_RE = re.compile('[\\n\\r\\u2028\\u2029]')
 
 
-def extract_js_imports(file_path):
+def extract_js_imports(file_path, preserve_case=False):
     """Extract imported module names from JS/TS files using regex."""
     try:
         with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
@@ -514,9 +514,11 @@ def extract_js_imports(file_path):
         if mod.startswith('@'):
             parts = mod.split('/')
             if len(parts) >= 2:
-                imports.add('/'.join(parts[:2]).lower())
+                root = '/'.join(parts[:2])
+                imports.add(root if preserve_case else root.lower())
         else:
-            imports.add(mod.split('/')[0].lower())
+            root = mod.split('/')[0]
+            imports.add(root if preserve_case else root.lower())
 
     # Whitespace or block comments between tokens: `require(/*c*/'m')` is a
     # real import. The comment form is linear (no nested .*? backtracking).
@@ -636,7 +638,7 @@ def extract_js_imports(file_path):
     # Bare side-effect import 'm'
     _collect(r'(?m)(?:^|(?<=[;{}])|(?<=\*/))[ \t]*import' + ws + spec)
 
-    imports = {m for m in imports if _valid(m)}
+    imports = {m for m in imports if _valid(m.lower())}
     # Conservative overflow: a call whose comment padding exceeds the bounded
     # gap cannot be parsed; report a marker instead of deciding "absent".
     open_re = re.compile(
@@ -835,7 +837,7 @@ def scan_manifest_drift(repo_path):
 
     # Collect declared deps
     py_declared = parse_python_requirements(repo_path)
-    js_declared = parse_node_dependencies(repo_path)
+    js_declared = parse_node_dependencies(repo_path, preserve_case=True)
 
     # No manifest files at all? Skip drift analysis (nothing to compare against)
     has_py_manifest = bool(py_declared) or any(
@@ -858,7 +860,9 @@ def scan_manifest_drift(repo_path):
             for mod in extract_python_imports(file_path):
                 py_imported.setdefault(mod, []).append(rel_path)
         elif ext in ('.js', '.ts', '.mjs', '.cjs', '.jsx', '.tsx'):
-            for mod in extract_js_imports(file_path):
+            # Node self-references are case-sensitive. Folding a specifier here
+            # could exempt a separate package loaded from node_modules.
+            for mod in extract_js_imports(file_path, preserve_case=True):
                 js_imported.setdefault(mod, []).append(rel_path)
 
     py_imported_set = set(py_imported.keys())

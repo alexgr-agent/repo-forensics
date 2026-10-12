@@ -676,6 +676,9 @@ def _fetch_url_bytes(url, max_bytes):
     except (urllib.error.URLError, OSError, ValueError) as e:
         if isinstance(e, urllib.error.HTTPError) and e.code in (404, 410):
             _last_fetch_absent = True
+        elif isinstance(e, urllib.error.HTTPError) and e.code in (301, 302, 303, 307, 308):
+            # urllib rejects forbidden schemes before redirect_request runs.
+            _last_fetch_rejected = True
         print(f"[!] IOC fetch failed: {e}", file=sys.stderr)
         return None
 
@@ -762,9 +765,13 @@ def update_iocs(feed_url=None, cache_dir=None, sig_url=None):
     """
     data, raw = fetch_remote_iocs(feed_url, _return_raw=True)
     if data is None:
+        if _last_fetch_absent:
+            _mark_refresh_refused("feed missing (HTTP 404/410)", cache_dir)
+            return False, ("IOC feed missing (HTTP 404/410): refresh refused, "
+                           "last known-good cache preserved - " + _stale_note(cache_dir))
         if _last_fetch_rejected:
-            _mark_refresh_refused("feed oversized or not valid JSON", cache_dir)
-            return False, ("IOC feed rejected: response was oversized or not valid JSON "
+            _mark_refresh_refused("feed oversized, not valid JSON, or redirect rejected", cache_dir)
+            return False, ("IOC feed rejected: response was oversized or not valid JSON, or a redirect was rejected "
                            "(a verdict on the published artifact, not a network failure). "
                            "Refresh refused, last known-good cache preserved - "
                            + _stale_note(cache_dir))
@@ -778,8 +785,8 @@ def update_iocs(feed_url=None, cache_dir=None, sig_url=None):
         # Only a definitive HTTP 404/410 for the .sig is a refusal. A timeout or
         # other transport failure is a network failure and must not mark stale.
         if sig is None and _last_fetch_rejected:
-            _mark_refresh_refused("signature oversized", cache_dir)
-            return False, ("IOC signature rejected: response exceeded the signature size cap "
+            _mark_refresh_refused("signature oversized or redirect rejected", cache_dir)
+            return False, ("IOC signature rejected: response exceeded the signature size cap or a redirect was rejected "
                            "(a verdict on the published artifact, not a network failure). "
                            "Refresh refused, last known-good cache preserved - "
                            + _stale_note(cache_dir))
@@ -886,7 +893,7 @@ def verify_live_feed(urls=None):
         if raw is None or sig is None:
             if raw_rej or sig_rej:
                 bad = True
-                results.append((name, False, "published artifact REJECTED: response exceeded the size cap"))
+                results.append((name, False, "published artifact REJECTED: response exceeded the size cap or a redirect was rejected"))
             elif raw_absent or sig_absent:
                 bad = True
                 results.append((name, False, "published artifact missing (HTTP 404/410)"))

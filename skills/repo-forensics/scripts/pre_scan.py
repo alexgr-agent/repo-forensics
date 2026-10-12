@@ -666,7 +666,12 @@ def main(argv=None):
         print(note, file=sys.stderr)
 
     # (3) Envelope. Drift denies on a failClosed wire, approves on the others.
-    request = hook_adapter.parse_request(adapter, hook_adapter.read_stdin())
+    raw = hook_adapter.read_stdin(limit=hook_adapter.MAX_STDIN_BYTES + 1)
+    if len(raw) > hook_adapter.MAX_STDIN_BYTES:
+        note = ("[repo-forensics] Hook input exceeds the inspection limit; "
+                "refusing to approve a command that could not be fully read.")
+        emit(hook_adapter.DENY, note, note=note)
+    request = hook_adapter.parse_request(adapter, raw)
     if request.drift:
         note = (f"[repo-forensics] SCHEMA DRIFT: {request.drift}. A hook that "
                 f"cannot read its own input cannot vouch for the command.")

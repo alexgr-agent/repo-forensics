@@ -130,14 +130,13 @@ def _env_only_gates(region):
     """True when the region's only env references are literal-comparison gates."""
     if not re.search(r'\bprocess\s*(?:\.\s*env\b|\[\s*[\'"]env[\'"]\s*\])', region):
         return True
-    covered = 0
-    for m in _ENV_GATE_RE.finditer(region):
-        covered += len(re.findall(r'\bprocess\b', m.group(0)))
-    for m in _ENV_TRUTH_RE.finditer(region):
-        covered += len(re.findall(r'\bprocess\b', m.group(0)))
-    for m in _PROCESS_GUARD_RE.finditer(region):
-        covered += len(re.findall(r'\bprocess\b', m.group(0)))
-    return covered == len(re.findall(r'\bprocess\b', region))
+    covered = set()
+    for pattern in (_ENV_GATE_RE, _ENV_TRUTH_RE, _PROCESS_GUARD_RE):
+        for match in pattern.finditer(region):
+            covered.update(match.start() + m.start() for m in re.finditer(
+                r'\bprocess\b', match.group(0)))
+    # Overlapping allow-list matches must never compensate for a secret read.
+    return covered == {m.start() for m in re.finditer(r'\bprocess\b', region)}
 # A raw `})(`, `}).call`, `}).apply`, `}).bind`, `})?.`, `})[` or `})` + backtick
 # anywhere after the factory start, whatever the string/regex/comment state,
 # withdraws the uninvoked-factory carve-out. It runs on the raw text and on a
@@ -322,6 +321,34 @@ def scan_js_entrypoint(file_path, rel_path, content):
     # repeated openers would be quadratic. Analyse a bounded number and report
     # the rest as one structural finding (never a silent skip).
     if len(iife_matches) > _MAX_IIFE_MATCHES:
+        # Keep dangerous primitives in every skipped 10KB window visible.
+        # Merge overlapping windows so the fallback stays linear in input size.
+        windows = []
+        for skipped in iife_matches[:-_MAX_IIFE_MATCHES]:
+            start = skipped.start()
+            end = min(len(tail_content), start + 10240)
+            if windows and start <= windows[-1][1]:
+                windows[-1] = (windows[-1][0], end)
+            else:
+                windows.append((start, end))
+        for start, end in windows:
+            dangerous = None
+            for pattern, desc in _IIFE_DANGEROUS_PATTERNS:
+                hit = pattern.search(tail_content, start, end)
+                if hit:
+                    dangerous = hit, desc
+                    break
+            if dangerous:
+                hit, desc = dangerous
+                findings.append(core.Finding(
+                    scanner=SCANNER_NAME, severity="critical",
+                    title="Entrypoint IIFE Injection: Dangerous Code",
+                    description="Dangerous primitive in a bounded overflow IIFE window: " + desc,
+                    file=rel_path,
+                    line=tail_start + tail_content[:hit.start()].count('\n') + 1,
+                    snippet=hit.group(0)[:120], category="entrypoint-iife",
+                ))
+                break
         findings.append(core.Finding(
             scanner=SCANNER_NAME,
             severity="high",
