@@ -69,7 +69,7 @@ _IIFE_DANGEROUS_PATTERNS = [
     (re.compile(r"require\s*\(\s*['\"]dgram['\"]"), "require('dgram')"),
     (re.compile(r"require\s*\(\s*['\"]dns['\"]"), "require('dns')"),
     (re.compile(r"require\s*\(\s*['\"]fs['\"]"), "require('fs')"),
-    (re.compile(r'\bprocess\.env\b'), "process.env access"),
+    (re.compile(r'\bprocess\s*(?:\.\s*env\b|\[\s*[\'"]env[\'"]\s*\])'), "process.env access"),
     (re.compile(r'\bexecSync\b'), "execSync call"),
     (re.compile(r'\bspawnSync\b'), "spawnSync call"),
     (re.compile(r'\beval\s*\('), "eval() call"),
@@ -102,6 +102,178 @@ def _shannon_entropy(s):
         if p > 0:
             entropy -= p * math.log2(p)
     return entropy
+
+
+_EXPORT_DEFAULT_PREFIX_RE = re.compile(r'^[ \t]*export\s+default\s*$')
+_MAX_IIFE_MATCHES = 100
+# A skipped comment holding ')' followed by any call or member-access opener
+# ( '(' '[' backtick '?.' '.call' '.apply' '.bind' ) may really be a regex literal hiding the invocation:
+# fail closed. Plain prose parentheses do not trip it.
+# Allow-list for the one benign env shape in an uninvoked factory: a named
+# variable compared with a string literal (`process.env.NODE_ENV !== 'production'`).
+# Every `process.env` occurrence must match; anything else (bare object, computed
+# member, concatenation, call argument, destructuring) stays critical. A
+# deny-list of exfil primitives loses to any spelling it did not list.
+_ENV_GATE_RE = re.compile(
+    r"""process\s*\.\s*env\s*\.\s*[A-Za-z_][A-Za-z0-9_]*\s*(?:===?|!==?)\s*(?:'[^'\\\n]*'|"[^"\\\n]*")"""
+    r"""|(?:'[^'\\\n]*'|"[^"\\\n]*")\s*(?:===?|!==?)\s*process\s*\.\s*env\s*\.\s*[A-Za-z_][A-Za-z0-9_]*(?![\w$(\[.])""")
+# Pure existence tests of `process` (cannot carry data anywhere).
+_ENV_TRUTH_RE = re.compile(
+    r"\b(?:if|while)\s*\(\s*!?\s*process\s*\.\s*env\s*\.\s*[A-Za-z_][A-Za-z0-9_]*\s*\)"
+    r"|!\s*process\s*\.\s*env\s*\.\s*[A-Za-z_][A-Za-z0-9_]*(?![\w$(\[.])")
+# Pure existence tests of `process` (cannot carry data anywhere).
+_PROCESS_GUARD_RE = re.compile(
+    r"""!\s*process\s*\|\||\bprocess\s*&&(?!\s*process\s*[.\[])|typeof\s+process\s*(?:!==?|===?)\s*['"]\w+['"]""")
+
+
+def _env_only_gates(region):
+    """True when the region's only env references are literal-comparison gates."""
+    if not re.search(r'\bprocess\s*(?:\.\s*env\b|\[\s*[\'"]env[\'"]\s*\])', region):
+        return True
+    covered = 0
+    for m in _ENV_GATE_RE.finditer(region):
+        covered += len(re.findall(r'\bprocess\b', m.group(0)))
+    for m in _ENV_TRUTH_RE.finditer(region):
+        covered += len(re.findall(r'\bprocess\b', m.group(0)))
+    for m in _PROCESS_GUARD_RE.finditer(region):
+        covered += len(re.findall(r'\bprocess\b', m.group(0)))
+    return covered == len(re.findall(r'\bprocess\b', region))
+# A raw `})(`, `}).call`, `}).apply`, `}).bind`, `})?.`, `})[` or `})` + backtick
+# anywhere after the factory start, whatever the string/regex/comment state,
+# withdraws the uninvoked-factory carve-out. It runs on the raw text and on a
+# copy with comments naively removed (string-unaware, so `})/**/()` and
+# `})\n//x\n()` cannot hide the call), independent of the quote-aware walk.
+_RAW_INVOKE_RE = re.compile(
+    r'\}[\s\ufeff]*\)[\s\ufeff]*(?:\(|\[|\.[\s\ufeff]*(?:call|apply|bind)\b|\?\.|`)')
+_NAIVE_COMMENT_RE = re.compile(r'/\*.*?\*/|//[^\n\r\u2028\u2029]*', re.S)
+
+
+def _raw_invoked(text, start):
+    tail = text[start:]
+    if _RAW_INVOKE_RE.search(tail):
+        return True
+    return bool(_RAW_INVOKE_RE.search(_NAIVE_COMMENT_RE.sub(' ', tail)))
+
+
+_ANY_PAREN_RE = re.compile(r'\)')
+_CALL_TOKEN_RE = re.compile(r'\)\s*(?:[(\[`]|\?\.|\.\s*(?:call|apply|bind)\b)')
+def _only_trailing_noise(text, i):
+    """True when text[i:] is only whitespace, one optional `;` and comments.
+    Linear scan (a backtracking regex here is quadratic on long whitespace)."""
+    n = len(text)
+    while i < n and text[i].isspace():
+        i += 1
+    if i < n and text[i] == ';':
+        i += 1
+    while i < n:
+        c = text[i]
+        if c.isspace():
+            i += 1
+        elif text.startswith('/*', i):
+            e = text.find('*/', i + 2)
+            if e == -1:
+                return False
+            i = e + 2
+        elif text.startswith('//', i):
+            e = text.find('\n', i)
+            i = n if e == -1 else e
+        else:
+            return False
+    return True
+
+
+def _comment_is_suspect(text, start, end, is_line):
+    """True when a skipped comment span might really be a regex literal that
+    hides an invocation. A comment on its own line (nothing but whitespace
+    before it, and for block comments nothing but whitespace after it) is
+    ordinary documentation: only call-shaped text trips it. Anywhere else, any
+    `)` fails closed, so `)` followed by an operator cannot slip through."""
+    ls = text.rfind('\n', 0, start) + 1
+    own_line = text[ls:start].strip() == ''
+    if own_line and not is_line:
+        le = text.find('\n', end)
+        own_line = text[end:(len(text) if le == -1 else le)].strip() == ''
+    if own_line:
+        return bool(_CALL_TOKEN_RE.search(text, start, end))
+    return bool(_ANY_PAREN_RE.search(text, start, end))
+
+
+def _is_uninvoked_default_export(text, start):
+    """True for a whole `export default (function|arrow ...)` factory value.
+
+    ESM plugin factories (dayjs plugins, for example) export a function
+    expression wrapped in parens. That is a value, not a self-executing IIFE.
+    Deliberately narrow and allow-list based:
+      - `export default` must be the only thing before the paren on its line;
+      - the matching close paren must be followed by nothing except an
+        optional `;`, whitespace and comments through the end of the file, so
+        any call form (`()`, `.call`, `.bind(..)()`, `?.()`, `['call']()`,
+        a comment then `(`) leaves it flagged;
+      - anything that cannot be balanced stays flagged.
+    """
+    line_start = text.rfind('\n', 0, start) + 1
+    if not _EXPORT_DEFAULT_PREFIX_RE.match(text[line_start:start]):
+        return False
+    depth = 0          # paren depth, the outer `(` is depth 1
+    braces = 0         # brace depth inside the factory
+    body_closed = False  # function body finished at paren depth 1
+    quote = None
+    i = start
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if quote:
+            if ch == '\\':
+                i += 1
+            elif ch == quote:
+                quote = None
+            elif ch == '\n' and quote != '`':
+                # A '/" string cannot span lines without a backslash: this
+                # is a regex literal (e.g. /'/) desyncing quote tracking.
+                return False
+        elif ch in ('"', "'", '`'):
+            quote = ch
+        elif ch == '/' and text.startswith('//', i):
+            j = text.find('\n', i)
+            if _comment_is_suspect(text, i, n if j == -1 else j, True):
+                return False
+            i = n if j == -1 else j
+            continue
+        elif ch == '/' and text.startswith('/*', i):
+            j = text.find('*/', i + 2)
+            if j == -1:
+                return False
+            # A parser "comment" holding a call token may really be a regex
+            # literal hiding the invocation; fail closed.
+            if _comment_is_suspect(text, i, j + 2, False):
+                return False
+            i = j + 2
+            continue
+        elif depth == 1 and body_closed and not ch.isspace():
+            # After the function body only the closing paren may follow; a
+            # comma operand or any other expression executes at import.
+            if ch != ')':
+                return False
+        if quote is None:
+            if ch == '(':
+                depth += 1
+            elif ch == ')':
+                depth -= 1
+                if depth == 0:
+                    if not (braces == 0 and body_closed and bool(
+                            _only_trailing_noise(text, i + 1))):
+                        return False
+                    return not _raw_invoked(text, start)
+            elif ch == '{':
+                braces += 1
+            elif ch == '}':
+                braces -= 1
+                if braces < 0:
+                    return False
+                if braces == 0 and depth == 1:
+                    body_closed = True
+        i += 1
+    return False
 
 
 def _is_build_artifact(content):
@@ -146,16 +318,41 @@ def scan_js_entrypoint(file_path, rel_path, content):
     tail_content = '\n'.join(lines[tail_start:])
 
     iife_matches = list(_IIFE_PATTERN.finditer(tail_content))
+    # Per-match work is linear in the file, so an adversarial file full of
+    # repeated openers would be quadratic. Analyse a bounded number and report
+    # the rest as one structural finding (never a silent skip).
+    if len(iife_matches) > _MAX_IIFE_MATCHES:
+        findings.append(core.Finding(
+            scanner=SCANNER_NAME,
+            severity="high",
+            title="Entrypoint IIFE Injection: Structural Anomaly",
+            description=(f"{len(iife_matches)} IIFE openers in one entrypoint tail; only the "
+                         f"last {_MAX_IIFE_MATCHES} were analysed to bound scan time."),
+            file=rel_path,
+            line=tail_start + tail_content[:iife_matches[0].start()].count('\n') + 1,
+            snippet="excessive IIFE openers",
+            category="entrypoint-iife",
+        ))
+        iife_matches = iife_matches[-_MAX_IIFE_MATCHES:]
     for match in iife_matches:
+        uninvoked_factory = _is_uninvoked_default_export(tail_content, match.start())
         # Determine the line number in the original file
         match_offset = tail_content[:match.start()].count('\n')
         iife_line = tail_start + match_offset + 1
 
         # Check if the IIFE contains dangerous patterns
         # Extract content from match to end of file for pattern checking
-        iife_region = tail_content[match.start():match.start() + 10240]
+        # A factory is scanned to the end of the file: padding must not
+        # push a payload past the window.
+        iife_region = (tail_content[match.start():] if uninvoked_factory
+                       else tail_content[match.start():match.start() + 10240])
         dangerous_found = []
         for pattern, desc in _IIFE_DANGEROUS_PATTERNS:
+            # A NODE_ENV check in an exported-but-never-called factory is
+            # normal; every other dangerous primitive still counts there.
+            if (uninvoked_factory and desc == "process.env access"
+                    and _env_only_gates(iife_region)):
+                continue
             if pattern.search(iife_region):
                 dangerous_found.append(desc)
 
@@ -168,6 +365,21 @@ def scan_js_entrypoint(file_path, rel_path, content):
                     f"IIFE at end of entrypoint file contains dangerous operations: "
                     f"{', '.join(dangerous_found[:3])}. Matches node-ipc supply chain "
                     f"attack pattern (May 2026)"
+                ),
+                file=rel_path,
+                line=iife_line,
+                snippet=lines[iife_line - 1].strip()[:120] if iife_line <= total_lines else "",
+                category="entrypoint-iife",
+            ))
+        elif uninvoked_factory:
+            findings.append(core.Finding(
+                scanner=SCANNER_NAME,
+                severity="medium",
+                title="Entrypoint exported factory (not invoked)",
+                description=(
+                    "Entrypoint exports a function expression that is never called in "
+                    "this file. Normal for plugin factories; reviewed only by the "
+                    "dangerous-primitive list, so obfuscated bodies are not ruled out."
                 ),
                 file=rel_path,
                 line=iife_line,

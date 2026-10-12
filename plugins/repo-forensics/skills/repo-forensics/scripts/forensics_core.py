@@ -2620,7 +2620,13 @@ def correlate(findings, repo_path=None):
             ))
 
         # Rule 12: Phantom dependency + network call = "Shadow Dependency with Network"
-        if has_category(file_findings, phantom_dep_keywords) and has_category(file_findings, network_keywords):
+        # Only a phantom finding that is itself medium or above can feed a
+        # critical correlation; a low-confidence phantom (type-only or doc
+        # references) must not be inflated to critical by an unrelated network hit.
+        phantom_actionable = [f for f in file_findings
+                              if f.severity in ('critical', 'high', 'medium')
+                              and any(kw in f._tags for kw in phantom_dep_keywords)]
+        if phantom_actionable and has_category(file_findings, network_keywords):
             correlated.append(Finding(
                 scanner="correlation",
                 severity="critical",
