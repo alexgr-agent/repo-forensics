@@ -2,6 +2,11 @@
 
 All notable changes to repo-forensics. Versions follow semver.
 
+## [Unreleased]
+
+### Fixed
+- Pre-execution hooks scan every command even while another pre-scan is running. The shared concurrency and debounce guard now applies only to advisory auto and session scans, including when Cursor evidence logging is enabled.
+
 ## [2.14.13] - 2026-09-27
 
 ### Fix: grade defensive examples and inventory data by context
