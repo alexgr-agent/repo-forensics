@@ -8,6 +8,8 @@ All notable changes to repo-forensics. Versions follow semver.
 
 ### Fixed
 - Preserve exact Node package-name case for self-reference exemptions.
+- Limit Node self-import exemptions to the nearest package scope.
+- Keep script-context joiners visible and retain critical findings in agent instruction paths.
 - Count overlapping environment gates once and retain dangerous IIFE evidence beyond the full-analysis cap.
 - Refuse oversized pre-execution input and failed or empty scanner verdicts.
 - Mark missing IOC feed bytes stale and classify forbidden-scheme redirects as refusals.

@@ -195,6 +195,19 @@ def _own_package_name(repo_path):
     return None
 
 
+def _importer_self_name(repo_path, file_path):
+    """Self-references stop at the importer's nearest package boundary."""
+    root = os.path.abspath(repo_path)
+    directory = os.path.dirname(os.path.abspath(file_path))
+    while os.path.commonpath((root, directory)) == root:
+        if os.path.isfile(os.path.join(directory, 'package.json')):
+            return _own_package_name(directory)
+        if directory == root:
+            break
+        directory = os.path.dirname(directory)
+    return None
+
+
 class ImportExtractor(ast.NodeVisitor):
     """Extract all import statements from Python AST."""
 
@@ -862,8 +875,10 @@ def scan_manifest_drift(repo_path):
         elif ext in ('.js', '.ts', '.mjs', '.cjs', '.jsx', '.tsx'):
             # Node self-references are case-sensitive. Folding a specifier here
             # could exempt a separate package loaded from node_modules.
+            own_name = _importer_self_name(repo_path, file_path)
             for mod in extract_js_imports(file_path, preserve_case=True):
-                js_imported.setdefault(mod, []).append(rel_path)
+                if mod != own_name:
+                    js_imported.setdefault(mod, []).append(rel_path)
 
     py_imported_set = set(py_imported.keys())
     js_imported_set = set(js_imported.keys())
@@ -898,9 +913,8 @@ def scan_manifest_drift(repo_path):
 
     # JavaScript: phantom deps (imported but not declared)
     if has_js_manifest:
-        own_name = _own_package_name(repo_path)
         js_phantom = {m for m in js_imported_set - js_declared
-                      if not is_node_builtin(m) and m != own_name}
+                      if not is_node_builtin(m)}
         for pkg in sorted(js_phantom):
             importers = js_imported.get(pkg, [])
             first_importer = importers[0] if importers else "<unknown>"

@@ -7,6 +7,7 @@ sys.path.insert(0, str(ROOT / 'skills/repo-forensics/scripts'))
 import scan_manifest_drift as drift
 import ioc_manager as ioc
 import scan_entrypoint as entry
+import scan_skill_threats as threats
 
 @pytest.mark.parametrize('name,spec', [('demo-pkg', 'DEMO-PKG'), ('Demo-Pkg', 'demo-pkg'), ('@scope/pkg', '@SCOPE/pkg')])
 def test_self_reference_case_is_exact(tmp_path, name, spec):
@@ -89,3 +90,38 @@ def test_iife_cap_preserves_dangerous_code_finding():
     source = "module.exports = {};\n(function(){require('child_process').execSync('id');})();" + '(function(){})();' * 150
     findings = entry.scan_js_entrypoint('index.js', 'index.js', source)
     assert any((f.severity == 'critical' and 'Dangerous Code' in f.title for f in findings))
+
+
+def test_self_reference_stops_at_nearest_package_scope(tmp_path):
+    (tmp_path / 'package.json').write_text(json.dumps({'name': 'acme', 'exports': {'.': './main.js'}}))
+    (tmp_path / 'index.js').write_text("require('acme');")
+    nested = tmp_path / 'packages/other'
+    nested.mkdir(parents=True)
+    (nested / 'package.json').write_text('{"name":"other"}')
+    (nested / 'index.js').write_text("require('acme');")
+    hits = [f for f in drift.scan_manifest_drift(str(tmp_path)) if f.category == 'phantom-dependency']
+    assert len(hits) == 1 and hits[0].file.replace('\\', '/') == 'packages/other/index.js'
+
+
+def test_nested_package_can_reference_its_own_exports(tmp_path):
+    (tmp_path / 'package.json').write_text('{"name":"root"}')
+    nested = tmp_path / 'packages/other'
+    nested.mkdir(parents=True)
+    (nested / 'package.json').write_text(json.dumps({'name': 'other', 'exports': {'.': './index.js'}}))
+    (nested / 'index.js').write_text("require('other');")
+    assert not any(f.category == 'phantom-dependency' for f in drift.scan_manifest_drift(str(tmp_path)))
+
+
+@pytest.mark.parametrize('rel', ['SKILL.md', 'AGENTS.md', 'prompts/local.md', 'skills/foo/notes.txt'])
+@pytest.mark.parametrize('count', [64, 66])
+def test_orthographic_joiners_cannot_hide_in_agent_prompts(rel, count):
+    text = '\n'.join('\u0915' * 5 + ('\u200c' if i % 2 else '\u200d') + '\u0915' * 15 for i in range(count))
+    hits = threats.scan_unicode_smuggling(text, rel)
+    assert any(f.severity == 'critical' and f.category == 'unicode-smuggling' for f in hits)
+
+
+def test_orthographic_joiners_remain_visible_in_localization():
+    text = '\n'.join('\u0915' * 5 + '\u200c' + '\u0915' * 15 for _ in range(12))
+    hits = threats.scan_unicode_smuggling(text, 'locales/hi.ts')
+    assert any(f.severity == 'medium' and f.category == 'unicode-smuggling' for f in hits)
+    assert not any(f.severity == 'critical' for f in hits)

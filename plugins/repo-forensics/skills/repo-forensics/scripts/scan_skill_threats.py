@@ -469,8 +469,24 @@ def scan_unicode_smuggling(content, rel_path):
         if zw_count >= 100:
             break
     if zw_count < 100 and joiner_candidates:
-        exempt = _exempt_joiner_positions(content, joiner_candidates)
+        parts = {p.lower() for p in re.split(r'[\\/]', rel_path)}
+        # Agent instructions must retain the critical signal even when hidden
+        # bits resemble sparse orthography. Localization stays below block.
+        prompt_context = (core._is_agent_instruction_file(rel_path)
+                          or bool(parts & _AGENT_ROOTS))
+        exempt = (set() if prompt_context else
+                  _exempt_joiner_positions(content, joiner_candidates))
         zw_count = min(100, zw_count + len(joiner_candidates) - len(exempt))
+        if len(exempt) >= 3 and zw_count < 3:
+            findings.append(core.Finding(
+                scanner=SCANNER_NAME, severity="medium",
+                title="Orthographic Joiner Context",
+                description=(f"Found {len(exempt)} script-context joiners. "
+                             "Likely orthography; hidden-channel use is not ruled out."),
+                file=rel_path, line=0,
+                snippet=f"{len(exempt)} contextual joiners detected",
+                category="unicode-smuggling",
+            ))
     if zw_count >= 3:
         # Test fixtures routinely carry invisible characters as input data.
         # Keep the finding visible but below the block tier.
