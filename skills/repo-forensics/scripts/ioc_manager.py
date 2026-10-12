@@ -317,6 +317,39 @@ def _signed_seen_path(cache_dir=None):
     return os.path.join(base, SIGNED_SEEN_FILENAME)
 
 
+REFUSED_MARKER_FILENAME = ".forensics-iocs.refused"
+
+
+def _refused_marker_path(cache_dir=None):
+    base = cache_dir if cache_dir else os.path.join(
+        os.path.expanduser("~"), ".cache", "repo-forensics")
+    return os.path.join(base, REFUSED_MARKER_FILENAME)
+
+
+def _mark_refresh_refused(reason, cache_dir=None):
+    """Record that the latest refresh was REFUSED (feed unverifiable). Persists
+    until a verified refresh succeeds, so the last-known-good cache reads as
+    stale/degraded even while its mtime is still fresh. Best-effort write."""
+    try:
+        path = _refused_marker_path(cache_dir)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        _atomic_write_bytes(path, json.dumps(
+            {"refused_at": time.time(), "reason": reason}).encode(), mode=0o600)
+    except OSError:
+        pass
+
+
+def _clear_refresh_refused(cache_dir=None):
+    try:
+        os.remove(_refused_marker_path(cache_dir))
+    except OSError:
+        pass
+
+
+def refresh_refused(cache_dir=None):
+    return os.path.isfile(_refused_marker_path(cache_dir))
+
+
 def _mark_signed_seen(cache_dir=None):
     """Record that a valid signed feed was observed here at least once."""
     try:
@@ -589,8 +622,42 @@ def _validate_feed_url(url):
     return host in _IOC_HOST_ALLOWLIST
 
 
+# Set True by _fetch_url_bytes ONLY when the server answered HTTP 404/410 (the
+# artifact is definitively absent). Timeouts, DNS/TLS/5xx and other transport
+# failures leave it False, so they never count as a refused feed.
+_last_fetch_absent = False
+# Set True when a COMPLETED response was definitively rejected (over the byte cap,
+# or not parseable as JSON). That is a verdict on the artifact, not a transport
+# failure, so it is treated like a refusal and never like "network unknown".
+_last_fetch_rejected = False
+
+
+def _pinned_opener():
+    """Opener whose redirect handler re-validates every redirect target with
+    _validate_feed_url (https + allowlisted host), so a redirect cannot move a
+    feed or signature fetch off the pinned hosts."""
+    import urllib.request
+    import urllib.error
+
+    class Handler(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            global _last_fetch_rejected
+            if not _validate_feed_url(newurl):
+                _last_fetch_rejected = True
+                raise urllib.error.URLError(
+                    f"redirect to non-allowlisted or non-https target refused: {newurl!r}")
+            return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+    return urllib.request.build_opener(Handler)
+
+
 def _fetch_url_bytes(url, max_bytes):
-    """Fetch `url` returning raw bytes (capped) or None. https + allowlist only."""
+    """Fetch `url` returning raw bytes (capped) or None. https + allowlist only,
+    and every redirect target is re-validated against the same allowlist."""
+    global _last_fetch_absent, _last_fetch_rejected
+    # Reset on ENTRY so a rejected URL can never inherit a previous call's flags.
+    _last_fetch_absent = False
+    _last_fetch_rejected = False
     if not _validate_feed_url(url):
         print(f"[!] IOC feed URL rejected (non-https or host not allowlisted): {url!r}",
               file=sys.stderr)
@@ -599,13 +666,16 @@ def _fetch_url_bytes(url, max_bytes):
         import urllib.request
         import urllib.error
         req = urllib.request.Request(url, headers={'User-Agent': 'repo-forensics/v2'})
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        with _pinned_opener().open(req, timeout=10) as resp:
             raw = resp.read(max_bytes + 1)
             if len(raw) > max_bytes:
                 print(f"[!] IOC feed exceeded {max_bytes} byte cap", file=sys.stderr)
+                _last_fetch_rejected = True
                 return None
             return raw
     except (urllib.error.URLError, OSError, ValueError) as e:
+        if isinstance(e, urllib.error.HTTPError) and e.code in (404, 410):
+            _last_fetch_absent = True
         print(f"[!] IOC fetch failed: {e}", file=sys.stderr)
         return None
 
@@ -628,6 +698,8 @@ def fetch_remote_iocs(feed_url=None, _return_raw=False):
         data = json.loads(raw.decode('utf-8'))
     except (json.JSONDecodeError, ValueError) as e:
         print(f"[!] IOC fetch failed: {e}", file=sys.stderr)
+        global _last_fetch_rejected
+        _last_fetch_rejected = True
         return (None, None) if _return_raw else None
     return (data, raw) if _return_raw else data
 
@@ -670,6 +742,16 @@ def _save_signed_cache(raw_bytes, sig_bytes, cache_dir=None):
     _mark_signed_seen(cache_dir)
 
 
+def _stale_note(cache_dir=None):
+    st = cache_status(cache_dir)
+    if not st["present"]:
+        return "no cache present, hardcoded IOCs only"
+    state = ("marked STALE" if st["stale"] else "still fresh")
+    if st.get("refresh_refused"):
+        state += ", latest refresh refused"
+    return f"cache age {st['age_hours']}h, {state}"
+
+
 def update_iocs(feed_url=None, cache_dir=None, sig_url=None):
     """Pull latest IOCs from remote feed and cache locally.
     Returns (success: bool, message: str).
@@ -680,6 +762,12 @@ def update_iocs(feed_url=None, cache_dir=None, sig_url=None):
     """
     data, raw = fetch_remote_iocs(feed_url, _return_raw=True)
     if data is None:
+        if _last_fetch_rejected:
+            _mark_refresh_refused("feed oversized or not valid JSON", cache_dir)
+            return False, ("IOC feed rejected: response was oversized or not valid JSON "
+                           "(a verdict on the published artifact, not a network failure). "
+                           "Refresh refused, last known-good cache preserved - "
+                           + _stale_note(cache_dir))
         return False, "Failed to fetch IOCs from remote feed (using hardcoded fallback)"
 
     # Fetch the detached signature. When present, persist the EXACT signed bytes
@@ -687,21 +775,149 @@ def update_iocs(feed_url=None, cache_dir=None, sig_url=None):
     sig = _fetch_url_bytes(sig_url or (feed_url or IOC_FEED_URL) + ".sig",
                            _SIG_MAX_BYTES)
     if sig is None or raw is None:
-        return False, "IOC signature missing (last known-good cache preserved)"
+        # Only a definitive HTTP 404/410 for the .sig is a refusal. A timeout or
+        # other transport failure is a network failure and must not mark stale.
+        if sig is None and _last_fetch_rejected:
+            _mark_refresh_refused("signature oversized", cache_dir)
+            return False, ("IOC signature rejected: response exceeded the signature size cap "
+                           "(a verdict on the published artifact, not a network failure). "
+                           "Refresh refused, last known-good cache preserved - "
+                           + _stale_note(cache_dir))
+        if sig is None and _last_fetch_absent:
+            _mark_refresh_refused("signature missing", cache_dir)
+        if sig is None and _last_fetch_absent:
+            return False, ("IOC signature missing (HTTP 404/410): refresh refused, "
+                           "last known-good cache preserved - " + _stale_note(cache_dir))
+        return False, ("IOC refresh failed: could not download the feed signature "
+                       "(network failure, not a verdict on the feed). Cache state "
+                       "unchanged - " + _stale_note(cache_dir))
     if not _verify_ioc_bytes(raw, sig):
-        return False, "IOC signature invalid (last known-good cache preserved)"
+        _mark_refresh_refused("signature invalid", cache_dir)
+        return False, ("IOC signature invalid - the PUBLISHED feed does not verify "
+                       "against the pinned release key; it was refused, not installed. "
+                       "Last known-good cache preserved - "
+                       + _stale_note(cache_dir) + ". A maintainer must re-sign the feed.")
     required_lists = ("c2_ips", "malicious_domains", "malicious_npm_packages",
                       "malicious_pypi_packages")
     if (not isinstance(data, dict) or not isinstance(data.get("version"), str)
             or any(not isinstance(data.get(key), list) for key in required_lists)
             or sum(len(data[key]) for key in required_lists) == 0):
-        return False, "IOC feed structure invalid (last known-good cache preserved)"
+        _mark_refresh_refused("feed structure invalid", cache_dir)
+        return False, ("IOC feed structure invalid: refresh refused, last known-good "
+                       "cache preserved - " + _stale_note(cache_dir))
     _save_signed_cache(raw, sig, cache_dir)
+    _clear_refresh_refused(cache_dir)
     version = data.get('version', 'unknown')
     c2_count = len(data.get('c2_ips', []))
     domain_count = len(data.get('malicious_domains', []))
     pkg_count = len(data.get('malicious_npm_packages', [])) + len(data.get('malicious_pypi_packages', []))
     return True, f"IOCs updated: v{version} ({c2_count} C2 IPs, {domain_count} domains, {pkg_count} packages)"
+
+
+_PUBLISHED_FEED_FILES = ("latest.json", "rulepacks.json")
+# Each artifact is repaired by a DIFFERENT command: --ioc-only deliberately
+# cannot touch the rule-pack bundle.
+_RESIGN_HINT = {
+    "latest.json": "python3 scripts/sign_rulepacks.py --ioc-only --seed-file <offline-seed-file>",
+    "rulepacks.json": ("python3 scripts/sign_rulepacks.py --allow-unchanged "
+                       "--seed-file <offline-seed-file>  (rebuilds and re-signs the bundle, "
+                       "then also re-signs latest.json)"),
+}
+
+
+def verify_published_feed(iocs_dir):
+    """Verify every published feed file against its detached signature using the
+    PINNED key only. Returns (ok, results) where results is a list of
+    (filename, ok, reason). A missing, oversized, truncated, or non-verifying
+    signature, an unreadable/non-JSON feed, or a missing feed file all fail.
+    There is deliberately no bypass, alternate-key, or skip option."""
+    results = []
+    for name in _PUBLISHED_FEED_FILES:
+        feed_path = os.path.join(iocs_dir, name)
+        sig_path = feed_path + ".sig"
+        if not os.path.isfile(feed_path):
+            results.append((name, False, "feed file missing"))
+            continue
+        if not os.path.isfile(sig_path):
+            results.append((name, False, "signature file missing"))
+            continue
+        try:
+            with open(feed_path, "rb") as f:
+                raw = f.read()
+            with open(sig_path, "rb") as f:
+                sig = f.read(_SIG_MAX_BYTES + 1)
+        except OSError as e:
+            results.append((name, False, f"unreadable: {type(e).__name__}"))
+            continue
+        if len(sig) != 64:
+            results.append((name, False, f"signature is {len(sig)} bytes, expected 64"))
+            continue
+        try:
+            json.loads(raw.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError):
+            results.append((name, False, "feed is not valid JSON"))
+            continue
+        if not _verify_ioc_bytes(raw, sig):
+            results.append((name, False,
+                            "signature does not verify against the pinned release key "
+                            "(a maintainer must re-sign: " + _RESIGN_HINT[name] + ")"))
+            continue
+        results.append((name, True, "ok"))
+    return all(r[1] for r in results), results
+
+
+_LIVE_FEEDS = (
+    ("latest.json", "https://raw.githubusercontent.com/alexgreensh/repo-forensics/main/iocs/latest.json"),
+    ("rulepacks.json", "https://raw.githubusercontent.com/alexgreensh/repo-forensics/main/iocs/rulepacks.json"),
+)
+
+
+def verify_live_feed(urls=None):
+    """Fetch the LIVE published feeds and signatures and verify against the
+    pinned key. Returns (code, results): 0 all verify, 1 any verifiably bad
+    (signature does not verify / definitively absent), 3 only transport failures
+    (verdict unknown, never reported as a verification failure)."""
+    results, bad, unknown = [], False, False
+    for name, url in (urls or _LIVE_FEEDS):
+        raw = _fetch_url_bytes(url, 5 * 1024 * 1024)
+        raw_absent, raw_rej = _last_fetch_absent, _last_fetch_rejected
+        sig = _fetch_url_bytes(url + ".sig", _SIG_MAX_BYTES)
+        sig_absent, sig_rej = _last_fetch_absent, _last_fetch_rejected
+        if raw is None or sig is None:
+            if raw_rej or sig_rej:
+                bad = True
+                results.append((name, False, "published artifact REJECTED: response exceeded the size cap"))
+            elif raw_absent or sig_absent:
+                bad = True
+                results.append((name, False, "published artifact missing (HTTP 404/410)"))
+            else:
+                unknown = True
+                results.append((name, None, "could not download (network failure, verdict unknown)"))
+            continue
+        if len(sig) != 64 or not _verify_ioc_bytes(raw, sig):
+            bad = True
+            results.append((name, False, "LIVE signature does not verify against the pinned release key (a maintainer must re-sign: " + _RESIGN_HINT[name] + ")"))
+        else:
+            results.append((name, True, "ok"))
+    return (1 if bad else 3 if unknown else 0), results
+
+
+def cache_status(cache_dir=None):
+    """Explicit last-known-good cache state for surfacing to the user:
+    {'present': bool, 'age_hours': float|None, 'stale': bool}. Stale means older
+    than CACHE_MAX_AGE_HOURS, absent, OR the latest refresh was refused (marker
+    persists until a verified refresh succeeds). It never implies the cache is
+    untrusted: its own signature is still checked on load."""
+    path = _cache_path(cache_dir)
+    try:
+        age = (time.time() - os.path.getmtime(path)) / 3600
+    except OSError:
+        return {"present": False, "age_hours": None, "stale": True,
+                "refresh_refused": refresh_refused(cache_dir)}
+    refused = refresh_refused(cache_dir)
+    return {"present": True, "age_hours": round(age, 1),
+            "stale": refused or age > CACHE_MAX_AGE_HOURS,
+            "refresh_refused": refused}
 
 
 def get_iocs(cache_dir=None):
@@ -760,6 +976,8 @@ def get_iocs(cache_dir=None):
         print(f"[!] Cached IOC feed {why} — intelligence channel "
               "untrusted (using hardcoded fallback IOCs).", file=sys.stderr)
 
+    refused = refresh_refused(cache_dir)
+
     # Start with hardcoded
     result = {
         'c2_ips': list(HARDCODED_C2_IPS),
@@ -768,7 +986,13 @@ def get_iocs(cache_dir=None):
         'malicious_pypi': set(HARDCODED_MALICIOUS_PYPI),
         'malicious_pth_files': set(HARDCODED_MALICIOUS_PTH_FILES),
         'compromised_versions': {},
-        '_ioc_degraded': ioc_degraded or ioc_signature_invalid,
+        '_ioc_degraded': ioc_degraded or ioc_signature_invalid or refused,
+        # True when the latest refresh was refused (published feed unverifiable);
+        # the cached feed that still verifies is merged but reads as stale.
+        '_ioc_refresh_refused': refused,
+        # True only when a verified, in-TTL cached feed is actually merged into
+        # this result (so callers can word warnings truthfully).
+        '_ioc_cache_served': bool(cached) and not ioc_signature_invalid,
         # Distinct sub-flag so callers can emit the IOC-signature-specific
         # message (vs the plain "no fresh cache" degraded message).
         '_ioc_signature_invalid': ioc_signature_invalid,
@@ -801,8 +1025,26 @@ def main():
     parser.add_argument('--update', action='store_true', help="Fetch latest IOCs from remote feed")
     parser.add_argument('--feed-url', default=None, help="Custom IOC feed URL")
     parser.add_argument('--cache-dir', default=None, help="Cache directory")
+    parser.add_argument('--verify-published', nargs='?', const='iocs', default=None,
+                        metavar='DIR', help="Verify published feed files in DIR "
+                        "(default ./iocs) against the pinned key; exit 1 on any failure")
+    parser.add_argument('--verify-live', action='store_true',
+                        help="Fetch the LIVE published feeds + signatures and verify them "
+                        "against the pinned key; exit 1 verifiably bad, 3 network failure only")
     parser.add_argument('--show', action='store_true', help="Show current IOC counts")
     args = parser.parse_args()
+
+    if args.verify_published is not None:
+        ok, results = verify_published_feed(args.verify_published)
+        for name, good, reason in results:
+            print(f"{'[+]' if good else '[!]'} {name}: {reason}")
+        sys.exit(0 if ok else 1)
+
+    if args.verify_live:
+        code, results = verify_live_feed()
+        for name, good, reason in results:
+            print(f"{'[+]' if good else '[?]' if good is None else '[!]'} {name}: {reason}")
+        sys.exit(code)
 
     if args.update:
         success, msg = update_iocs(args.feed_url, args.cache_dir)

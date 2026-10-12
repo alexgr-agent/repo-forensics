@@ -512,7 +512,7 @@ class TestIocUpdateAcceptance:
         ok, msg = ioc_manager.update_iocs(cache_dir=str(tmp_path))
 
         assert not ok
-        assert "signature missing" in msg
+        assert "could not download the feed signature" in msg
         assert not (tmp_path / ioc_manager.CACHE_FILENAME).exists()
 
     def test_interrupted_pair_commit_restores_last_known_good(self, tmp_path, monkeypatch):
@@ -628,3 +628,523 @@ class TestIocSignatureBindsTrustedBytes:
         iocs = ioc_manager.get_iocs(cache_dir=str(tmp_path))
         assert iocs["_ioc_signature_invalid"] is False
         assert ioc_manager._has_seen_signed(str(tmp_path)) is True
+
+
+# ---------------------------------------------------------------------------
+# Paired-file published-feed gate (issue #54)
+# ---------------------------------------------------------------------------
+
+
+def _publish(dirpath, name, payload=b'{"version":"t"}', tamper=False, sig=None):
+    raw = payload
+    (dirpath / name).write_bytes(raw)
+    if sig is None:
+        sig = _ed25519_sign.sign(raw, _IOC_TEST_PRIV, _IOC_TEST_PUB)
+        if tamper:
+            sig = bytes([sig[0] ^ 1]) + sig[1:]
+    (dirpath / (name + ".sig")).write_bytes(sig)
+
+
+class TestPublishedFeedGate:
+    @pytest.fixture(autouse=True)
+    def _key(self, monkeypatch):
+        monkeypatch.setattr(ioc_manager, "IOC_FEED_PUBKEY_HEX", _IOC_TEST_PUB.hex())
+
+    def _both(self, d, **kw):
+        _publish(d, "latest.json", **kw)
+        _publish(d, "rulepacks.json")
+
+    def test_valid_pair_passes(self, tmp_path):
+        self._both(tmp_path)
+        ok, res = ioc_manager.verify_published_feed(str(tmp_path))
+        assert ok and all(r[1] for r in res)
+
+    def test_invalid_sig_fails_loudly(self, tmp_path):
+        self._both(tmp_path, tamper=True)
+        ok, res = ioc_manager.verify_published_feed(str(tmp_path))
+        assert not ok
+        assert dict((n, g) for n, g, _ in res) == {"latest.json": False, "rulepacks.json": True}
+        assert "re-sign" in [r for r in res if r[0] == "latest.json"][0][2]
+
+    def test_missing_sig_fails(self, tmp_path):
+        self._both(tmp_path)
+        (tmp_path / "latest.json.sig").unlink()
+        assert not ioc_manager.verify_published_feed(str(tmp_path))[0]
+
+    def test_missing_feed_fails(self, tmp_path):
+        self._both(tmp_path)
+        (tmp_path / "rulepacks.json").unlink()
+        assert not ioc_manager.verify_published_feed(str(tmp_path))[0]
+
+    def test_tampered_feed_fails(self, tmp_path):
+        self._both(tmp_path)
+        (tmp_path / "latest.json").write_bytes(b'{"version":"evil"}')
+        assert not ioc_manager.verify_published_feed(str(tmp_path))[0]
+
+    @pytest.mark.parametrize("sig", [b"", b"x" * 63, b"x" * 65, b"x" * 5000])
+    def test_bad_sig_lengths_fail(self, tmp_path, sig):
+        self._both(tmp_path, sig=sig)
+        assert not ioc_manager.verify_published_feed(str(tmp_path))[0]
+
+    def test_non_json_feed_fails(self, tmp_path):
+        self._both(tmp_path, payload=b"not json")
+        assert not ioc_manager.verify_published_feed(str(tmp_path))[0]
+
+    def test_signature_from_other_key_fails(self, tmp_path):
+        other_priv, other_pub = _ed25519_sign.keypair(b"\x07" * 32)
+        raw = b'{"version":"t"}'
+        self._both(tmp_path)
+        (tmp_path / "latest.json.sig").write_bytes(_ed25519_sign.sign(raw, other_priv, other_pub))
+        assert not ioc_manager.verify_published_feed(str(tmp_path))[0]
+
+    def test_cli_exit_codes(self, tmp_path, monkeypatch, capsys):
+        self._both(tmp_path)
+        monkeypatch.setattr("sys.argv", ["ioc_manager.py", "--verify-published", str(tmp_path)])
+        with pytest.raises(SystemExit) as e:
+            ioc_manager.main()
+        assert e.value.code == 0
+        (tmp_path / "latest.json.sig").unlink()
+        with pytest.raises(SystemExit) as e:
+            ioc_manager.main()
+        assert e.value.code == 1
+        assert "[!] latest.json" in capsys.readouterr().out
+
+    def test_update_failure_marks_stale_cache_explicitly(self, tmp_path, monkeypatch):
+        (tmp_path / ioc_manager.CACHE_FILENAME).write_bytes(b'{"version":"old"}')
+        old = time.time() - 72 * 3600
+        os.utime(tmp_path / ioc_manager.CACHE_FILENAME, (old, old))
+        feed = {"version": "n", "c2_ips": ["1.1.1.1"]}
+        raw = json.dumps(feed).encode()
+        monkeypatch.setattr(ioc_manager, "fetch_remote_iocs", lambda *a, **k: (feed, raw))
+        monkeypatch.setattr(ioc_manager, "_fetch_url_bytes", lambda *a, **k: b"x" * 64)
+        ok, msg = ioc_manager.update_iocs(cache_dir=str(tmp_path))
+        assert not ok and "STALE" in msg and "re-sign" in msg
+        assert ioc_manager.cache_status(str(tmp_path))["stale"] is True
+
+    def test_cache_status_absent_is_stale(self, tmp_path):
+        assert ioc_manager.cache_status(str(tmp_path)) == {"present": False, "age_hours": None, "stale": True, "refresh_refused": False}
+
+    def test_no_bypass_parameter_exists(self):
+        import inspect
+        assert list(inspect.signature(ioc_manager.verify_published_feed).parameters) == ["iocs_dir"]
+        assert "--verify-published" in inspect.getsource(ioc_manager.main)
+
+
+class TestPublishedFeedGateRound2:
+    @pytest.fixture(autouse=True)
+    def _key(self, monkeypatch):
+        monkeypatch.setattr(ioc_manager, "IOC_FEED_PUBKEY_HEX", _IOC_TEST_PUB.hex())
+
+    def test_crlf_converted_feed_fails(self, tmp_path):
+        _publish(tmp_path, "latest.json", payload=b'{\n"version":"t"\n}')
+        _publish(tmp_path, "rulepacks.json")
+        (tmp_path / "latest.json").write_bytes(b'{\r\n"version":"t"\r\n}')
+        assert not ioc_manager.verify_published_feed(str(tmp_path))[0]
+
+    def test_trailing_newline_and_hex_sig_rejected(self, tmp_path):
+        raw = b'{"version":"t"}'
+        good = _ed25519_sign.sign(raw, _IOC_TEST_PRIV, _IOC_TEST_PUB)
+        for bad in (good + b"\n", good.hex().encode()):
+            _publish(tmp_path, "latest.json", sig=bad)
+            _publish(tmp_path, "rulepacks.json")
+            assert not ioc_manager.verify_published_feed(str(tmp_path))[0]
+
+    def test_missing_directory_fails(self, tmp_path):
+        assert not ioc_manager.verify_published_feed(str(tmp_path / "nope"))[0]
+
+
+class TestRefusedRefreshStateTransition:
+    @pytest.fixture(autouse=True)
+    def _key(self, monkeypatch):
+        monkeypatch.setattr(ioc_manager, "IOC_FEED_PUBKEY_HEX", _IOC_TEST_PUB.hex())
+
+    def _fresh_cache(self, d):
+        _write_signed_cache(str(d), {"version": "good", "malicious_domains": ["good-evil.com"]})
+
+    def _bad_remote(self, monkeypatch, sig=b"x" * 64):
+        feed = {"version": "n", "c2_ips": ["1.1.1.1"], "malicious_domains": [],
+                "malicious_npm_packages": [], "malicious_pypi_packages": []}
+        raw = json.dumps(feed).encode()
+        monkeypatch.setattr(ioc_manager, "fetch_remote_iocs", lambda *a, **k: (feed, raw))
+        monkeypatch.setattr(ioc_manager, "_fetch_url_bytes", lambda *a, **k: sig)
+
+    def test_fresh_cache_becomes_stale_and_degraded_after_refusal(self, tmp_path, monkeypatch):
+        self._fresh_cache(tmp_path)
+        before = ioc_manager.get_iocs(cache_dir=str(tmp_path))
+        assert before["_ioc_degraded"] is False
+        assert ioc_manager.cache_status(str(tmp_path))["stale"] is False
+        self._bad_remote(monkeypatch)
+        ok, msg = ioc_manager.update_iocs(cache_dir=str(tmp_path))
+        assert not ok and "STALE" in msg
+        st = ioc_manager.cache_status(str(tmp_path))
+        assert st["stale"] is True and st["refresh_refused"] is True
+        after = ioc_manager.get_iocs(cache_dir=str(tmp_path))
+        assert after["_ioc_degraded"] is True
+        assert after["_ioc_refresh_refused"] is True
+        # last-known-good, still-verifying cache content is preserved and used
+        assert "good-evil.com" in after["malicious_domains"]
+
+    def test_sig_404_marks_stale(self, tmp_path, monkeypatch):
+        self._fresh_cache(tmp_path)
+        self._bad_remote(monkeypatch, sig=None)
+        monkeypatch.setattr(ioc_manager, "_last_fetch_absent", True)
+        ok, _ = ioc_manager.update_iocs(cache_dir=str(tmp_path))
+        assert not ok and ioc_manager.get_iocs(cache_dir=str(tmp_path))["_ioc_degraded"] is True
+
+    def test_sig_download_timeout_does_not_mark(self, tmp_path, monkeypatch):
+        self._fresh_cache(tmp_path)
+        self._bad_remote(monkeypatch, sig=None)
+        monkeypatch.setattr(ioc_manager, "_last_fetch_absent", False)
+        ok, _ = ioc_manager.update_iocs(cache_dir=str(tmp_path))
+        assert not ok
+        assert not ioc_manager.refresh_refused(str(tmp_path))
+        assert ioc_manager.get_iocs(cache_dir=str(tmp_path))["_ioc_degraded"] is False
+
+    def test_real_fetch_timeout_vs_404_flag(self, monkeypatch):
+        import urllib.request, urllib.error, socket
+        monkeypatch.setattr(ioc_manager, "_validate_feed_url", lambda u: True)
+        def boom(exc):
+            def f(*a, **k): raise exc
+            return f
+        monkeypatch.setattr(urllib.request.OpenerDirector, "open", lambda self, *a, **k: boom(socket.timeout("t"))())
+        assert ioc_manager._fetch_url_bytes("https://x/y", 10) is None
+        assert ioc_manager._last_fetch_absent is False
+        monkeypatch.setattr(urllib.request.OpenerDirector, "open", lambda self, *a, **k: boom(
+            urllib.error.HTTPError("https://x/y", 503, "no", {}, None))())
+        assert ioc_manager._fetch_url_bytes("https://x/y", 10) is None
+        assert ioc_manager._last_fetch_absent is False
+        monkeypatch.setattr(urllib.request.OpenerDirector, "open", lambda self, *a, **k: boom(
+            urllib.error.HTTPError("https://x/y", 404, "no", {}, None))())
+        assert ioc_manager._fetch_url_bytes("https://x/y", 10) is None
+        assert ioc_manager._last_fetch_absent is True
+
+    def test_repair_hint_names_command_for_each_artifact(self, tmp_path, monkeypatch):
+        for bad, want, notwant in (("latest.json", "--ioc-only", None),
+                                   ("rulepacks.json", "--allow-unchanged", "--ioc-only")):
+            _publish(tmp_path, "latest.json", tamper=(bad == "latest.json"))
+            _publish(tmp_path, "rulepacks.json", tamper=(bad == "rulepacks.json"))
+            _, res = ioc_manager.verify_published_feed(str(tmp_path))
+            reason = [r for r in res if r[0] == bad][0][2]
+            assert want in reason
+            if notwant:
+                assert notwant not in reason
+
+    def test_pre_scan_warning_text_for_refused_but_served_cache(self, tmp_path, monkeypatch, capsys):
+        import pre_scan
+        self._fresh_cache(tmp_path)
+        self._bad_remote(monkeypatch)
+        ioc_manager.update_iocs(cache_dir=str(tmp_path))
+        iocs = ioc_manager.get_iocs(cache_dir=str(tmp_path))
+        pre_scan.check_ioc_packages(["left-pad"], iocs=iocs)
+        err = capsys.readouterr().err
+        assert "last verified cached feed" in err
+        assert "Only hardcoded IOCs" not in err
+        pre_scan.check_ioc_packages(["left-pad"], iocs={"_ioc_degraded": True})
+        assert "Only hardcoded IOCs" in capsys.readouterr().err
+
+    def test_verified_refresh_clears_stale(self, tmp_path, monkeypatch):
+        self._fresh_cache(tmp_path)
+        self._bad_remote(monkeypatch)
+        ioc_manager.update_iocs(cache_dir=str(tmp_path))
+        feed = {"version": "v2", "c2_ips": ["2.2.2.2"], "malicious_domains": ["x.com"],
+                "malicious_npm_packages": [], "malicious_pypi_packages": []}
+        raw = json.dumps(feed).encode()
+        sig = _ed25519_sign.sign(raw, _IOC_TEST_PRIV, _IOC_TEST_PUB)
+        monkeypatch.setattr(ioc_manager, "fetch_remote_iocs", lambda *a, **k: (feed, raw))
+        monkeypatch.setattr(ioc_manager, "_fetch_url_bytes", lambda *a, **k: sig)
+        ok, _ = ioc_manager.update_iocs(cache_dir=str(tmp_path))
+        assert ok
+        assert ioc_manager.cache_status(str(tmp_path))["stale"] is False
+        assert ioc_manager.get_iocs(cache_dir=str(tmp_path))["_ioc_degraded"] is False
+
+    def test_network_failure_does_not_mark_refused(self, tmp_path, monkeypatch):
+        self._fresh_cache(tmp_path)
+        monkeypatch.setattr(ioc_manager, "fetch_remote_iocs", lambda *a, **k: (None, None))
+        ok, _ = ioc_manager.update_iocs(cache_dir=str(tmp_path))
+        assert not ok and not ioc_manager.refresh_refused(str(tmp_path))
+
+
+class TestIocOnlyResign:
+    """The maintainer re-sign path for issue #54: --ioc-only must work with no
+    rule-pack changes and must not touch the rule-pack bundle."""
+
+    def _publisher(self, tmp_path, monkeypatch):
+        import importlib.util
+        root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+        spec = importlib.util.spec_from_file_location(
+            "sign_rulepacks_ioc_only", os.path.join(root, "scripts", "sign_rulepacks.py"))
+        pub = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(pub)
+        monkeypatch.setattr(pub, "_IOCS_DIR", str(tmp_path))
+        monkeypatch.setattr(pub, "_LATEST_PATH", str(tmp_path / "latest.json"))
+        monkeypatch.setattr(pub, "_BUNDLE_PATH", str(tmp_path / "rulepacks.json"))
+        return pub
+
+    def test_ioc_only_signs_latest_and_leaves_bundle_untouched(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(ioc_manager, "IOC_FEED_PUBKEY_HEX", _IOC_TEST_PUB.hex())
+        pub = self._publisher(tmp_path, monkeypatch)
+        (tmp_path / "latest.json").write_bytes(b'{"version":"t"}')
+        (tmp_path / "latest.json.sig").write_bytes(b"\x00" * 64)  # invalid, like live
+        (tmp_path / "rulepacks.json").write_bytes(b'{"bundle":1}')
+        (tmp_path / "rulepacks.json.sig").write_bytes(b"B" * 64)
+        rc = pub.main(["--ioc-only", "--seed-hex", _IOC_TEST_SEED.hex()])
+        assert rc == 0
+        assert ioc_manager._verify_ioc_bytes(
+            (tmp_path / "latest.json").read_bytes(), (tmp_path / "latest.json.sig").read_bytes())
+        assert (tmp_path / "rulepacks.json").read_bytes() == b'{"bundle":1}'
+        assert (tmp_path / "rulepacks.json.sig").read_bytes() == b"B" * 64
+
+    def test_ioc_only_missing_latest_fails(self, tmp_path, monkeypatch):
+        pub = self._publisher(tmp_path, monkeypatch)
+        assert pub.main(["--ioc-only", "--seed-hex", _IOC_TEST_SEED.hex()]) == 1
+
+    def test_ioc_only_requires_key_and_rejects_build_only(self, tmp_path, monkeypatch):
+        pub = self._publisher(tmp_path, monkeypatch)
+        with pytest.raises(SystemExit):
+            pub.main(["--ioc-only"])
+        with pytest.raises(SystemExit):
+            pub.main(["--ioc-only", "--build-only"])
+
+
+class TestMessagesAndLiveVerify:
+    @pytest.fixture(autouse=True)
+    def _key(self, monkeypatch):
+        monkeypatch.setattr(ioc_manager, "IOC_FEED_PUBKEY_HEX", _IOC_TEST_PUB.hex())
+
+    def _remote(self, monkeypatch, sig):
+        feed = {"version": "n", "c2_ips": ["1.1.1.1"], "malicious_domains": [],
+                "malicious_npm_packages": [], "malicious_pypi_packages": []}
+        raw = json.dumps(feed).encode()
+        monkeypatch.setattr(ioc_manager, "fetch_remote_iocs", lambda *a, **k: (feed, raw))
+        monkeypatch.setattr(ioc_manager, "_fetch_url_bytes", lambda *a, **k: sig)
+
+    def test_transport_message_does_not_claim_stale(self, tmp_path, monkeypatch):
+        _write_signed_cache(str(tmp_path), {"version": "g", "malicious_domains": []})
+        self._remote(monkeypatch, None)
+        monkeypatch.setattr(ioc_manager, "_last_fetch_absent", False)
+        ok, msg = ioc_manager.update_iocs(cache_dir=str(tmp_path))
+        assert not ok and "network failure" in msg and "still fresh" in msg
+        assert "marked STALE" not in msg and "stale" not in msg.lower().replace("still fresh", "")
+
+    def test_404_message_says_refused_and_stale(self, tmp_path, monkeypatch):
+        _write_signed_cache(str(tmp_path), {"version": "g", "malicious_domains": []})
+        self._remote(monkeypatch, None)
+        monkeypatch.setattr(ioc_manager, "_last_fetch_absent", True)
+        ok, msg = ioc_manager.update_iocs(cache_dir=str(tmp_path))
+        assert not ok and "404" in msg and "marked STALE" in msg
+
+    def test_invalid_message_truthful_even_if_marker_unwritable(self, tmp_path, monkeypatch):
+        _write_signed_cache(str(tmp_path), {"version": "g", "malicious_domains": []})
+        self._remote(monkeypatch, b"x" * 64)
+        monkeypatch.setattr(ioc_manager, "_mark_refresh_refused", lambda *a, **k: None)
+        ok, msg = ioc_manager.update_iocs(cache_dir=str(tmp_path))
+        assert not ok and "still fresh" in msg and "marked STALE" not in msg
+
+    def _live(self, monkeypatch, table):
+        def fetch(url, cap):
+            v = table[url]
+            ioc_manager._last_fetch_absent = (v == "404")
+            return None if v in ("404", "net") else v
+        monkeypatch.setattr(ioc_manager, "_fetch_url_bytes", fetch)
+
+    def _urls(self):
+        return (("latest.json", "https://x/latest.json"), ("rulepacks.json", "https://x/rp.json"))
+
+    def _good(self, raw):
+        return _ed25519_sign.sign(raw, _IOC_TEST_PRIV, _IOC_TEST_PUB)
+
+    def test_live_all_good(self, monkeypatch):
+        a, b = b'{"a":1}', b'{"b":2}'
+        self._live(monkeypatch, {"https://x/latest.json": a, "https://x/latest.json.sig": self._good(a),
+                                 "https://x/rp.json": b, "https://x/rp.json.sig": self._good(b)})
+        assert ioc_manager.verify_live_feed(self._urls())[0] == 0
+
+    def test_live_bad_sig_is_1(self, monkeypatch):
+        a, b = b'{"a":1}', b'{"b":2}'
+        self._live(monkeypatch, {"https://x/latest.json": a, "https://x/latest.json.sig": b"x" * 64,
+                                 "https://x/rp.json": b, "https://x/rp.json.sig": self._good(b)})
+        code, res = ioc_manager.verify_live_feed(self._urls())
+        assert code == 1 and res[0][1] is False and "--ioc-only" in res[0][2]
+
+    def test_live_404_is_1_network_only_is_3(self, monkeypatch):
+        a, b = b'{"a":1}', b'{"b":2}'
+        base = {"https://x/latest.json": a, "https://x/latest.json.sig": self._good(a),
+                "https://x/rp.json": b, "https://x/rp.json.sig": self._good(b)}
+        self._live(monkeypatch, dict(base, **{"https://x/rp.json.sig": "404"}))
+        assert ioc_manager.verify_live_feed(self._urls())[0] == 1
+        self._live(monkeypatch, dict(base, **{"https://x/rp.json": "net"}))
+        assert ioc_manager.verify_live_feed(self._urls())[0] == 3
+
+    def test_live_bad_beats_network_unknown(self, monkeypatch):
+        a = b'{"a":1}'
+        self._live(monkeypatch, {"https://x/latest.json": a, "https://x/latest.json.sig": b"x" * 64,
+                                 "https://x/rp.json": "net", "https://x/rp.json.sig": "net"})
+        assert ioc_manager.verify_live_feed(self._urls())[0] == 1
+
+
+class TestOversizeIsRejectionNotNetwork:
+    @pytest.fixture(autouse=True)
+    def _key(self, monkeypatch):
+        monkeypatch.setattr(ioc_manager, "IOC_FEED_PUBKEY_HEX", _IOC_TEST_PUB.hex())
+        monkeypatch.setattr(ioc_manager, "_last_fetch_absent", False)
+        monkeypatch.setattr(ioc_manager, "_last_fetch_rejected", False)
+
+    def _urlopen(self, monkeypatch, payload):
+        import urllib.request, io
+        class R(io.BytesIO):
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+        monkeypatch.setattr(ioc_manager, "_validate_feed_url", lambda u: True)
+        monkeypatch.setattr(urllib.request.OpenerDirector, "open", lambda self, *a, **k: R(payload))
+
+    def test_fetch_flags_oversize_not_absent(self, monkeypatch):
+        self._urlopen(monkeypatch, b"x" * 100)
+        assert ioc_manager._fetch_url_bytes("https://x/y", 10) is None
+        assert ioc_manager._last_fetch_rejected is True
+        assert ioc_manager._last_fetch_absent is False
+        self._urlopen(monkeypatch, b"x" * 5)
+        assert ioc_manager._fetch_url_bytes("https://x/y", 10) == b"x" * 5
+        assert ioc_manager._last_fetch_rejected is False
+
+    def test_live_oversize_sig_is_exit_1(self, monkeypatch):
+        a = b'{"a":1}'
+        good = _ed25519_sign.sign(a, _IOC_TEST_PRIV, _IOC_TEST_PUB)
+        def fetch(url, cap):
+            ioc_manager._last_fetch_rejected = url.endswith(".sig") and "latest" in url
+            ioc_manager._last_fetch_absent = False
+            if url.endswith(".sig"):
+                return None if ioc_manager._last_fetch_rejected else good
+            return a
+        monkeypatch.setattr(ioc_manager, "_fetch_url_bytes", fetch)
+        code, res = ioc_manager.verify_live_feed((("latest.json", "https://x/latest.json"),))
+        assert code == 1 and "REJECTED" in res[0][2]
+
+    def test_live_oversize_content_is_exit_1(self, monkeypatch):
+        def fetch(url, cap):
+            ioc_manager._last_fetch_rejected = not url.endswith(".sig")
+            ioc_manager._last_fetch_absent = False
+            return None if not url.endswith(".sig") else b"x" * 64
+        monkeypatch.setattr(ioc_manager, "_fetch_url_bytes", fetch)
+        code, _ = ioc_manager.verify_live_feed((("latest.json", "https://x/latest.json"),))
+        assert code == 1
+
+    def test_update_oversize_sig_marks_refused(self, tmp_path, monkeypatch):
+        _write_signed_cache(str(tmp_path), {"version": "g", "malicious_domains": []})
+        feed = {"version": "n", "c2_ips": ["1.1.1.1"]}
+        raw = json.dumps(feed).encode()
+        monkeypatch.setattr(ioc_manager, "fetch_remote_iocs", lambda *a, **k: (feed, raw))
+        def fetch(*a, **k):
+            ioc_manager._last_fetch_rejected = True
+            return None
+        monkeypatch.setattr(ioc_manager, "_fetch_url_bytes", fetch)
+        ok, msg = ioc_manager.update_iocs(cache_dir=str(tmp_path))
+        assert not ok and "rejected" in msg and ioc_manager.refresh_refused(str(tmp_path))
+
+    def test_update_oversize_or_nonjson_feed_marks_refused(self, tmp_path, monkeypatch):
+        _write_signed_cache(str(tmp_path), {"version": "g", "malicious_domains": []})
+        def fetch_remote(*a, **k):
+            ioc_manager._last_fetch_rejected = True
+            return (None, None)
+        monkeypatch.setattr(ioc_manager, "fetch_remote_iocs", fetch_remote)
+        ok, msg = ioc_manager.update_iocs(cache_dir=str(tmp_path))
+        assert not ok and "rejected" in msg and ioc_manager.refresh_refused(str(tmp_path))
+
+    def test_plain_network_failure_still_unmarked(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(ioc_manager, "fetch_remote_iocs", lambda *a, **k: (None, None))
+        ok, msg = ioc_manager.update_iocs(cache_dir=str(tmp_path))
+        assert not ok and not ioc_manager.refresh_refused(str(tmp_path))
+
+    def test_real_nonjson_feed_sets_rejected(self, monkeypatch):
+        self._urlopen(monkeypatch, b"<html>not json</html>")
+        assert ioc_manager.fetch_remote_iocs("https://x/y", _return_raw=True) == (None, None)
+        assert ioc_manager._last_fetch_rejected is True
+
+
+class TestV8RedirectPinAndWarnings:
+    @pytest.fixture(autouse=True)
+    def _key(self, monkeypatch):
+        monkeypatch.setattr(ioc_manager, "IOC_FEED_PUBKEY_HEX", _IOC_TEST_PUB.hex())
+
+    def _handler(self):
+        import urllib.request
+        op = ioc_manager._pinned_opener()
+        return [h for h in op.handlers if isinstance(h, urllib.request.HTTPRedirectHandler)
+                and type(h) is not urllib.request.HTTPRedirectHandler][0]
+
+    @pytest.mark.parametrize("target", [
+        "http://raw.githubusercontent.com/x", "https://outside.example/feed",
+        "file:///etc/passwd", "ftp://raw.githubusercontent.com/x",
+        "https://raw.githubusercontent.com.evil.example/x"])
+    def test_redirect_off_pin_refused_and_flagged(self, target):
+        import urllib.request, urllib.error
+        h = self._handler()
+        req = urllib.request.Request("https://raw.githubusercontent.com/a")
+        ioc_manager._last_fetch_rejected = False
+        with pytest.raises(urllib.error.URLError):
+            h.redirect_request(req, None, 302, "Found", {}, target)
+        assert ioc_manager._last_fetch_rejected is True
+
+    def test_redirect_within_allowlist_still_followed(self):
+        import urllib.request
+        h = self._handler()
+        req = urllib.request.Request("https://raw.githubusercontent.com/a")
+        new = h.redirect_request(req, None, 302, "Found", {}, "https://raw.githubusercontent.com/b")
+        assert new is not None and new.full_url.endswith("/b")
+
+    def test_redirect_refusal_is_exit_1_in_live_verify_and_update(self, tmp_path, monkeypatch):
+        import urllib.request, urllib.error
+        def opener_open(self, req, timeout=None):
+            ioc_manager._last_fetch_rejected = True
+            raise urllib.error.URLError("redirect refused")
+        # simulate the handler firing mid-open: flag set, then URLError raised
+        def fake_open(self, req, timeout=None):
+            h = TestV8RedirectPinAndWarnings._handler(TestV8RedirectPinAndWarnings())
+            h.redirect_request(req, None, 302, "F", {}, "https://outside.example/f")
+        monkeypatch.setattr(urllib.request.OpenerDirector, "open", fake_open)
+        code, res = ioc_manager.verify_live_feed((("latest.json", "https://raw.githubusercontent.com/a"),))
+        assert code == 1
+
+    def test_flags_reset_on_entry_even_for_rejected_url(self, monkeypatch):
+        monkeypatch.setattr(ioc_manager, "_last_fetch_absent", True)
+        monkeypatch.setattr(ioc_manager, "_last_fetch_rejected", True)
+        assert ioc_manager._fetch_url_bytes("http://insecure.example/x", 10) is None
+        assert ioc_manager._last_fetch_absent is False
+        assert ioc_manager._last_fetch_rejected is False
+
+    def _refuse(self, tmp_path, monkeypatch):
+        feed = {"version": "n", "c2_ips": ["1.1.1.1"], "malicious_domains": [],
+                "malicious_npm_packages": [], "malicious_pypi_packages": []}
+        raw = json.dumps(feed).encode()
+        monkeypatch.setattr(ioc_manager, "fetch_remote_iocs", lambda *a, **k: (feed, raw))
+        monkeypatch.setattr(ioc_manager, "_fetch_url_bytes", lambda *a, **k: b"x" * 64)
+        ioc_manager.update_iocs(cache_dir=str(tmp_path))
+
+    def test_pre_scan_warning_no_cache_does_not_claim_cache(self, tmp_path, monkeypatch, capsys):
+        import pre_scan
+        self._refuse(tmp_path, monkeypatch)   # no cache present at all
+        iocs = ioc_manager.get_iocs(cache_dir=str(tmp_path))
+        assert iocs["_ioc_refresh_refused"] and not iocs["_ioc_cache_served"]
+        pre_scan.check_ioc_packages(["left-pad"], iocs=iocs)
+        err = capsys.readouterr().err
+        assert "last verified cached feed" not in err
+        assert "no verified cached feed is available" in err
+
+    def test_pre_scan_warning_expired_cache_does_not_claim_cache(self, tmp_path, monkeypatch, capsys):
+        import pre_scan
+        _write_signed_cache(str(tmp_path), {"version": "g", "malicious_domains": []})
+        old = time.time() - 72 * 3600
+        os.utime(tmp_path / ioc_manager.CACHE_FILENAME, (old, old))
+        self._refuse(tmp_path, monkeypatch)
+        iocs = ioc_manager.get_iocs(cache_dir=str(tmp_path))
+        assert not iocs["_ioc_cache_served"]
+        pre_scan.check_ioc_packages(["left-pad"], iocs=iocs)
+        assert "last verified cached feed" not in capsys.readouterr().err
+
+    def test_pre_scan_warning_served_cache_claims_cache(self, tmp_path, monkeypatch, capsys):
+        import pre_scan
+        _write_signed_cache(str(tmp_path), {"version": "g", "malicious_domains": []})
+        self._refuse(tmp_path, monkeypatch)
+        iocs = ioc_manager.get_iocs(cache_dir=str(tmp_path))
+        assert iocs["_ioc_cache_served"]
+        pre_scan.check_ioc_packages(["left-pad"], iocs=iocs)
+        assert "last verified cached feed" in capsys.readouterr().err
