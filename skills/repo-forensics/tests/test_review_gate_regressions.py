@@ -125,3 +125,44 @@ def test_orthographic_joiners_remain_visible_in_localization():
     hits = threats.scan_unicode_smuggling(text, 'locales/hi.ts')
     assert any(f.severity == 'medium' and f.category == 'unicode-smuggling' for f in hits)
     assert not any(f.severity == 'critical' for f in hits)
+
+
+_JOINER_AGENT_SURFACES = [
+    'GEMINI.md', 'CLAUDE.local.md', 'GEMINI.local.md', 'QWEN.md', 'CODEX.md', 'WARP.md',
+    'AGENT.md', 'agent.md', '.clinerules', '.roomodes', '.goosehints', '.aider.conf.yml',
+    '.junie/guidelines.md', '.augment/rules/a.md', '.kilocode/rules/a.md', '.trae/rules/a.md',
+    '.amazonq/rules/a.md', 'system_prompt.txt', 'llms.txt', 'src/prompt.ts',
+    'AGENTS.local.md', 'SKILL.local.md', 'sub/GEMINI.md', '.junie\\guidelines.md',
+    '.foorules', '.barhints', '.custom/rules/x.md', 'deep/.custom/sub/rules/x.md',
+    'docs/my-instructions.md', 'notes/PROMPT.txt',
+]
+
+
+def _devanagari_joiners(count=66):
+    return '\n'.join('क' * 5 + ('‌' if i % 2 else '‍') + 'क' * 15 for i in range(count))
+
+
+def _persian_zwnj(lines=12):
+    return '\n'.join('می‌خواهم کتاب می‌خوانم و نمی‌دانم' for _ in range(lines))
+
+
+@pytest.mark.parametrize('rel', _JOINER_AGENT_SURFACES)
+def test_orthographic_joiners_cannot_hide_in_any_agent_surface(rel):
+    hits = threats.scan_unicode_smuggling(_devanagari_joiners(), rel)
+    assert any(f.severity == 'critical' and f.category == 'unicode-smuggling' for f in hits)
+
+
+@pytest.mark.parametrize('rel', ['README.md', 'docs/guide.md', 'docs/fa/README.md', 'i18n/fa.md',
+                                 'locales/hi.json', 'locales/hi.ts', 'rules/a.md', 'src/rules.md'])
+@pytest.mark.parametrize('make', [_devanagari_joiners, _persian_zwnj], ids=['devanagari', 'persian'])
+def test_orthographic_joiners_in_readmes_and_locales_stay_non_critical(rel, make):
+    hits = threats.scan_unicode_smuggling(make(), rel)
+    assert any(f.severity == 'medium' and f.category == 'unicode-smuggling' for f in hits)
+    assert not any(f.severity in ('high', 'critical') for f in hits)
+
+
+@pytest.mark.parametrize('rel', ['GEMINI.md', 'CLAUDE.local.md', '.clinerules', 'QWEN.md', '.junie/guidelines.md'])
+def test_hidden_joiners_in_agent_surface_are_direct_evidence(rel):
+    hits = threats.scan_unicode_smuggling(_devanagari_joiners(), rel)
+    crit = [f for f in hits if f.severity == 'critical' and f.category == 'unicode-smuggling']
+    assert crit and all(f.evidence_class == 'direct' for f in crit)

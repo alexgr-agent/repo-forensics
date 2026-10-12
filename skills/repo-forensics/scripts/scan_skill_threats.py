@@ -319,6 +319,49 @@ _AGENT_ROOTS = {'skills', '.claude', '.cursor', '.codex', '.agents', 'agents',
                 '.windsurf', '.continue', '.roo', '.kiro', '.opencode', '.copilot',
                 '.mcp', 'mcp', 'tools', 'hooks', 'node_modules', 'site-packages',
                 'vendor', 'third_party'}
+# Extra agent-instruction directories for the joiner check only. Kept apart
+# from _AGENT_ROOTS, whose exact membership is pinned and also drives the
+# test-fixture downgrade.
+_AGENT_SURFACE_DIRS = {'.junie', '.augment', '.kilocode', '.trae', '.amazonq',
+                       '.clinerules'}
+# Agent instruction files that are read as prompts but are not in
+# forensics_core's canonical basename set. Lowercase.
+_AGENT_SURFACE_BASENAMES = {
+    'gemini.md', 'claude.local.md', 'gemini.local.md', 'qwen.md', 'codex.md',
+    'warp.md', 'agent.md', '.clinerules', '.roomodes', '.goosehints',
+    '.aider.conf.yml', 'llms.txt',
+}
+
+
+def _is_agent_prompt_surface(rel_path):
+    """True when `rel_path` is read by an agent as instructions, so a hidden
+    joiner channel there must stay critical instead of being excused as
+    orthography. Explicit names and roots, plus patterns so a new agent's
+    file is covered without a list edit: `<known agent file>.local.md`, any
+    dotfile or dot-directory ending in `rules` or `hints`, any `rules/`
+    directory below a dot-directory, any basename containing `prompt` or
+    `instructions`. README files and ordinary docs are deliberately not here.
+    """
+    parts = [p for p in re.split(r'[\\/]', rel_path.lower()) if p and p not in ('.', '..')]
+    if not parts:
+        return False
+    base = parts[-1]
+    if base in _AGENT_SURFACE_BASENAMES or core._is_agent_instruction_file(rel_path):
+        return True
+    if set(parts[:-1]) & _AGENT_SURFACE_DIRS:
+        return True
+    if base.endswith('.local.md'):
+        stem = base[:-len('.local.md')] + '.md'
+        if stem in _AGENT_SURFACE_BASENAMES or stem.upper() in core._AGENT_INSTRUCTION_BASENAMES:
+            return True
+    if 'prompt' in base or 'instructions' in base:
+        return True
+    for i, part in enumerate(parts):
+        if part.startswith('.') and (part.endswith('rules') or part.endswith('hints')):
+            return True
+        if part == 'rules' and any(q.startswith('.') for q in parts[:i]):
+            return True
+    return False
 _AUTO_RUN_TEST_FILES = {'conftest.py', '__init__.py', 'setup.py', 'sitecustomize.py'}
 _TEST_MAX_CLUSTER = 10
 
@@ -459,6 +502,7 @@ def scan_unicode_smuggling(content, rel_path):
     # Skip ZWJ/VS16 that are part of legitimate emoji sequences.
     zw_count = 0
     joiner_candidates = []
+    agent_surface = _is_agent_prompt_surface(rel_path)
     for m in ZERO_WIDTH_PATTERN.finditer(content):
         if _is_emoji_context(content, m.start(), m.group(0)):
             continue
@@ -472,8 +516,7 @@ def scan_unicode_smuggling(content, rel_path):
         parts = {p.lower() for p in re.split(r'[\\/]', rel_path)}
         # Agent instructions must retain the critical signal even when hidden
         # bits resemble sparse orthography. Localization stays below block.
-        prompt_context = (core._is_agent_instruction_file(rel_path)
-                          or bool(parts & _AGENT_ROOTS))
+        prompt_context = (agent_surface or bool(parts & _AGENT_ROOTS))
         exempt = (set() if prompt_context else
                   _exempt_joiner_positions(content, joiner_candidates))
         zw_count = min(100, zw_count + len(joiner_candidates) - len(exempt))
@@ -498,7 +541,11 @@ def scan_unicode_smuggling(content, rel_path):
                         + (" in a test file (likely fixture data)" if in_tests else ""),
             file=rel_path, line=0,
             snippet=f"{zw_count} invisible chars detected",
-            category="unicode-smuggling"
+            category="unicode-smuggling",
+            # Hidden text in a file an agent reads as instructions is direct
+            # evidence even when the evidence model files it as a doc
+            # (GEMINI.md, CLAUDE.local.md), which would cap it to low.
+            evidence_class="direct" if agent_surface and not in_tests else ""
         ))
 
     # Trojan Source: bidirectional control characters (critical)

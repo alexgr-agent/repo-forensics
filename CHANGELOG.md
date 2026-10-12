@@ -10,6 +10,7 @@ All notable changes to repo-forensics. Versions follow semver.
 - Preserve exact Node package-name case for self-reference exemptions.
 - Limit Node self-import exemptions to the nearest package scope.
 - Keep script-context joiners visible and retain critical findings in agent instruction paths.
+- Hidden-joiner findings stay critical in every agent instruction surface (GEMINI.md, `*.local.md` of known agent files, `.clinerules`, `.junie`/`.augment`/`.kilocode`/`.trae`/`.amazonq`, `system_prompt.*`, `llms.txt`, dotfiles ending in `rules` or `hints`, `rules/` under dot-directories, any name containing `prompt` or `instructions`); READMEs, docs and `locales/` files stay medium.
 - Count overlapping environment gates once and retain dangerous IIFE evidence beyond the full-analysis cap.
 - Refuse oversized pre-execution input and failed or empty scanner verdicts.
 - Mark missing IOC feed bytes stale and classify forbidden-scheme redirects as refusals.

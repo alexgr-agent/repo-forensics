@@ -78,7 +78,7 @@
     "scripts/scan_runtime_dynamism.py": "c6806b08dc76693f73ebb742047c7a8a8b35f7f80e9c52c276648325fdafdb21",
     "scripts/scan_sast.py": "ff6543efb352d496c0a7517eefd05c1831873a9ae209bdf94ae550a0b900227f",
     "scripts/scan_secrets.py": "af6c7386766a1530a656eea50c4fba8e23c2a685bfe5629a9e7fdb15ff7a5790",
-    "scripts/scan_skill_threats.py": "e5bb69b517235787607b16498a1aec35b2d0d05738513a3c9830abff2d4e8c66",
+    "scripts/scan_skill_threats.py": "b4cdf1765716a38070113d06a1928701dd4c8e177b83b0127951e33166c33219",
     "scripts/scan_splitstream.py": "283f0d44ae20c0c4fa46ce68a4fcdf010011aa8650a195becbd5907cf22e6536",
     "scripts/scan_yara.py": "0272b4de75c8af5c461bfda86287254f1be9dfd31cfa20e2ebe91a55a8a35256",
     "scripts/session_scan.py": "ad019f145dc8efdd67a65bb65a1710165554e72f0c408ab2225cce761a8650e6",
