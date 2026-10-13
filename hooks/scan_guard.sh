@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Shared concurrency + debounce guard for the scan hooks. Sourced, not executed.
+# Shared concurrency + debounce guard for advisory auto/session scan hooks.
+# Sourced, not executed.
 #
 # WHY THIS EXISTS (2026-08-28)
 # PreToolUse and PostToolUse both fire on EVERY Bash command, and each scan fans
@@ -26,8 +27,8 @@
 #   returns 0 -> caller should proceed with the scan
 #   returns 1 -> caller should skip (another scan is live, or one just ran)
 #   debounce_seconds of 0 means concurrency-only: never skip for recency, only
-#   when a scan is genuinely in flight. Used by the PreToolUse gate, where
-#   skipping on recency would let a command through unscanned.
+#   when a scan is genuinely in flight. Do not use this skip guard for a
+#   blocking pre-scan: every command requires its own scan decision.
 #
 # Escape hatches: REPO_FORENSICS_DISABLE_SCAN_GUARD=1 restores the old
 # unbounded behaviour; REPO_FORENSICS_SCAN_DEBOUNCE overrides the window;

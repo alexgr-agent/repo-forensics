@@ -226,6 +226,169 @@ def _is_emoji_context(content, pos, char):
     return False
 
 
+# Scripts whose orthography requires ZWNJ/ZWJ between letters (Persian/Arabic
+# ZWNJ, Indic conjuncts, Myanmar, Khmer). Ranges are inclusive codepoints.
+_JOINER_SCRIPT_RANGES = (
+    (0x0600, 0x06FF), (0x0750, 0x077F), (0x08A0, 0x08FF),
+    (0xFB50, 0xFDFF), (0xFE70, 0xFEFF),   # Arabic and presentation forms
+    (0x0900, 0x0DFF),                     # Devanagari through Sinhala
+    (0x1000, 0x109F),                     # Myanmar
+    (0x1780, 0x17FF),                     # Khmer
+)
+
+
+def _in_joiner_script(ch):
+    cp = ord(ch)
+    return any(lo <= cp <= hi for lo, hi in _JOINER_SCRIPT_RANGES)
+
+
+_ARABIC_RANGES = ((0x0600, 0x06FF), (0x0750, 0x077F), (0x08A0, 0x08FF),
+                  (0xFB50, 0xFDFF), (0xFE70, 0xFEFF))
+_INVISIBLE_JOINERS = ('\u200c', '\u200d')
+
+# Legitimate joiner use tops out around 1 per 8 letters (Kurdish weekday
+# lists). A stream that encodes bits uses one joiner per letter, so exempt
+# joiners are only trusted below these limits. Residual: up to the cap below
+# can still hide at lower density inside a large joiner-script file.
+_JOINER_MAX_FILE_RATIO = 0.30      # exempt joiners / script letters, per file
+_JOINER_MAX_LINE_RATIO = 0.45      # same, per line (lines with 3+ joiners)
+_JOINER_MAX_EXEMPT_PER_FILE = 64   # hard cap (~8 bytes of payload); excess counts
+
+
+def _in_arabic(ch):
+    cp = ord(ch)
+    return any(lo <= cp <= hi for lo, hi in _ARABIC_RANGES)
+
+
+def _is_script_joiner_context(content, pos, char):
+    """True when a ZWNJ/ZWJ looks like real orthography for its script.
+
+    - the preceding character is a letter of a joiner-using script, so a
+      joiner hidden in Latin, CJK or ASCII text (the smuggling case) counts;
+    - the next character is not another invisible joiner, and not an ASCII
+      letter or digit;
+    - ZWJ after an Arabic-block letter is not orthographic (ZWNJ is), so it
+      counts. Indic scripts use both.
+    Density limits are applied by the caller (see _exempt_joiner_positions).
+    """
+    if char not in _INVISIBLE_JOINERS:
+        return False
+    if pos < 1 or pos + 1 >= len(content):
+        return False
+    left, right = content[pos - 1], content[pos + 1]
+    if not _in_joiner_script(left):
+        return False
+    if right in _INVISIBLE_JOINERS or ZERO_WIDTH_PATTERN.match(right):
+        return False
+    if char == '\u200d' and _in_arabic(left):
+        return False
+    return _in_joiner_script(right) or not (right.isascii() and right.isalnum())
+
+
+def _exempt_joiner_positions(content, candidates):
+    """Filter candidate joiner positions through the density limits.
+
+    `candidates` are positions already passing _is_script_joiner_context.
+    Returns the set of positions still treated as orthography.
+    """
+    if not candidates:
+        return set()
+    letters = sum(1 for ch in content if _in_joiner_script(ch) and ch.isalpha())
+    if len(candidates) > 8 and len(candidates) > _JOINER_MAX_FILE_RATIO * max(letters, 1):
+        return set()
+    exempt = set(sorted(candidates)[:_JOINER_MAX_EXEMPT_PER_FILE])
+    # Per-line density: a dense line is a payload, not orthography.
+    by_line = {}
+    for pos in list(exempt):
+        by_line.setdefault(content.count('\n', 0, pos), []).append(pos)
+    if any(len(v) >= 3 for v in by_line.values()):
+        lines = content.split('\n')
+        for ln, poss in by_line.items():
+            if len(poss) < 3:
+                continue
+            line_letters = sum(1 for ch in lines[ln]
+                               if _in_joiner_script(ch) and ch.isalpha())
+            if len(poss) > _JOINER_MAX_LINE_RATIO * max(line_letters, 1):
+                exempt.difference_update(poss)
+    return exempt
+
+
+_CODE_EXTS = {'.js', '.jsx', '.ts', '.tsx', '.mjs', '.cjs', '.py'}
+_AGENT_ROOTS = {'skills', '.claude', '.cursor', '.codex', '.agents', 'agents',
+                'commands', 'prompts', 'plugins', '.github', '.gemini', '.vscode',
+                '.windsurf', '.continue', '.roo', '.kiro', '.opencode', '.copilot',
+                '.mcp', 'mcp', 'tools', 'hooks', 'node_modules', 'site-packages',
+                'vendor', 'third_party'}
+# Extra agent-instruction directories for the joiner check only. Kept apart
+# from _AGENT_ROOTS, whose exact membership is pinned and also drives the
+# test-fixture downgrade.
+_AGENT_SURFACE_DIRS = {'.junie', '.augment', '.kilocode', '.trae', '.amazonq',
+                       '.clinerules'}
+# Agent instruction files that are read as prompts but are not in
+# forensics_core's canonical basename set. Lowercase.
+_AGENT_SURFACE_BASENAMES = {
+    'gemini.md', 'claude.local.md', 'gemini.local.md', 'qwen.md', 'codex.md',
+    'warp.md', 'agent.md', '.clinerules', '.roomodes', '.goosehints',
+    '.aider.conf.yml', 'llms.txt',
+}
+
+
+def _is_agent_prompt_surface(rel_path):
+    """True when `rel_path` is read by an agent as instructions, so a hidden
+    joiner channel there must stay critical instead of being excused as
+    orthography. Explicit names and roots, plus patterns so a new agent's
+    file is covered without a list edit: `<known agent file>.local.md`, any
+    dotfile or dot-directory ending in `rules` or `hints`, any `rules/`
+    directory below a dot-directory, any basename containing `prompt` or
+    `instructions`. README files and ordinary docs are deliberately not here.
+    """
+    parts = [p for p in re.split(r'[\\/]', rel_path.lower()) if p and p not in ('.', '..')]
+    if not parts:
+        return False
+    base = parts[-1]
+    if base in _AGENT_SURFACE_BASENAMES or core._is_agent_instruction_file(rel_path):
+        return True
+    if set(parts[:-1]) & _AGENT_SURFACE_DIRS:
+        return True
+    if base.endswith('.local.md'):
+        stem = base[:-len('.local.md')] + '.md'
+        if stem in _AGENT_SURFACE_BASENAMES or stem.upper() in core._AGENT_INSTRUCTION_BASENAMES:
+            return True
+    if 'prompt' in base or 'instructions' in base:
+        return True
+    for i, part in enumerate(parts):
+        if part.startswith('.') and (part.endswith('rules') or part.endswith('hints')):
+            return True
+        if part == 'rules' and any(q.startswith('.') for q in parts[:i]):
+            return True
+    return False
+_AUTO_RUN_TEST_FILES = {'conftest.py', '__init__.py', 'setup.py', 'sitecustomize.py'}
+_TEST_MAX_CLUSTER = 10
+
+
+def _is_test_fixture_path(rel_path, zw_count):
+    """Small zero-width clusters in code-test files are fixture data.
+
+    Prompt-bearing files (.md, SKILL.md, anything under an agent/skill/plugin
+    root) and large clusters are never downgraded.
+    """
+    if zw_count > _TEST_MAX_CLUSTER:
+        return False
+    if os.path.splitext(rel_path)[1].lower() not in _CODE_EXTS:
+        return False
+    if os.path.basename(rel_path).lower() in _AUTO_RUN_TEST_FILES:
+        return False
+    parts = {p.lower() for p in re.split(r'[\\/]', rel_path)}
+    if parts & _AGENT_ROOTS:
+        return False
+    return bool(_TEST_PATH_RE.search(rel_path))
+
+
+_TEST_PATH_RE = re.compile(
+    r'(?i)(?:^|[\\/])(?:tests?|__tests__|specs?)[\\/]|\.(?:test|spec)\.[cm]?[jt]sx?$'
+)
+
+
 # ============================================================
 # Category 8: Known Campaign IOCs (high, IOC match = critical)
 # Lazy loaded from ioc_manager (single source of truth)
@@ -338,20 +501,51 @@ def scan_unicode_smuggling(content, rel_path):
     # Count zero-width/invisible characters (capped to prevent slow scans).
     # Skip ZWJ/VS16 that are part of legitimate emoji sequences.
     zw_count = 0
+    joiner_candidates = []
+    agent_surface = _is_agent_prompt_surface(rel_path)
     for m in ZERO_WIDTH_PATTERN.finditer(content):
         if _is_emoji_context(content, m.start(), m.group(0)):
+            continue
+        if _is_script_joiner_context(content, m.start(), m.group(0)):
+            joiner_candidates.append(m.start())
             continue
         zw_count += 1
         if zw_count >= 100:
             break
+    if zw_count < 100 and joiner_candidates:
+        parts = {p.lower() for p in re.split(r'[\\/]', rel_path)}
+        # Agent instructions must retain the critical signal even when hidden
+        # bits resemble sparse orthography. Localization stays below block.
+        prompt_context = (agent_surface or bool(parts & _AGENT_ROOTS))
+        exempt = (set() if prompt_context else
+                  _exempt_joiner_positions(content, joiner_candidates))
+        zw_count = min(100, zw_count + len(joiner_candidates) - len(exempt))
+        if len(exempt) >= 3 and zw_count < 3:
+            findings.append(core.Finding(
+                scanner=SCANNER_NAME, severity="medium",
+                title="Orthographic Joiner Context",
+                description=(f"Found {len(exempt)} script-context joiners. "
+                             "Likely orthography; hidden-channel use is not ruled out."),
+                file=rel_path, line=0,
+                snippet=f"{len(exempt)} contextual joiners detected",
+                category="unicode-smuggling",
+            ))
     if zw_count >= 3:
+        # Test fixtures routinely carry invisible characters as input data.
+        # Keep the finding visible but below the block tier.
+        in_tests = _is_test_fixture_path(rel_path, zw_count)
         findings.append(core.Finding(
-            scanner=SCANNER_NAME, severity="critical",
+            scanner=SCANNER_NAME, severity="medium" if in_tests else "critical",
             title="Zero-Width Character Cluster",
-            description=f"Found {zw_count} zero-width/invisible Unicode characters (potential text smuggling)",
+            description=f"Found {zw_count} zero-width/invisible Unicode characters (potential text smuggling)"
+                        + (" in a test file (likely fixture data)" if in_tests else ""),
             file=rel_path, line=0,
             snippet=f"{zw_count} invisible chars detected",
-            category="unicode-smuggling"
+            category="unicode-smuggling",
+            # Hidden text in a file an agent reads as instructions is direct
+            # evidence even when the evidence model files it as a doc
+            # (GEMINI.md, CLAUDE.local.md), which would cap it to low.
+            evidence_class="direct" if agent_surface and not in_tests else ""
         ))
 
     # Trojan Source: bidirectional control characters (critical)

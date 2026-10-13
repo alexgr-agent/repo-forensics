@@ -21,22 +21,28 @@ if [ ! -f "$SCRIPT" ]; then
     exit 0
 fi
 
-# Bound how often this scan may run (2.14.7). PreToolUse/PostToolUse fire on
-# every Bash command and each scan fans out into eight scanners, which stacked
-# into 16 concurrent trees and a load average of 175 before this guard existed.
-# A MISSING guard file degrades to the old unbounded behaviour on purpose: for a
-# security tool, silently not scanning is worse than scanning too often.
-GUARD="${CLAUDE_PLUGIN_ROOT}/hooks/scan_guard.sh"
-if [ -f "$GUARD" ]; then
-    # shellcheck source=/dev/null
-    . "$GUARD"
-    if ! rf_scan_guard pre 0; then
-        exit 0
-    fi
-fi
+# Every PreToolUse invocation must scan its own command. The shared guard is
+# only safe for advisory auto/session scans: skipping an overlapping pre-scan
+# would approve a different command without inspecting it.
 
 if [ -f "$LAUNCHER" ]; then
-    exec "${BASH:-$(command -v bash || echo /bin/bash)}" "$LAUNCHER" "$SCRIPT"
+    _out="$("${BASH:-$(command -v bash || echo /bin/bash)}" "$LAUNCHER" "$SCRIPT")"
+    _rc=$?
+else
+    _out="$(python3 "$SCRIPT")"
+    _rc=$?
 fi
 
-exec python3 "$SCRIPT"
+# Claude treats an interpreter error as non-blocking. Convert missing or
+# crashed scanners to a block rather than approving an uninspected command.
+case "$_rc" in
+    0|2)
+        if [ -n "$_out" ]; then
+            printf '%s\n' "$_out"
+            exit "$_rc"
+        fi
+        ;;
+esac
+echo '[repo-forensics] Pre-scan failed or returned no verdict; refusing this command.' >&2
+printf '%s\n' '{"decision":"block","reason":"repo-forensics pre-scan failed or returned no verdict. Repair the scanner before retrying."}'
+exit 2
