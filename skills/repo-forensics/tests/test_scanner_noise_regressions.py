@@ -5,6 +5,7 @@ Each benign shape is paired with a twin that must keep firing.
 
 import os
 import subprocess
+import time
 
 import pytest
 
@@ -42,7 +43,7 @@ class TestWorkflowExpressions:
             "          GH_TOKEN: ${{ github.token }}\n"
             "        run: echo done\n"))
         assert len(hits) == 4
-        assert {h.severity for h in hits} == {"low"}
+        assert [h.severity for h in hits] == ["low", "high", "high", "high"]
 
     def test_expression_inside_run_block_stays_high(self, tmp_path):
         hits = _pr010(tmp_path, (
@@ -71,6 +72,18 @@ class TestWorkflowExpressions:
             "          arg: ${{ inputs.cmd }}\n"))
         assert [h.severity for h in hits] == ["high", "high", "high"]
 
+    def test_action_inputs_and_unknown_fields_stay_high(self, tmp_path):
+        hits = _pr010(tmp_path, (
+            "jobs:\n"
+            "  build:\n"
+            "    steps:\n"
+            "      - uses: example/action@v1\n"
+            "        with:\n"
+            "          name: ${{ github.ref }}\n"
+            "          arbitrary: ${{ github.ref }}\n"))
+        assert len(hits) == 2
+        assert [hit.severity for hit in hits] == ["high", "high"]
+
     def test_untrusted_context_hidden_in_function_or_index_stays_high(self, tmp_path):
         hits = _pr010(tmp_path, (
             "jobs:\n  b:\n    steps:\n"
@@ -81,14 +94,138 @@ class TestWorkflowExpressions:
             "          c: ${{toJSON(github.event)}}\n"))
         assert [h.severity for h in hits] == ["high", "high", "high"]
 
-    def test_run_scope_ends_at_next_sibling_key(self, tmp_path):
+    def test_issue_output_passed_through_env_to_eval_stays_high(self, tmp_path):
+        hits = _pr010(tmp_path, (
+            "name: Issue handler\n"
+            "on: issues\n"
+            "jobs:\n"
+            "  b:\n"
+            "    runs-on: ubuntu-latest\n"
+            "    steps:\n"
+            "      - uses: actions/github-script@v7\n"
+            "        id: source\n"
+            "        with:\n"
+            "          script: |\n"
+            "            core.setOutput('command', context.payload.issue.title)\n"
+            "      - env:\n"
+            "          COMMAND: ${{ steps.source.outputs.command }}\n"
+            "        run: eval \"$COMMAND\"\n"))
+        assert len(hits) == 1
+        assert hits[0].severity == "high"
+
+    def test_flow_mapping_is_ambiguous_and_stays_high(self, tmp_path):
+        hits = _pr010(tmp_path, (
+            'jobs: {build: {runs-on: ubuntu-latest, steps: '
+            '[{run: "echo ${{ github.ref }}"}]}}\n'))
+        assert len(hits) == 1
+        assert hits[0].severity == "high"
+
+    def test_quoted_run_key_is_ambiguous_and_stays_high(self, tmp_path):
+        hits = _pr010(tmp_path, (
+            "jobs:\n"
+            "  build:\n"
+            "    runs-on: ubuntu-latest\n"
+            "    steps:\n"
+            '      - "run": echo ${{ github.ref }}\n'))
+        assert len(hits) == 1
+        assert hits[0].severity == "high"
+
+    def test_anchor_reused_as_script_stays_high(self, tmp_path):
+        hits = _pr010(tmp_path, (
+            "jobs:\n"
+            "  build:\n"
+            "    runs-on: ubuntu-latest\n"
+            "    steps:\n"
+            "      - uses: actions/github-script@v7\n"
+            "        with:\n"
+            "          options: &payload ${{ github.ref }}\n"
+            "          script: *payload\n"))
+        assert len(hits) == 1
+        assert hits[0].severity == "high"
+
+    def test_run_body_over_200_lines_stays_high(self, tmp_path):
+        body = "".join(f"          echo line {i}\n" for i in range(205))
+        hits = _pr010(tmp_path, (
+            "jobs:\n"
+            "  build:\n"
+            "    runs-on: ubuntu-latest\n"
+            "    steps:\n"
+            "      - run: |\n"
+            + body +
+            "          eval \"${{ steps.source.outputs.command }}\"\n"))
+        assert len(hits) == 1
+        assert hits[0].severity == "high"
+
+        trusted = _pr010(tmp_path, (
+            "jobs:\n"
+            "  build:\n"
+            "    runs-on: ubuntu-latest\n"
+            "    steps:\n"
+            "      - run: |\n"
+            + body +
+            "          echo ${{ github.ref }}\n"))
+        assert len(trusted) == 1
+        assert trusted[0].severity == "high"
+
+    def test_output_and_env_contexts_in_allowed_fields_stay_high(self, tmp_path):
+        hits = _pr010(tmp_path, (
+            "name: ${{ env.WORKFLOW_NAME }}\n"
+            "concurrency:\n"
+            "  group: ${{ needs.build.outputs.group }}\n"
+            "  cancel-in-progress: ${{ needs['build'].outputs['group'] }}\n"
+            "jobs:\n"
+            "  build:\n"
+            "    name: ${{ env['WORKFLOW_NAME'] }}\n"
+            "    steps:\n"
+            "      - if: ${{ steps.source.outputs.enabled }}\n"
+            "      - if: ${{ steps['source'].outputs['enabled'] }}\n"))
+        assert len(hits) == 6
+        assert [hit.severity for hit in hits] == ["high"] * 6
+
+    def test_only_known_inert_workflow_fields_are_downgraded(self, tmp_path):
+        hits = _pr010(tmp_path, (
+            "name: ${{ github.ref }}\n"
+            "concurrency:\n"
+            "  group: ${{ github.ref }}\n"
+            "jobs:\n"
+            "  build:\n"
+            "    if: ${{ github.ref }}\n"
+            "    name: ${{ github.ref }}\n"
+            "    concurrency: ${{ github.ref }}\n"
+            "    runs-on: ${{ github.ref }}\n"
+            "    timeout-minutes: ${{ github.ref }}\n"
+            "    environment:\n"
+            "      name: ${{ github.ref }}\n"
+            "      url: https://example.test/${{ github.ref }}\n"
+            "    steps:\n"
+            "      - name: ${{ github.ref }}\n"
+            "        if: ${{ github.ref }}\n"
+            "        timeout-minutes: ${{ github.ref }}\n"))
+        assert len(hits) == 12
+        assert all(hit.severity == "low" for hit in hits)
+
+    def test_many_workflow_expressions_keep_context_scan_linear(self, tmp_path):
+        f = tmp_path / "many-expressions.yml"
+        content = "".join(
+            f"name: release-{i} ${{{{ github.ref }}}}\n" for i in range(12_000))
+        f.write_text(content)
+
+        start = time.process_time()
+        hits = [hit for hit in scan_skill_threats.scan_file(
+            str(f), ".github/workflows/release.yml") if hit.rule_id == "ST-PR-010"]
+        cpu_seconds = time.process_time() - start
+
+        assert len(hits) == 12_000
+        assert cpu_seconds < 2.0, f"scanning 12,000 expressions used {cpu_seconds:.3f} CPU seconds"
+
+    def test_environment_sibling_after_run_stays_high(self, tmp_path):
         hits = _pr010(tmp_path, (
             "jobs:\n  b:\n    steps:\n"
             "      - run: |\n"
             "          echo ok\n"
             "        env:\n"
             "          X: ${{ secrets.TOKEN }}\n"))
-        assert [h.severity for h in hits] == ["low"]
+        assert [h.severity for h in hits] == ["high"]
 
 
 class TestCssZeroSize:

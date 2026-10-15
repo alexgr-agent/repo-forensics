@@ -756,43 +756,157 @@ def _action_env_line(content, line_number):
 
 _UNTRUSTED_EXPRESSION = re.compile(
     r'\$\{\{.*?(?:\bgithub\.event(?:_path)?\b|\bgithub\.head_ref\b|\binputs\b'
-    r'|\bgithub\s*\[)', re.IGNORECASE)
+    r'|\bgithub\s*\[|\b(?:steps|needs)\s*'
+    r'(?:\.\s*[\w-]+|\s*\[[^\]]+\])\s*'
+    r'(?:\.\s*outputs\b|\s*\[\s*["\']outputs["\']\s*\])'
+    r'|\benv\s*(?:\.|\[))',
+    re.IGNORECASE)
 
 
-def _source_line(content, line_number):
-    lines = content.splitlines()
-    return lines[line_number - 1] if 1 <= line_number <= len(lines) else ''
+_GITHUB_EXPRESSION = re.compile(r'\$\{\{.*?\}\}')
+_WORKFLOW_PLAIN_KEY = re.compile(r'^([A-Za-z_][\w-]*)\s*:\s*(.*)$')
+_WORKFLOW_QUOTED_KEY = re.compile(r'''^(?:-\s*)?["'][^"']+["']\s*:''')
+_WORKFLOW_BLOCK_SCALAR = re.compile(r'^[|>](?:[+-][1-9]?|[1-9][+-]?|[+-]?[1-9])?$')
+_WORKFLOW_ANCHOR_ALIAS = re.compile(r'(?<![\w])(?:&|\*)[^\s\[\]{},]+')
 
 
-def _workflow_script_line(content, line_number):
-    """True when a workflow line sits in a `run:` or `script:` body, where an
-    interpolated expression is spliced into code. Anywhere else (`with:`,
-    `env:`, `concurrency:`, `if:`, `url:`) it is evaluated by the runner and
-    never reaches a shell."""
-    if len(content) > 1024 * 1024:
-        return True
-    lines = content.splitlines()
-    if not 1 <= line_number <= len(lines):
-        return True
-
-    def norm(raw):
-        stripped = raw.lstrip()
-        lead = len(raw) - len(stripped)
-        while stripped.startswith('- '):
-            lead += 2
-            stripped = stripped[2:].lstrip()
-        return lead, stripped
-
-    indent, current = norm(lines[line_number - 1])
-    if re.match(r'^(?:run|script)\s*:', current):
-        return True
-    for line in reversed(lines[max(0, line_number - 201):line_number - 1]):
-        level, stripped = norm(line)
-        if not stripped or stripped.startswith('#'):
+def _workflow_without_comment(line):
+    """Remove YAML comments without treating a quoted # as a comment."""
+    quote = None
+    i = 0
+    while i < len(line):
+        char = line[i]
+        if quote == '"' and char == '\\':
+            i += 2
             continue
-        if level < indent and re.match(r'^[\w-]+\s*:', stripped):
-            return bool(re.match(r'^(?:run|script)\s*:', stripped))
+        if quote == "'" and char == "'" and i + 1 < len(line) and line[i + 1] == "'":
+            i += 2
+            continue
+        if quote and char == quote:
+            quote = None
+        elif not quote and char in ('"', "'"):
+            quote = char
+        elif not quote and char == '#' and (i == 0 or line[i - 1].isspace()):
+            return line[:i]
+        i += 1
+    return line
+
+
+def _workflow_line_is_inert(path, key_indent, stack):
+    """Recognize only workflow fields whose values cannot become executable."""
+    path = tuple(path)
+    stack_path = tuple(entry[1] for entry in stack)
+
+    def valid_nested_prefix(expected):
+        count = len(expected)
+        prefix = stack[:count]
+        return (stack_path[:count] == expected and prefix
+                and prefix[0][0] == 0
+                and all(prefix[i][0] > prefix[i - 1][0]
+                        for i in range(1, count)))
+
+    if path == ('name',) and not stack and key_indent == 0:
+        return True
+    if path == ('concurrency',) and not stack and key_indent == 0:
+        return True
+    if (path in (('concurrency', 'group'), ('concurrency', 'cancel-in-progress'))
+            and valid_nested_prefix(('concurrency',))
+            and key_indent > stack[0][0]):
+        return True
+    if len(path) >= 3 and path[0] == 'jobs' and len(stack) >= 2:
+        valid_job_parent = (valid_nested_prefix(path[:2])
+                            and key_indent > stack[1][0])
+        if len(path) == 3 and valid_job_parent and path[2] in {
+                'concurrency', 'if', 'name', 'runs-on', 'timeout-minutes', 'environment'}:
+            return True
+        if (len(path) == 4 and path[2] == 'environment'
+                and valid_nested_prefix(path[:3]) and key_indent > stack[2][0]
+                and path[3] in {'name', 'url'}):
+            return True
+        if (len(path) == 4 and path[2] == 'concurrency'
+                and valid_nested_prefix(path[:3]) and key_indent > stack[2][0]
+                and path[3] in {'group', 'cancel-in-progress'}):
+            return True
+        if (len(path) == 5 and path[2] == 'steps' and path[3] == '*'
+                and valid_nested_prefix(path[:4]) and key_indent > stack[3][0]
+                and path[4] in {'if', 'name', 'timeout-minutes'}):
+            return True
     return False
+
+
+def _workflow_inert_expression_lines(lines):
+    """Return expression lines positively identified as inert workflow fields.
+
+    This deliberately parses only plain block-style YAML mappings. Unsupported
+    YAML constructs make the whole file ineligible for downgrading, since an
+    alias, flow map, or quoted key can change which field actually executes.
+    """
+    if sum(len(line) + 1 for line in lines) > 1024 * 1024:
+        return frozenset()
+
+    candidates = {}
+    stack = []
+    block_scalar = None
+    ambiguous = False
+
+    for number, raw in enumerate(lines, 1):
+        if block_scalar is not None:
+            if not raw.strip() or (len(raw) - len(raw.lstrip(' '))) > block_scalar[0]:
+                if '${{' in raw:
+                    candidates[number] = block_scalar[1:]
+                continue
+            block_scalar = None
+
+        line = _workflow_without_comment(raw)
+        if not line.strip():
+            continue
+        leading = line[:len(line) - len(line.lstrip())]
+        indent = len(leading)
+        body = line[indent:]
+        if '\t' in leading:
+            ambiguous = True
+            continue
+
+        structure = _GITHUB_EXPRESSION.sub('', body)
+        if (_WORKFLOW_QUOTED_KEY.match(structure)
+                or any(token in structure for token in '{}')
+                or _WORKFLOW_ANCHOR_ALIAS.search(structure)):
+            ambiguous = True
+
+        sequence_item = body == '-' or body.startswith('- ')
+        if sequence_item:
+            while stack and stack[-1][0] >= indent:
+                stack.pop()
+            stack.append((indent, '*'))
+            if body == '-':
+                continue
+            key_indent = indent + 2
+            body = body[2:]
+        else:
+            key_indent = indent
+            while stack and stack[-1][0] >= key_indent:
+                stack.pop()
+
+        match = _WORKFLOW_PLAIN_KEY.match(body.strip())
+        if not match:
+            if '${{' in body:
+                ambiguous = True
+            continue
+
+        key, value = match.groups()
+        path = tuple(entry[1] for entry in stack) + (key,)
+        if '${{' in raw:
+            candidates[number] = (path, key_indent, tuple(stack))
+
+        if _WORKFLOW_BLOCK_SCALAR.fullmatch(value.strip()):
+            block_scalar = (key_indent, path, key_indent, tuple(stack))
+        elif not value.strip():
+            stack.append((key_indent, key))
+
+    if ambiguous:
+        return frozenset()
+    return frozenset(number for number, context in candidates.items()
+                     if _workflow_line_is_inert(*context))
 
 
 def _grade_quoted_defensive_examples(findings, content, rel_path):
@@ -1084,6 +1198,10 @@ def scan_content(content, rel_path, budget=None, decode_cache=None):
     # renaming a payload `.js` -> `.mjs` skipped the ENTIRE prompt-injection +
     # memory-heist layer on a file that still executes.
     code_exts = core._CODE_EXTS
+    is_workflow = rel_path.replace('\\', '/').startswith('.github/workflows/')
+    workflow_lines = content.splitlines() if is_workflow else ()
+    workflow_inert_lines = (_workflow_inert_expression_lines(workflow_lines)
+                            if is_workflow else frozenset())
 
     # AI agent instruction files: treat like SKILL.MD for prompt injection + exfiltration + persistence.
     # Use core's canonical set so the scanner and the evidence-class layer agree
@@ -1112,7 +1230,6 @@ def scan_content(content, rel_path, budget=None, decode_cache=None):
         # Cat 3: Prerequisite red flags
         prerequisite_findings = scan_rules(content, rel_path, PREREQUISITE_RULES,
                                            "prerequisite-attack", "critical")
-        is_workflow = rel_path.replace('\\', '/').startswith('.github/workflows/')
         is_action = os.path.basename(rel_path).lower() in ('action.yml', 'action.yaml')
         for finding in prerequisite_findings:
             action_env = is_action and _action_env_line(content, finding.line)
@@ -1123,10 +1240,12 @@ def scan_content(content, rel_path, budget=None, decode_cache=None):
                 finding.severity = "high"
                 if action_env:
                     finding.title = "Action environment expression"
-                elif (is_workflow and not _workflow_script_line(content, finding.line)
-                        and not _UNTRUSTED_EXPRESSION.search(_source_line(content, finding.line))):
+                elif (is_workflow and finding.line in workflow_inert_lines
+                        and 1 <= finding.line <= len(workflow_lines)
+                        and not _UNTRUSTED_EXPRESSION.search(
+                            workflow_lines[finding.line - 1])):
                     finding.severity = "low"
-                    finding.title = "Workflow expression outside a run script"
+                    finding.title = "Workflow expression in an inert field"
         findings.extend(_grade_quoted_defensive_examples(prerequisite_findings,
                                                           content, rel_path))
 
