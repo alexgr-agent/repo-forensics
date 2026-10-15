@@ -106,7 +106,8 @@ RUNTIME_INSTALL_PATTERNS = [
 
 _PYPROJECT_DEP_TABLE = re.compile(
     r'^(?:project\.optional-dependencies|dependency-groups'
-    r'|tool\.[\w.-]*?(?:dev-)?dependencies|tool\.poetry\.group\.[\w.-]+\.dependencies)$')
+    r'|tool\.[\w.-]*?(?:dev-)?dependencies|tool\.[\w.-]*?overrides'
+    r'|tool\.poetry\.group\.[\w.-]+\.dependencies)$')
 _PYPROJECT_STRING = re.compile(r'"([A-Za-z0-9][A-Za-z0-9._-]*)[^"]*"|\'([A-Za-z0-9][A-Za-z0-9._-]*)[^\']*\'')
 
 
@@ -146,10 +147,22 @@ def _parse_pyproject_dependencies(content):
             if not kv:
                 continue
             key, value = kv.group(1).strip('"'), kv.group(2)
-            if (key in ('dependencies', 'dev-dependencies')
-                    or (key == 'requires' and table == 'build-system')) \
-                    and value.lstrip().startswith('['):
+            # ``*-dependencies`` keys carry dep arrays in any table (uv
+            # ``override-dependencies``/``constraint-dependencies``, Hatch
+            # ``extra-dependencies``, inline ``optional-dependencies``).
+            dep_key = key.lower().endswith('dependencies') \
+                or (key == 'requires' and table == 'build-system')
+            if dep_key and value.lstrip().startswith('['):
                 pass
+            elif dep_key and value.lstrip().startswith('{'):
+                # Inline-table form: optional-dependencies = {dev = ["x"]}.
+                # Only strings nested in arrays are deps; {file = "..."} names
+                # a source file, not a package.
+                for inner in re.findall(r'\[([^\]]*)\]', value):
+                    for sm in _PYPROJECT_STRING.finditer(inner):
+                        pkg = sm.group(1) or sm.group(2)
+                        names.add(pkg.lower().replace('-', '_'))
+                continue
             elif _PYPROJECT_DEP_TABLE.match(table):
                 if value.lstrip().startswith('['):
                     pass

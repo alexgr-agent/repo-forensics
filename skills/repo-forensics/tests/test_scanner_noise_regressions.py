@@ -228,15 +228,62 @@ class TestWorkflowExpressions:
         assert [h.severity for h in hits] == ["high"]
 
 
+    def test_key_shaped_text_inside_run_scalar_cannot_mask_it(self, tmp_path):
+        hits = _pr010(tmp_path, (
+            "jobs:\n  b:\n    steps:\n"
+            "      - run: |\n"
+            "          echo start\n"
+            "          usage: decoy\n"
+            "          if true; then\n"
+            "              echo \"${{ steps.g.outputs.t }}\"\n"
+            "          fi\n"))
+        assert [h.severity for h in hits] == ["high"]
+
+    def test_flow_style_run_and_script_stay_high(self, tmp_path):
+        hits = _pr010(tmp_path, (
+            "jobs:\n  b:\n    steps:\n"
+            "      - { run: \"echo ${{ steps.g.outputs.t }}\" }\n"
+            "      - uses: actions/github-script@v7\n"
+            "        with: { script: \"run('${{ steps.g.outputs.t }}')\" }\n"))
+        assert [h.severity for h in hits] == ["high", "high"]
+
+    def test_quoted_run_key_stays_high(self, tmp_path):
+        hits = _pr010(tmp_path, (
+            "jobs:\n  b:\n    steps:\n"
+            "      - \"run\": |\n"
+            "          echo \"${{ steps.g.outputs.t }}\"\n"))
+        assert [h.severity for h in hits] == ["high"]
+
+    def test_run_scalar_longer_than_lookback_stays_high(self, tmp_path):
+        body = "".join("          echo %d\n" % i for i in range(250))
+        hits = _pr010(tmp_path, (
+            "jobs:\n  b:\n    steps:\n      - run: |\n" + body
+            + "          echo '${{ steps.g.outputs.t }}'\n"))
+        assert [h.severity for h in hits] == ["high"]
+
+    def test_step_and_job_outputs_stay_high_outside_run(self, tmp_path):
+        hits = _pr010(tmp_path, (
+            "jobs:\n  b:\n    needs: detect\n    steps:\n"
+            "      - name: later\n"
+            "        env:\n"
+            "          T: ${{ steps.grab.outputs.t }}\n"
+            "        run: ./deploy.sh \"$T\"\n"
+            "      - uses: some/action@v1\n"
+            "        with:\n"
+            "          rev: ${{ needs.detect.outputs.rev }}\n"))
+        assert [h.severity for h in hits] == ["high", "high"]
+
+
 class TestCssZeroSize:
-    @pytest.mark.parametrize("decl", ["0.8125rem", "0.5em", "0.1px", "10px", "1rem"])
+    @pytest.mark.parametrize("decl", ["0.8125rem", "0.5em", "10px", "1rem", "1.5px"])
     def test_nonzero_sizes_are_not_zero_size_text(self, tmp_path, decl):
         f = tmp_path / "a.html"
         f.write_text("<style>p { font-size: %s; }</style>\n" % decl)
         titles = [x.title for x in scan_sast.scan_css_steganography(str(f), "a.html")]
         assert "CSS hiding: zero-size text" not in titles
 
-    @pytest.mark.parametrize("decl", ["0", "0px", "0.0", "0rem", "0.00em", "0 !important", "0.01px", ".05em", "0.001rem"])
+    @pytest.mark.parametrize("decl", ["0", "0px", "0.0", "0rem", "0.00em", "0 !important", "0.01px", ".05em", "0.001rem",
+                                      "0.1px", "0.5px", "0.9px", "0.5pt", "0.1%"])
     def test_zero_sizes_still_flagged(self, tmp_path, decl):
         f = tmp_path / "a.html"
         f.write_text("<style>p { font-size: %s; }</style>\n" % decl)
@@ -320,6 +367,29 @@ class TestPyprojectDependencies:
         (tmp_path / "app.py").write_text("import aiohttp\n")
         titles = [f.title for f in drift.scan_manifest_drift(str(tmp_path))]
         assert any("rich" in t for t in titles)
+
+
+    def test_inline_optional_dependencies_table_is_read(self):
+        text = ('[project]\nname = "x"\n'
+                'optional-dependencies = {dev = ["evilpkg>=1", "rich"]}\n')
+        assert drift._parse_pyproject_dependencies(text) == {"evilpkg", "rich"}
+
+    def test_uv_override_and_constraint_dependencies(self):
+        text = ('[project]\ndependencies = ["a"]\n[tool.uv]\n'
+                'override-dependencies = ["evilpkg>=1"]\n'
+                'constraint-dependencies = ["pinned>=2"]\n')
+        assert drift._parse_pyproject_dependencies(text) == {"a", "evilpkg", "pinned"}
+
+    def test_hatch_extra_dependencies_and_pdm_overrides(self):
+        text = ('[project]\ndependencies = ["a"]\n[tool.hatch.envs.default]\n'
+                'extra-dependencies = ["covx"]\n[tool.pdm.overrides]\n'
+                'evilpkg = "9.9"\n')
+        assert drift._parse_pyproject_dependencies(text) == {"a", "covx", "evilpkg"}
+
+    def test_dynamic_dependencies_file_ref_is_not_a_package(self):
+        text = ('[project]\ndynamic = ["dependencies"]\n'
+                '[tool.setuptools.dynamic]\ndependencies = {file = "reqs.txt"}\n')
+        assert drift._parse_pyproject_dependencies(text) == set()
 
 
 class TestEnrichmentGaps:

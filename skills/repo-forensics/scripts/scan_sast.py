@@ -90,7 +90,7 @@ CSS_STEG_PATTERNS = [
     (re.compile(r'display:\s*none', re.IGNORECASE), "CSS hiding: display:none"),
     (re.compile(r'visibility:\s*hidden', re.IGNORECASE), "CSS hiding: visibility:hidden"),
     (re.compile(r'opacity:\s*0(?:\s*[;},!]|\s*$)', re.IGNORECASE), "CSS hiding: opacity:0"),
-    (re.compile(r'font-size:\s*(?:0+(?![\d.]*[1-9])|0*\.0)', re.IGNORECASE), "CSS hiding: zero-size text"),
+    (re.compile(r'font-size:\s*(?:0+(?![\d.]*[1-9])|0*\.0|0+\.\d+\s*(?:px|pt|%)(?=[\s;},!]|$))', re.IGNORECASE), "CSS hiding: zero-size text"),
     (re.compile(r'position:\s*absolute.*left:\s*-\d{4,}', re.IGNORECASE), "CSS hiding: positioned off-screen"),
     (re.compile(r'clip:\s*rect\(0', re.IGNORECASE), "CSS hiding: clipped to zero area"),
     (re.compile(r'text-indent:\s*-\d{4,}', re.IGNORECASE), "CSS hiding: text pushed off-screen"),
