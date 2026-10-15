@@ -1186,6 +1186,10 @@ def format_report_as_text(report):
             f"    vulns={es['vulns']} rulepack_feed={es['rulepack_feed']} "
             f"dead_anchors={es['dead_anchors']} adjudication={es['adjudication']}"
         )
+        gaps = es.get("capability_gaps") or []
+        if gaps:
+            lines.append("    capability_gaps: " + ", ".join(
+                f"{g.get('scanner', '?')} ({g.get('reason', 'unknown')})" for g in gaps))
 
     capability_ledger = report.get("capability_ledger")
     if capability_ledger and capability_ledger.get("declared"):

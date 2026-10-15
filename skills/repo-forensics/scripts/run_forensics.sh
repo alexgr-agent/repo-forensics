@@ -45,6 +45,7 @@ if [ -z "${1:-}" ]; then
     echo "  --update-vulns         Refresh CISA KEV catalog before scanning (CVE enrichment)"
     echo "  --no-vulns             Skip OSV + KEV vulnerability enrichment"
     echo "  --offline              No network fetches (use cached KEV/OSV data only)"
+    echo "                         (refreshes are opt-in: a run without --update-iocs/--update-vulns does not refresh)"
     echo "  --watch                Enable file integrity baseline tracking"
     echo "  --history              Store a local content-addressed attestation"
     echo "  --package-list=FILE    Load user-supplied IOC list (absolute path, see docs)"
@@ -198,6 +199,10 @@ while [[ $# -gt 0 ]]; do
         --max-jobs)
             [[ $# -ge 2 ]] || { echo "Error: --max-jobs requires a number"; exit 1; }
             MAX_JOBS="$2"; shift 2 ;;
+        *update*)
+            echo "Unknown arg: $1"
+            echo "Refreshes are opt-in (--update-iocs, --update-vulns); a default run does not fetch them. Use --offline to block all network fetches."
+            exit 1 ;;
         *) echo "Unknown arg: $1"; exit 1 ;;
     esac
 done

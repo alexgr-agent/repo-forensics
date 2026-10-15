@@ -4,6 +4,13 @@ All notable changes to repo-forensics. Versions follow semver.
 
 ## [Unreleased]
 
+### Fixed
+- `ST-PR-010`: `${{ }}` expressions in GitHub Actions workflows are low severity outside `run:` / `script:` bodies (`with:`, `env:`, `concurrency:`, `url:`, `if:`); inside a script body they stay high.
+- `manifest_drift`: `pyproject.toml` parsing reads only dependency arrays and tables (`[project] dependencies`, optional dependencies, dependency groups, Poetry/PDM tables). Name, license, keywords, URLs and build requirements are no longer reported as declared-but-unused packages.
+- `SAST` CSS hiding: the `font-size` rule no longer matches ordinary sizes that start with 0 (`0.8125rem`). Zero and sub-0.1 sizes (`0`, `0px`, `0.05em`) still match.
+- Text report: `ENRICHMENT: DEGRADED` now lists the capability gaps that caused it (for example `yara (missing-tool)`).
+- `run_forensics.sh`: an unknown `--*update*` flag now explains that refreshes are opt-in and points to `--offline`.
+
 ## [2.14.14] - 2026-10-13
 
 ### Fixed

@@ -879,7 +879,7 @@ class TestTemplateExpressionContext:
         findings = scanner.scan_file(str(f), ".github/workflows/tests.yml")
         hits = [finding for finding in findings if finding.rule_id == "ST-PR-010"]
         assert len(hits) == 1
-        assert hits[0].severity == "high"
+        assert hits[0].severity == "low"
 
     def test_python_hook_generator_expression_is_advisory(self, tmp_path):
         f = tmp_path / "installer.py"
