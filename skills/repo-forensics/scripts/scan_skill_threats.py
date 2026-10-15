@@ -754,6 +754,47 @@ def _action_env_line(content, line_number):
     return False
 
 
+_UNTRUSTED_EXPRESSION = re.compile(
+    r'\$\{\{.*?(?:\bgithub\.event(?:_path)?\b|\bgithub\.head_ref\b|\binputs\b'
+    r'|\bgithub\s*\[)', re.IGNORECASE)
+
+
+def _source_line(content, line_number):
+    lines = content.splitlines()
+    return lines[line_number - 1] if 1 <= line_number <= len(lines) else ''
+
+
+def _workflow_script_line(content, line_number):
+    """True when a workflow line sits in a `run:` or `script:` body, where an
+    interpolated expression is spliced into code. Anywhere else (`with:`,
+    `env:`, `concurrency:`, `if:`, `url:`) it is evaluated by the runner and
+    never reaches a shell."""
+    if len(content) > 1024 * 1024:
+        return True
+    lines = content.splitlines()
+    if not 1 <= line_number <= len(lines):
+        return True
+
+    def norm(raw):
+        stripped = raw.lstrip()
+        lead = len(raw) - len(stripped)
+        while stripped.startswith('- '):
+            lead += 2
+            stripped = stripped[2:].lstrip()
+        return lead, stripped
+
+    indent, current = norm(lines[line_number - 1])
+    if re.match(r'^(?:run|script)\s*:', current):
+        return True
+    for line in reversed(lines[max(0, line_number - 201):line_number - 1]):
+        level, stripped = norm(line)
+        if not stripped or stripped.startswith('#'):
+            continue
+        if level < indent and re.match(r'^[\w-]+\s*:', stripped):
+            return bool(re.match(r'^(?:run|script)\s*:', stripped))
+    return False
+
+
 def _grade_quoted_defensive_examples(findings, content, rel_path):
     if not findings:
         return findings
@@ -1082,6 +1123,10 @@ def scan_content(content, rel_path, budget=None, decode_cache=None):
                 finding.severity = "high"
                 if action_env:
                     finding.title = "Action environment expression"
+                elif (is_workflow and not _workflow_script_line(content, finding.line)
+                        and not _UNTRUSTED_EXPRESSION.search(_source_line(content, finding.line))):
+                    finding.severity = "low"
+                    finding.title = "Workflow expression outside a run script"
         findings.extend(_grade_quoted_defensive_examples(prerequisite_findings,
                                                           content, rel_path))
 

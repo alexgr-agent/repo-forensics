@@ -104,6 +104,78 @@ RUNTIME_INSTALL_PATTERNS = [
 ]
 
 
+_PYPROJECT_DEP_TABLE = re.compile(
+    r'^(?:project\.optional-dependencies|dependency-groups'
+    r'|tool\.[\w.-]*?(?:dev-)?dependencies|tool\.poetry\.group\.[\w.-]+\.dependencies)$')
+_PYPROJECT_STRING = re.compile(r'"([A-Za-z0-9][A-Za-z0-9._-]*)[^"]*"|\'([A-Za-z0-9][A-Za-z0-9._-]*)[^\']*\'')
+
+
+def _strip_toml_comment(raw):
+    quote = ''
+    for i, ch in enumerate(raw):
+        if quote:
+            if ch == quote:
+                quote = ''
+        elif ch in '"\'':
+            quote = ch
+        elif ch == '#':
+            return raw[:i]
+    return raw
+
+
+def _parse_pyproject_dependencies(content):
+    """Return normalized dependency names declared in pyproject.toml.
+
+    Only dependency arrays are read: ``[project] dependencies``, optional
+    dependency tables, ``[dependency-groups]``, ``[build-system] requires`` and
+    Poetry/PDM dependency tables. Other metadata (name, license, keywords, classifiers, URLs, build
+    tool configuration paths) is not a dependency declaration.
+    """
+    names = set()
+    table = ''
+    in_array = False
+    depth = 0
+    for raw in content.splitlines():
+        line = _strip_toml_comment(raw).strip()
+        if not in_array:
+            m = re.match(r'^\[\[?\s*([^\]]+?)\s*\]\]?\s*$', line)
+            if m:
+                table = m.group(1).strip()
+                continue
+            kv = re.match(r'^([A-Za-z0-9_.-]+|"[^"]+")\s*=\s*(.*)$', line)
+            if not kv:
+                continue
+            key, value = kv.group(1).strip('"'), kv.group(2)
+            if (key in ('dependencies', 'dev-dependencies')
+                    or (key == 'requires' and table == 'build-system')) \
+                    and value.lstrip().startswith('['):
+                pass
+            elif _PYPROJECT_DEP_TABLE.match(table):
+                if value.lstrip().startswith('['):
+                    pass
+                elif table.startswith('tool.') and key.lower() != 'python':
+                    # Poetry style: name = "^1.0" / name = {version = ...}
+                    names.add(key.lower().replace('-', '_'))
+                    continue
+                else:
+                    continue
+            else:
+                continue
+            line = value
+            in_array = True
+            depth = 0
+        # Scan this fragment of the array: drop inline tables, then read strings.
+        fragment = re.sub(r'\{[^}]*\}', '', line)
+        for sm in _PYPROJECT_STRING.finditer(fragment):
+            pkg = sm.group(1) or sm.group(2)
+            names.add(pkg.lower().replace('-', '_'))
+        bare = re.sub(r'"[^"]*"|\'[^\']*\'', '', fragment)
+        depth += bare.count('[') - bare.count(']')
+        if depth <= 0:
+            in_array = False
+    return names
+
+
 def parse_python_requirements(repo_path):
     """Parse declared Python dependencies from requirements.txt / pyproject.toml / setup.py."""
     declared = set()
@@ -132,10 +204,7 @@ def parse_python_requirements(repo_path):
         try:
             with open(pyproject_path, 'r', encoding='utf-8', errors='ignore') as f:
                 content = f.read()
-            # Match dependencies = ["pkg>=1.0", ...] pattern
-            dep_matches = re.findall(r'"([a-zA-Z0-9_-]+)(?:[><=!~\[].*?)?"', content)
-            for pkg in dep_matches:
-                declared.add(pkg.lower().replace('-', '_'))
+            declared.update(_parse_pyproject_dependencies(content))
         except (OSError, UnicodeDecodeError):
             pass
 
@@ -936,7 +1005,8 @@ def scan_manifest_drift(repo_path):
 
     # Declared but never imported (potential confusion decoy)
     if has_py_manifest and py_imported_set:
-        py_unused = py_declared - py_imported_set - {'setuptools', 'wheel', 'pip', 'build', 'twine', 'pytest', 'black', 'flake8', 'mypy', 'ruff', 'isort', 'pylint'}
+        py_unused = py_declared - py_imported_set - {'setuptools', 'wheel', 'pip', 'build', 'twine', 'pytest', 'black', 'flake8', 'mypy', 'ruff', 'isort', 'pylint',
+                                                     'hatchling', 'flit_core', 'poetry_core', 'pdm_backend', 'setuptools_scm'}
         for pkg in sorted(py_unused):
             if pkg and not pkg.startswith('_'):
                 findings.append(core.Finding(
