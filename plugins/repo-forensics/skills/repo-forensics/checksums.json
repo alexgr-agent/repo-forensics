@@ -70,7 +70,7 @@
     "scripts/scan_infra.py": "db163aaa114f039777aa06408bc26bdf696c72b36f6843b7ed5973864c6b2e07",
     "scripts/scan_integrity.py": "82a8c7f431c8cde48aa0364f57f409dfb31535b29a2a00d185cb8cd24ffb60dd",
     "scripts/scan_lifecycle.py": "00769cfd985124d3617c6a21b33eef57aa21ad4fbc995c9d4e79b2f9e454e874",
-    "scripts/scan_manifest_drift.py": "064ab3cc7bbc529b1235a0410a1fb2c611117cded8f9a245640971e1a667d37b",
+    "scripts/scan_manifest_drift.py": "612d35cb3098a0cf41dea6a0dd78d49fdbfefdb0e3fb7fd256ad1bee7a2941f9",
     "scripts/scan_mcp_security.py": "be379565565bde83127050d30c65aaa526672e8b2aa3553da94e1da010b10614",
     "scripts/scan_oversize.py": "e9f219f1a5e78924f70be5277543a430cfbb7ea19f4d7d180d0abc6d1b8b47a4",
     "scripts/scan_post_incident.py": "d2418db39cb8d03872110f4c353df8512fbd89bb9c9e6921fde071e792a11cff",

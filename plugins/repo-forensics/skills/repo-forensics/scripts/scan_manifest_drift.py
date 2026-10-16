@@ -108,7 +108,70 @@ _PYPROJECT_DEP_TABLE = re.compile(
     r'^(?:project\.optional-dependencies|dependency-groups'
     r'|tool\.[\w.-]*?(?:dev-)?dependencies|tool\.[\w.-]*?overrides'
     r'|tool\.poetry\.group\.[\w.-]+\.dependencies)$')
-_PYPROJECT_STRING = re.compile(r'"([A-Za-z0-9][A-Za-z0-9._-]*)[^"]*"|\'([A-Za-z0-9][A-Za-z0-9._-]*)[^\']*\'')
+_PYPROJECT_STRING = re.compile(r'"\s*([A-Za-z0-9][A-Za-z0-9._-]*)[^"]*"|\'\s*([A-Za-z0-9][A-Za-z0-9._-]*)[^\']*\'')
+_TOML_UNICODE_ESCAPE = re.compile(r'\\u([0-9a-fA-F]{4})|\\U([0-9a-fA-F]{8})')
+
+
+def _toml_string_text(body, basic):
+    """Decode what pip would see in a TOML string, flattened to one quote-free line."""
+    if basic:
+        body = re.sub(r'\\[ \t]*\r?\n\s*', '', body)  # line-ending backslash
+        body = _TOML_UNICODE_ESCAPE.sub(
+            lambda m: chr(int(m.group(1) or m.group(2), 16))
+            if int(m.group(1) or m.group(2), 16) < 0x110000 else ' ', body)
+        body = re.sub(r'\\.', ' ', body)
+    return re.sub(r'[\s"\']+', ' ', body).strip()
+
+
+def _normalize_toml_strings(content):
+    """Rewrite every TOML string as a single-line ``"..."``.
+
+    Multi-line, escaped and padded strings are valid dependency spellings
+    that a line-based reader would otherwise miss.
+    """
+    out = []
+    i, n = 0, len(content)
+    while i < n:
+        ch = content[i]
+        if ch == '#':
+            j = content.find('\n', i)
+            j = n if j < 0 else j
+            out.append(content[i:j])
+            i = j
+            continue
+        if content.startswith('"""', i) or content.startswith("'''", i):
+            q = content[i:i + 3]
+            j = content.find(q, i + 3)
+            if q == '"""':
+                while j >= 0 and (j - i - 3) > 0 and _odd_backslashes(content, j):
+                    j = content.find(q, j + 1)
+            if j < 0:
+                body, end = content[i + 3:], n
+            else:
+                end = j + 3
+                while end < n and end - j < 5 and content[end] == q[0]:
+                    end += 1  # up to two quotes may close the body
+                body = content[i + 3:end - 3]
+            out.append('"' + _toml_string_text(body, q == '"""') + '"')
+            i = end
+            continue
+        if ch in '"\'':
+            j = i + 1
+            while j < n and content[j] not in (ch, '\n'):
+                j += 2 if ch == '"' and content[j] == '\\' else 1
+            out.append('"' + _toml_string_text(content[i + 1:j], ch == '"') + '"')
+            i = j + 1 if j < n and content[j] == ch else j
+            continue
+        out.append(ch)
+        i += 1
+    return ''.join(out)
+
+
+def _odd_backslashes(content, pos):
+    k = pos - 1
+    while k >= 0 and content[k] == '\\':
+        k -= 1
+    return (pos - 1 - k) % 2 == 1
 
 
 def _strip_toml_comment(raw):
@@ -136,7 +199,7 @@ def _parse_pyproject_dependencies(content):
     table = ''
     in_array = False
     depth = 0
-    for raw in content.splitlines():
+    for raw in _normalize_toml_strings(content).splitlines():
         line = _strip_toml_comment(raw).strip()
         if not in_array:
             m = re.match(r'^\[\[?\s*([^\]]+?)\s*\]\]?\s*$', line)
