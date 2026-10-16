@@ -1,9 +1,9 @@
 {
-  "bundle_version": 6,
-  "generated": "2026-09-22",
+  "bundle_version": 7,
+  "generated": "2026-10-16",
   "packs": {
     "dead_anchors": {
-      "pack_version": 6,
+      "pack_version": 7,
       "rules": [
         {
           "category": "dead-anchor-extract",
@@ -279,7 +279,7 @@
       "schema_version": "1.0"
     },
     "mcp_security": {
-      "pack_version": 6,
+      "pack_version": 7,
       "rules": [
         {
           "category": "sql-injection",
@@ -1233,12 +1233,54 @@
             "post to http",
             "exfiltrate"
           ]
+        },
+        {
+          "category": "mcp-config-risk",
+          "confidence": 0.8,
+          "examples": {
+            "match": [
+              "server.tool(\"tunnel_run_command\", \"Run a local shell command\", {...})",
+              "server.tool('apply_patch', desc)",
+              "srv.tool(\"execute_command\", desc)"
+            ],
+            "no_match": [
+              "server.tool(\"get_weather\", desc)",
+              "server.tool(\"run_diagnostics_info\", desc)"
+            ]
+          },
+          "explanation": "Registers an MCP tool whose name offers shell-command execution or patch application; a remote operator (or a poisoned session) can drive arbitrary local code execution through it.",
+          "id": "SM-CFG-007",
+          "pattern": "\\.tool\\(\\s*['\"][^'\"]*(?:run_command|exec_command|execute_command|shell_command|run_shell|apply_patch|apply_diff)[^'\"]*['\"]",
+          "severity": "critical",
+          "title": "MCP Tool Exposes Remote Command/Patch Execution",
+          "type": "regex"
+        },
+        {
+          "category": "mcp-config-risk",
+          "confidence": 0.7,
+          "examples": {
+            "match": [
+              "server.tool(\"x\", \"Run a local shell command in the bridge workdir\", {...})",
+              "server.tool(\"y\", \"Apply a unified diff in the workdir\")",
+              "server.tool(\"z\", \"Execute arbitrary commands on the host\")"
+            ],
+            "no_match": [
+              "server.tool(\"x\", \"Read a file from disk\")",
+              "server.tool(\"y\", \"List open issues\")"
+            ]
+          },
+          "explanation": "MCP tool registration whose description advertises running shell commands or applying diffs on the host; treat as a remote code execution surface requiring explicit local consent.",
+          "id": "SM-CFG-008",
+          "pattern": "\\.tool\\([^)]{0,160}(?:shell command|unified diff|arbitrary commands?)",
+          "severity": "high",
+          "title": "MCP Tool Description Advertises Local Command/Patch Execution",
+          "type": "regex"
         }
       ],
       "schema_version": "1.0"
     },
     "runtime_dynamism": {
-      "pack_version": 6,
+      "pack_version": 7,
       "rules": [
         {
           "asset": "loaded code",
@@ -2736,7 +2778,7 @@
       "schema_version": "1.0"
     },
     "sast": {
-      "pack_version": 6,
+      "pack_version": 7,
       "rules": [
         {
           "asset": "server runtime",
@@ -3327,30 +3369,34 @@
           "type": "regex"
         },
         {
-          "category": "kernel-exploit",
-          "confidence": 0.8,
+          "asset": "downloaded payload integrity",
+          "attacker": "malicious download source",
+          "boundary": "TLS trust boundary",
+          "category": "insecure-transport",
+          "confidence": 0.85,
           "examples": {
             "match": [
-              "os.unshare(CLONE_NEWUSER)",
-              "flags = CLONE_NEWUSER | CLONE_NEWNET",
-              "libc.unshare(CLONE_NEWUSER)"
+              "requests.get(url, verify=False)",
+              "httpx.post(url, data=d, verify = False)",
+              "ctx = ssl._create_unverified_context()",
+              "context.verify_mode = ssl.CERT_NONE"
             ],
             "no_match": [
-              "git clone origin main",
-              "CLONE_NEWUSER2",
-              "clone_newuser",
-              "# os.unshare(CLONE_NEWUSER) explained",
-              "msg = 'we never pass CLONE_NEWUSER'"
+              "requests.get(url, verify=True)",
+              "build_artifact(data, verify=False)",
+              "def parse(value, verify=False):",
+              "ssl.CERT_REQUIRED",
+              "ctx.check_hostname = False"
             ]
           },
-          "explanation": "Kernel Exploit: User Namespace Flag (CLONE_NEWUSER) (kernel-exploit) detected in a .py file.",
+          "explanation": "Disables certificate verification in a known Python HTTP/TLS API, allowing a network attacker to substitute remote content.",
           "extensions": [
             ".py"
           ],
-          "id": "SA-PY-025",
-          "pattern": "^(?![ \\t]*#).*[(|&,=]\\s*CLONE_NEWUSER\\b",
+          "id": "SA-PY-032",
+          "pattern": "\\b(?:requests|httpx)\\s*\\.\\s*(?:request|get|post|put|patch|delete|head|options)\\s*\\([^\\n)]*\\bverify\\s*=\\s*False\\b|ssl\\._create_unverified_context\\s*\\(|\\bssl\\.CERT_NONE\\b",
           "severity": "high",
-          "title": "Kernel Exploit: User Namespace Flag (CLONE_NEWUSER)",
+          "title": "Python TLS Certificate Verification Disabled",
           "type": "regex"
         },
         {
@@ -5909,61 +5955,34 @@
           "type": "regex"
         },
         {
-          "category": "kernel-exploit",
-          "confidence": 0.8,
+          "asset": "downloaded payload integrity",
+          "attacker": "malicious download source",
+          "boundary": "TLS trust boundary",
+          "category": "insecure-transport",
+          "confidence": 0.85,
           "examples": {
             "match": [
-              "unshare --user --map-root-user bash",
-              "unshare -Urm bash",
-              "nsenter -t 1 -m -u bash",
-              "nsenter --target=1 --mount bash",
-              "nsenter -t 01 -m bash",
-              "nsenter --target=001 -u sh"
+              "curl -sk https://example.com/x",
+              "curl -ks https://example.com/x",
+              "curl -kLs https://example.com/x",
+              "curl --insecure https://example.com/x",
+              "wget --no-check-certificate https://example.com/x"
             ],
             "no_match": [
-              "unshare",
-              "unshare --mount --propagation private bash",
-              "nsenter -t \"$pid\" -m bash",
-              "# unshare -Urn sh",
-              "share -x file"
+              "curl -s https://example.com/x",
+              "curl --key client.pem https://example.com/x",
+              "wget -k https://example.com/page",
+              "wget https://example.com/x"
             ]
           },
-          "explanation": "Kernel Exploit: User Namespace Creation (kernel-exploit) detected in a .sh file.",
+          "explanation": "Disables TLS certificate verification for curl or wget, allowing a network attacker to substitute the downloaded payload.",
           "extensions": [
             ".sh"
           ],
-          "id": "SA-SH-020",
-          "pattern": "^(?![ \\t]*#).*(?:\\bunshare\\s+(?:-\\S+\\s+)*?(?:(?<!-)-[A-Za-z]*[Ur][A-Za-z]*\\b|--user\\b|--map-root-user\\b)|\\bnsenter\\s+(?:-\\S+\\s+)*?(?:-t\\s+0*1\\b|--target(?:=|\\s+)0*1\\b))",
+          "id": "SA-SH-025",
+          "pattern": "\\bcurl\\b[^\\n|;]*\\s(?:(?:-(?!-)[A-Za-z]*k[A-Za-z]*(?![A-Za-z]))|(?:--insecure(?![\\w-])))|\\bwget\\b[^\\n|;]*\\s--no-check-certificate(?![\\w-])",
           "severity": "high",
-          "title": "Kernel Exploit: User Namespace Creation",
-          "type": "regex"
-        },
-        {
-          "category": "kernel-exploit",
-          "confidence": 0.8,
-          "examples": {
-            "match": [
-              "tc qdisc add dev eth0 root handle 1: htb",
-              "tc action add action pedit munge ip ttl set 63",
-              "modprobe act_pedit",
-              "tc -batch /tmp/evil.tc",
-              "$TC qdisc add dev lo root netem"
-            ],
-            "no_match": [
-              "tc qdisc show",
-              "tc -s qdisc",
-              "etc config",
-              "# tc qdisc add dev lo root netem"
-            ]
-          },
-          "explanation": "Kernel Exploit: net/sched tc Configuration (kernel-exploit) detected in a .sh file.",
-          "extensions": [
-            ".sh"
-          ],
-          "id": "SA-SH-021",
-          "pattern": "^(?![ \\t]*#).*(?:\\btc\\s+(?:qdisc|class|filter|action)\\s+(?:add|change|replace)\\b|\\bact_pedit\\b|\\btc\\s+-b(?:atch)?\\s+\\S|\\$\\{?\\w+\\}?\\s+(?:qdisc|class|filter|action)\\s+(?:add|change|replace)\\b)",
-          "severity": "high",
-          "title": "Kernel Exploit: net/sched tc Configuration",
+          "title": "Curl/Wget TLS Verification Disabled",
           "type": "regex"
         },
         {
@@ -6049,12 +6068,454 @@
           "severity": "critical",
           "title": "Kernel Exploit: io_uring Build/Usage",
           "type": "regex"
+        },
+        {
+          "category": "shell-injection",
+          "confidence": 0.7,
+          "examples": {
+            "match": [
+              "import { spawn } from \"node:child_process\";",
+              "import { exec, execSync } from 'child_process'",
+              "import { fork } from \"node:child_process\";"
+            ],
+            "no_match": [
+              "import { readFile } from \"fs\";",
+              "import path from \"path\";"
+            ]
+          },
+          "explanation": "ESM destructured import of child_process exec/spawn; SA-JS-005 only catches namespace-qualified calls, this import form enables bare spawn()/exec() call sites.",
+          "extensions": [
+            ".js"
+          ],
+          "id": "SA-JS-035",
+          "pattern": "import\\s*\\{[^}]*\\b(?:exec|execSync|execFile|execFileSync|spawn|spawnSync|fork)\\b[^}]*\\}\\s*from\\s*['\"](?:node:)?child_process['\"]",
+          "severity": "high",
+          "title": "Destructured child_process Import (ESM)",
+          "type": "regex"
+        },
+        {
+          "category": "shell-injection",
+          "confidence": 0.6,
+          "examples": {
+            "match": [
+              "const child = spawn(command, { shell: true, env: process.env })",
+              "shell: true,",
+              "spawn(cmd, { shell: true })"
+            ],
+            "no_match": [
+              "shell: false",
+              "seashell: true"
+            ]
+          },
+          "explanation": "shell: true routes the command through a system shell; combined with any variable command argument this is shell injection / remote command execution.",
+          "extensions": [
+            ".js"
+          ],
+          "id": "SA-JS-036",
+          "pattern": "\\bshell\\s*:\\s*true\\b",
+          "severity": "high",
+          "title": "Shell Interpretation Enabled (shell: true)",
+          "type": "regex"
+        },
+        {
+          "category": "agent-execution",
+          "confidence": 0.8,
+          "examples": {
+            "match": [
+              "spawnAgent(\"claude\", [\"-p\", prompt])",
+              "spawn('codex', args)",
+              "execFile(\"opencode\", [\"run\"])",
+              "fork('gemini', ['--prompt', text])"
+            ],
+            "no_match": [
+              "spawn('node', args)",
+              "exec(\"ls -la\")"
+            ]
+          },
+          "explanation": "Spawns an installed AI coding-agent CLI (claude/codex/opencode/...) as a child process; relay-driven agent-execution malware drives the local agent with attacker-supplied prompts.",
+          "extensions": [
+            ".js"
+          ],
+          "id": "SA-JS-037",
+          "pattern": "\\b\\w*(?:spawn|exec|fork)\\w*\\s*\\(\\s*['\"](?:claude|codex|opencode|gemini|cursor-agent|kimi|aider)['\"]",
+          "severity": "critical",
+          "title": "AI Agent CLI Spawned as Child Process",
+          "type": "regex"
+        },
+        {
+          "category": "auth-bypass",
+          "confidence": 0.85,
+          "examples": {
+            "match": [
+              "const authDisabled = process.env.DANGEROUSLY_OMIT_AUTH !== \"false\";",
+              "DISABLE_AUTH !== 'false'",
+              "SKIP_AUTH !== \"false\""
+            ],
+            "no_match": [
+              "process.env.DANGEROUSLY_OMIT_AUTH === \"true\"",
+              "if (!authEnabled) return"
+            ]
+          },
+          "explanation": "Env flag named OMIT/DISABLE/SKIP/BYPASS_*AUTH compared !== \"false\" turns authentication OFF unless explicitly re-enabled; used by security-regression squats to silently revert upstream auth fixes (e.g. CVE-2025-49596).",
+          "extensions": [
+            ".js"
+          ],
+          "id": "SA-JS-038",
+          "pattern": "\\b[A-Z0-9_]*(?:OMIT|DISABLE|SKIP|BYPASS)[A-Z0-9_]*AUTH[A-Z0-9_]*\\s*!==\\s*['\"]false['\"]",
+          "severity": "critical",
+          "title": "Auth Disabled by Default (Inverted Env Flag)",
+          "type": "regex"
+        },
+        {
+          "category": "shell-injection",
+          "confidence": 0.7,
+          "examples": {
+            "match": [
+              "import { spawn } from \"node:child_process\";",
+              "import { execFile } from 'child_process'",
+              "import { spawn, fork } from \"node:child_process\";",
+              "import { execSync } from 'node:child_process';"
+            ],
+            "no_match": [
+              "import { readFile } from \"fs\";",
+              "import { join } from \"path\";"
+            ]
+          },
+          "explanation": "ESM destructured import of child_process exec/spawn; enables bare spawn()/exec() call sites that namespace-qualified rules miss.",
+          "extensions": [
+            ".ts"
+          ],
+          "id": "SA-TS-015",
+          "pattern": "import\\s*\\{[^}]*\\b(?:exec|execSync|execFile|execFileSync|spawn|spawnSync|fork)\\b[^}]*\\}\\s*from\\s*['\"](?:node:)?child_process['\"]",
+          "severity": "high",
+          "title": "Destructured child_process Import (ESM)",
+          "type": "regex"
+        },
+        {
+          "category": "shell-injection",
+          "confidence": 0.6,
+          "examples": {
+            "match": [
+              "spawn(cmd, { shell: true })",
+              "execFile(script, { shell: true })",
+              "spawnSync(cmd, { shell: true })"
+            ],
+            "no_match": [
+              "shell: false",
+              "shell: false,"
+            ]
+          },
+          "explanation": "shell: true routes the command through a system shell; combined with any variable command argument this is shell injection / remote command execution.",
+          "extensions": [
+            ".ts"
+          ],
+          "id": "SA-TS-016",
+          "pattern": "\\bshell\\s*:\\s*true\\b",
+          "severity": "high",
+          "title": "Shell Interpretation Enabled (shell: true)",
+          "type": "regex"
+        },
+        {
+          "category": "agent-execution",
+          "confidence": 0.8,
+          "examples": {
+            "match": [
+              "spawn('claude', ['-p', prompt])",
+              "spawnAgent(\"codex\", args)",
+              "exec('aider', ['--message', text])"
+            ],
+            "no_match": [
+              "spawn('node', args)",
+              "spawn('python3', args)"
+            ]
+          },
+          "explanation": "Spawns an installed AI coding-agent CLI as a child process; relay-driven agent-execution malware drives the local agent with attacker-supplied prompts.",
+          "extensions": [
+            ".ts"
+          ],
+          "id": "SA-TS-017",
+          "pattern": "\\b\\w*(?:spawn|exec|fork)\\w*\\s*\\(\\s*['\"](?:claude|codex|opencode|gemini|cursor-agent|kimi|aider)['\"]",
+          "severity": "critical",
+          "title": "AI Agent CLI Spawned as Child Process",
+          "type": "regex"
+        },
+        {
+          "category": "auth-bypass",
+          "confidence": 0.85,
+          "examples": {
+            "match": [
+              "DANGEROUSLY_OMIT_AUTH !== \"false\"",
+              "BYPASS_AUTH !== 'false'",
+              "OMIT_AUTH !== 'false'"
+            ],
+            "no_match": [
+              "DANGEROUSLY_OMIT_AUTH === \"true\"",
+              "DISABLE_AUTH === \"true\""
+            ]
+          },
+          "explanation": "Env flag named OMIT/DISABLE/SKIP/BYPASS_*AUTH compared !== \"false\" turns authentication OFF by default; reverts upstream auth fixes.",
+          "extensions": [
+            ".ts"
+          ],
+          "id": "SA-TS-018",
+          "pattern": "\\b[A-Z0-9_]*(?:OMIT|DISABLE|SKIP|BYPASS)[A-Z0-9_]*AUTH[A-Z0-9_]*\\s*!==\\s*['\"]false['\"]",
+          "severity": "critical",
+          "title": "Auth Disabled by Default (Inverted Env Flag)",
+          "type": "regex"
+        },
+        {
+          "category": "auth-bypass",
+          "confidence": 0.9,
+          "examples": {
+            "match": [
+              "permissionFlags.push('--dangerously-skip-permissions');",
+              "if (input.permissionMode === 'bypassPermissions') {",
+              "spawn('claude', ['--permission-mode', 'bypass'])"
+            ],
+            "no_match": [
+              "spawn('claude', ['-p', prompt])",
+              "const permissionMode = 'acceptEdits';"
+            ]
+          },
+          "explanation": "Passes --dangerously-skip-permissions / bypassPermissions to an AI coding-agent CLI, disabling its human-approval gate; relay-driven agent-execution malware uses this so attacker-supplied prompts run tool calls unchecked (AgentGate MCPA-2026-0084 and related).",
+          "extensions": [
+            ".js",
+            ".mjs",
+            ".cjs"
+          ],
+          "id": "SA-JS-039",
+          "pattern": "['\"`]--dangerously-skip-permissions['\"`]|\\bbypassPermissions\\b|['\"`]--permission-mode['\"`]\\s*,\\s*['\"`]bypass['\"`]",
+          "severity": "critical",
+          "title": "AI Agent CLI Permission Bypass Flag",
+          "type": "regex"
+        },
+        {
+          "category": "auth-bypass",
+          "confidence": 0.9,
+          "examples": {
+            "match": [
+              "permissionFlags.push('--dangerously-skip-permissions');",
+              "if (input.permissionMode === 'bypassPermissions') {",
+              "spawn('claude', ['--permission-mode', 'bypass'])"
+            ],
+            "no_match": [
+              "spawn('claude', ['-p', prompt])",
+              "const permissionMode = 'acceptEdits';"
+            ]
+          },
+          "explanation": "Passes --dangerously-skip-permissions / bypassPermissions to an AI coding-agent CLI, disabling its human-approval gate; relay-driven agent-execution malware uses this so attacker-supplied prompts run tool calls unchecked (AgentGate MCPA-2026-0084 and related).",
+          "extensions": [
+            ".ts",
+            ".tsx"
+          ],
+          "id": "SA-TS-019",
+          "pattern": "['\"`]--dangerously-skip-permissions['\"`]|\\bbypassPermissions\\b|['\"`]--permission-mode['\"`]\\s*,\\s*['\"`]bypass['\"`]",
+          "severity": "critical",
+          "title": "AI Agent CLI Permission Bypass Flag",
+          "type": "regex"
+        },
+        {
+          "asset": "downloaded payload integrity",
+          "attacker": "malicious download source",
+          "boundary": "TLS trust boundary",
+          "category": "insecure-transport",
+          "confidence": 0.85,
+          "examples": {
+            "match": [
+              "new https.Agent({ rejectUnauthorized: false })",
+              "const opts = {\"rejectUnauthorized\": false}",
+              "opts.rejectUnauthorized = false",
+              "process.env.NODE_TLS_REJECT_UNAUTHORIZED = \"0\""
+            ],
+            "no_match": [
+              "rejectUnauthorized: true",
+              "opts.rejectUnauthorized = true",
+              "NODE_TLS_REJECT_UNAUTHORIZED = \"1\"",
+              "authorized = false"
+            ]
+          },
+          "explanation": "Disables Node.js TLS certificate verification, allowing a network attacker to substitute remote content.",
+          "extensions": [
+            ".js",
+            ".jsx"
+          ],
+          "id": "SA-JS-040",
+          "pattern": "\\brejectUnauthorized\\s*:\\s*false\\b|[\"\\']rejectUnauthorized[\"\\']\\s*:\\s*false\\b|\\b(?:[A-Za-z_$][\\w$]*\\.)+rejectUnauthorized\\s*=\\s*false\\b|NODE_TLS_REJECT_UNAUTHORIZED\\s*=\\s*[\\'\\\"]0[\\'\\\"]",
+          "severity": "high",
+          "title": "Node.js TLS Certificate Verification Disabled",
+          "type": "regex"
+        },
+        {
+          "asset": "downloaded payload integrity",
+          "attacker": "malicious download source",
+          "boundary": "TLS trust boundary",
+          "category": "insecure-transport",
+          "confidence": 0.85,
+          "examples": {
+            "match": [
+              "new https.Agent({ rejectUnauthorized: false })",
+              "opts.rejectUnauthorized = false",
+              "process.env.NODE_TLS_REJECT_UNAUTHORIZED = \"0\""
+            ],
+            "no_match": [
+              "rejectUnauthorized: true",
+              "opts.rejectUnauthorized = true",
+              "NODE_TLS_REJECT_UNAUTHORIZED = \"1\""
+            ]
+          },
+          "explanation": "Disables Node.js TLS certificate verification, allowing a network attacker to substitute remote content.",
+          "extensions": [
+            ".ts"
+          ],
+          "id": "SA-TS-020",
+          "pattern": "\\brejectUnauthorized\\s*:\\s*false\\b|[\"\\']rejectUnauthorized[\"\\']\\s*:\\s*false\\b|\\b(?:[A-Za-z_$][\\w$]*\\.)+rejectUnauthorized\\s*=\\s*false\\b|NODE_TLS_REJECT_UNAUTHORIZED\\s*=\\s*[\\'\\\"]0[\\'\\\"]",
+          "severity": "high",
+          "title": "TypeScript TLS Certificate Verification Disabled",
+          "type": "regex"
+        },
+        {
+          "asset": "downloaded payload integrity",
+          "attacker": "malicious download source",
+          "boundary": "TLS trust boundary",
+          "category": "insecure-transport",
+          "confidence": 0.85,
+          "examples": {
+            "match": [
+              "new https.Agent({ rejectUnauthorized: false })",
+              "opts.rejectUnauthorized = false",
+              "process.env.NODE_TLS_REJECT_UNAUTHORIZED = \"0\""
+            ],
+            "no_match": [
+              "rejectUnauthorized: true",
+              "opts.rejectUnauthorized = true"
+            ]
+          },
+          "explanation": "Disables Node.js TLS certificate verification, allowing a network attacker to substitute remote content.",
+          "extensions": [
+            ".tsx"
+          ],
+          "id": "SA-TSX-003",
+          "pattern": "\\brejectUnauthorized\\s*:\\s*false\\b|[\"\\']rejectUnauthorized[\"\\']\\s*:\\s*false\\b|\\b(?:[A-Za-z_$][\\w$]*\\.)+rejectUnauthorized\\s*=\\s*false\\b|NODE_TLS_REJECT_UNAUTHORIZED\\s*=\\s*[\\'\\\"]0[\\'\\\"]",
+          "severity": "high",
+          "title": "TSX TLS Certificate Verification Disabled",
+          "type": "regex"
+        },
+        {
+          "category": "kernel-exploit",
+          "confidence": 0.8,
+          "examples": {
+            "match": [
+              "os.unshare(CLONE_NEWUSER)",
+              "flags = CLONE_NEWUSER | CLONE_NEWNET",
+              "libc.unshare(CLONE_NEWUSER)"
+            ],
+            "no_match": [
+              "git clone origin main",
+              "CLONE_NEWUSER2",
+              "clone_newuser",
+              "# os.unshare(CLONE_NEWUSER) explained",
+              "msg = 'we never pass CLONE_NEWUSER'"
+            ]
+          },
+          "explanation": "Kernel Exploit: User Namespace Flag (CLONE_NEWUSER) (kernel-exploit) detected in a .py file.",
+          "extensions": [
+            ".py"
+          ],
+          "id": "SA-PY-025",
+          "pattern": "^(?![ \\t]*#).*[(|&,=]\\s*CLONE_NEWUSER\\b",
+          "severity": "high",
+          "title": "Kernel Exploit: User Namespace Flag (CLONE_NEWUSER)",
+          "type": "regex"
+        },
+        {
+          "category": "kernel-exploit",
+          "confidence": 0.8,
+          "examples": {
+            "match": [
+              "unshare --user --map-root-user bash",
+              "unshare -Urm bash",
+              "nsenter -t 1 -m -u bash",
+              "nsenter --target=1 --mount bash",
+              "nsenter -t 01 -m bash",
+              "nsenter --target=001 -u sh"
+            ],
+            "no_match": [
+              "unshare",
+              "unshare --mount --propagation private bash",
+              "nsenter -t \"$pid\" -m bash",
+              "# unshare -Urn sh",
+              "share -x file"
+            ]
+          },
+          "explanation": "Kernel Exploit: User Namespace Creation (kernel-exploit) detected in a .sh file.",
+          "extensions": [
+            ".sh"
+          ],
+          "id": "SA-SH-020",
+          "pattern": "^(?![ \\t]*#).*(?:\\bunshare\\s+(?:-\\S+\\s+)*?(?:(?<!-)-[A-Za-z]*[Ur][A-Za-z]*\\b|--user\\b|--map-root-user\\b)|\\bnsenter\\s+(?:-\\S+\\s+)*?(?:-t\\s+0*1\\b|--target(?:=|\\s+)0*1\\b))",
+          "severity": "high",
+          "title": "Kernel Exploit: User Namespace Creation",
+          "type": "regex"
+        },
+        {
+          "category": "kernel-exploit",
+          "confidence": 0.8,
+          "examples": {
+            "match": [
+              "tc qdisc add dev eth0 root handle 1: htb",
+              "tc action add action pedit munge ip ttl set 63",
+              "modprobe act_pedit",
+              "tc -batch /tmp/evil.tc",
+              "$TC qdisc add dev lo root netem"
+            ],
+            "no_match": [
+              "tc qdisc show",
+              "tc -s qdisc",
+              "etc config",
+              "# tc qdisc add dev lo root netem"
+            ]
+          },
+          "explanation": "Kernel Exploit: net/sched tc Configuration (kernel-exploit) detected in a .sh file.",
+          "extensions": [
+            ".sh"
+          ],
+          "id": "SA-SH-021",
+          "pattern": "^(?![ \\t]*#).*(?:\\btc\\s+(?:qdisc|class|filter|action)\\s+(?:add|change|replace)\\b|\\bact_pedit\\b|\\btc\\s+-b(?:atch)?\\s+\\S|\\$\\{?\\w+\\}?\\s+(?:qdisc|class|filter|action)\\s+(?:add|change|replace)\\b)",
+          "severity": "high",
+          "title": "Kernel Exploit: net/sched tc Configuration",
+          "type": "regex"
+        },
+        {
+          "category": "auth-bypass",
+          "confidence": 0.9,
+          "examples": {
+            "match": [
+              "  --dangerously-skip-permissions \\",
+              "claude --permission-mode bypass -p \"$PROMPT\"",
+              "MODE=bypassPermissions"
+            ],
+            "no_match": [
+              "claude -p \"$PROMPT\"",
+              "echo setting permissions"
+            ]
+          },
+          "explanation": "Shell wrapper passes --dangerously-skip-permissions / bypassPermissions to an AI coding-agent CLI, disabling its human-approval gate; relay-driven agent-execution malware uses this so attacker-supplied prompts run tool calls unchecked (AgentGate MCPA-2026-0063/0084).",
+          "extensions": [
+            ".sh",
+            ".bash",
+            ".zsh"
+          ],
+          "id": "SA-SH-026",
+          "pattern": "--dangerously-skip-permissions|\\bbypassPermissions\\b|--permission-mode[=\\s]+['\"`]?bypass",
+          "severity": "critical",
+          "title": "AI Agent CLI Permission Bypass Flag",
+          "type": "regex"
         }
       ],
       "schema_version": "1.0"
     },
     "secrets": {
-      "pack_version": 6,
+      "pack_version": 7,
       "rules": [
         {
           "asset": "asymmetric private key",
@@ -7070,7 +7531,7 @@
       "schema_version": "1.0"
     },
     "shared": {
-      "pack_version": 6,
+      "pack_version": 7,
       "rules": [
         {
           "category": "shared-verb-list",
@@ -7266,7 +7727,7 @@
       "schema_version": "1.0"
     },
     "skill_threats": {
-      "pack_version": 8,
+      "pack_version": 9,
       "rules": [
         {
           "asset": "agent behavior",
@@ -7366,12 +7827,14 @@
             ],
             "no_match": [
               "Loudly announce the run.",
-              "silently it failed"
+              "silently it failed",
+              "silently performed the old behavior",
+              "silently runs in degraded mode"
             ]
           },
           "explanation": "Silent execution directive.",
           "id": "ST-PI-005",
-          "pattern": "(?i)silently\\s+(execute|run|perform|install|download)",
+          "pattern": "(?i)silently\\s+(execute|run|perform|install|download)\\b",
           "severity": "critical",
           "title": "Silent execution directive",
           "type": "regex"
@@ -10342,6 +10805,31 @@
           "pattern": "(?i)(?:due\\s+to\\s+(?:the\\s+)?limitations\\s+of\\s+(?:your|the)\\s+(?:web_fetch|web_search|fetch|browse)\\s+tool|because\\s+(?:your|the)\\s+(?:web_fetch|fetch)\\s+tool\\s+(?:only|cannot|is\\s+limited))",
           "severity": "high",
           "title": "Tool-limitation exploitation: leveraging fetch constraints for exfiltration (Memory Heist, July 2026)",
+          "type": "regex"
+        },
+        {
+          "category": "prerequisite-attack",
+          "confidence": 0.85,
+          "examples": {
+            "match": [
+              "curl -sk https://example.com/x",
+              "curl -ks https://example.com/x",
+              "curl -kLs https://example.com/x",
+              "curl --insecure https://example.com/x",
+              "wget --no-check-certificate https://example.com/x"
+            ],
+            "no_match": [
+              "curl -s https://example.com/x",
+              "curl --key client.pem https://example.com/x",
+              "wget -k https://example.com/page",
+              "wget https://example.com/x"
+            ]
+          },
+          "explanation": "Install or setup prose tells the agent to download content with TLS certificate verification disabled.",
+          "id": "ST-PR-017",
+          "pattern": "\\bcurl\\b[^\\n|;]*\\s(?:(?:-(?!-)[A-Za-z]*k[A-Za-z]*(?![A-Za-z]))|(?:--insecure(?![\\w-])))|\\bwget\\b[^\\n|;]*\\s--no-check-certificate(?![\\w-])",
+          "severity": "high",
+          "title": "TLS Verification Disabled in Download Instruction",
           "type": "regex"
         }
       ],

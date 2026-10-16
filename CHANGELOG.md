@@ -4,12 +4,16 @@ All notable changes to repo-forensics. Versions follow semver.
 
 ## [Unreleased]
 
+## [2.14.15] - 2026-10-16
+
 ### Fixed
-- `ST-PR-010`: `${{ }}` expressions in GitHub Actions workflows are low severity outside `run:` / `script:` bodies (`with:`, `env:`, `concurrency:`, `url:`, `if:`); inside a script body they stay high.
-- `manifest_drift`: `pyproject.toml` parsing reads only dependency arrays and tables (`[project] dependencies`, optional dependencies, dependency groups, Poetry/PDM tables). Name, license, keywords, URLs and build requirements are no longer reported as declared-but-unused packages.
-- `SAST` CSS hiding: the `font-size` rule no longer matches ordinary sizes that start with 0 (`0.8125rem`). Zero and sub-0.1 sizes (`0`, `0px`, `0.05em`) still match.
+- `ST-PR-010`: `${{ }}` expressions in GitHub Actions workflows drop to low severity only in fields that can never execute (`if:`, `name:`, `concurrency:`, `runs-on:`, `environment` `url:`, `timeout-minutes:`). `env:`, `with:`, `run:`/`script:` bodies and any field that cannot be identified stay high; `steps.*.outputs`, `needs.*.outputs` and `env.*` count as untrusted. Large workflows scan in one pass.
+- `manifest_drift`: `pyproject.toml` parsing reads only dependency arrays and tables (`[project] dependencies`, optional dependencies, dependency groups, Poetry/PDM/Hatch/uv tables, inline tables). Name, license, keywords, URLs and build requirements are no longer reported as declared-but-unused packages.
+- `manifest_drift`: dependencies written in any TOML string form pip accepts are read: multi-line `"""`/`'''` strings, line continuations, leading whitespace and unicode escapes.
+- `SAST` CSS hiding: the `font-size` rule no longer matches ordinary sizes that start with 0 (`0.8125rem`). Zero and sub-pixel sizes (`0`, `0px`, `0.05em`, `0.5px`, `0.9pt`) still match.
 - Text report: `ENRICHMENT: DEGRADED` now lists the capability gaps that caused it (for example `yara (missing-tool)`).
 - `run_forensics.sh`: an unknown `--*update*` flag now explains that refreshes are opt-in and points to `--offline`.
+- Rule-pack feed republished: `sast`, `skill_threats` and `mcp_security` overlays were rejected since 2.14.11 because the feed lacked 19 newer shipped rules. A test now fails whenever the published feed would drop a shipped rule.
 
 ## [2.14.14] - 2026-10-13
 

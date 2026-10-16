@@ -107,12 +107,12 @@
   },
   "hook_count": 13,
   "repo_manifests": {
-    ".claude-plugin/marketplace.json": "4019302f10bc07efda5ea7e425093a984a9d1667a1cb5a309a7574ad2e117f83",
-    ".claude-plugin/plugin.json": "58b1213557e4cfd12cc3083f2ec43fcbdfdfe655a5b3d0694c2f0587c5e190bf",
-    ".codex-plugin/plugin.json": "fa946acdf1f4c051544211bcbf9d28b2fdb5cb1a89297f2a29bf36d54733db7b",
+    ".claude-plugin/marketplace.json": "0357834da5174a669d974316d81a858d2b74be5bb4e9ed49025c84b047c758bf",
+    ".claude-plugin/plugin.json": "9ce7579c7eb5470d544673b0387d2a94fd8a1902d3c7b9de9a2e94ffb193a617",
+    ".codex-plugin/plugin.json": "8f5e9755c961e2fe7be70e823c046bc1ed60e829b693fcc97747cdd39a37def9",
     ".cursor-plugin/hooks.json": "77dcb9cd64b52604cbc607a867b1069187ad6ab2ba6e0e77bbab58206bc1707f",
-    ".cursor-plugin/plugin.json": "8fe0cd955e0277ad8bae46edecb9a4f24130a88db8a397d60e544d4c9f682648",
-    ".kimi-plugin/plugin.json": "3d1b02daae17ff35d63c944b186b8b784ea1b86f390a97f7ec1eb5d20aef10a9"
+    ".cursor-plugin/plugin.json": "1c15e763a399f5ea2b65f95d2297d17f660e721e2b636505b2204f0936f5ceeb",
+    ".kimi-plugin/plugin.json": "613d7e6c5aceb1e0174a9adcc771066b3b66a4e94af0c2a9060f74231e14e911"
   },
   "manifest_count": 6,
   "repo_source_manifests": {
