@@ -1,6 +1,7 @@
 """Tests for scan_dast.py - Dynamic Analysis Security Testing."""
 
 import os
+import sys
 import json
 import io
 import shutil
@@ -25,6 +26,14 @@ _NEEDS_WORKING_SANDBOX = pytest.mark.skipif(
 _NEEDS_BWRAP = pytest.mark.skipif(
     not scanner.BWRAP_AVAILABLE,
     reason="Linux bubblewrap sandbox only",
+)
+
+
+_NEEDS_LINUX = pytest.mark.skipif(
+    not sys.platform.startswith("linux"),
+    reason="Linux bubblewrap sandbox semantics; the unit tests assert POSIX "
+           "paths that realpath rewrites elsewhere (macOS firmlinks, "
+           "Windows drive prefixes)",
 )
 
 
@@ -455,6 +464,7 @@ class TestSandboxHookExecution:
         )
 
 
+@_NEEDS_LINUX
 class TestLinuxBwrapSandbox:
     """The Linux sandbox must rebuild its root from minimal read-only binds,
     never expose the host filesystem to an executed hook, and fail closed
