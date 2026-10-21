@@ -136,7 +136,8 @@ def test_local_artifact_paths(arg):
 
 
 @pytest.mark.parametrize('payload', ['1' * 30000 + '!', '.'.join(['1'] * 15000) + '!',
-                                     '1.' * 30000, 'litellm==' + '1.0' * 10000 + 'x'])
+                                     '1.' * 30000, 'litellm==' + '1.0' * 10000 + 'x'],
+                         ids=['digits', 'dotted', 'trailing-dots', 'long-pin'])
 def test_parser_is_linear_time(payload):
     import time
     t0 = time.time()
