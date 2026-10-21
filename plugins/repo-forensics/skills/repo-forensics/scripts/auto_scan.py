@@ -91,6 +91,10 @@ INSTALL_PATTERNS = [
     (re.compile(r'openclaw\s+(?:skills|plugins)\s+(?:install|update)\s+(.+)'), 'openclaw_install'),
     # clawhub install
     (re.compile(r'clawhub\s+(?:install|publish)\s+(.+)'), 'openclaw_install'),
+    # composer require/install/update (Packagist). Bare `composer install` /
+    # `composer update` (no args) is a lockfile install -> rescan CWD.
+    (re.compile(r'composer(?:\.phar)?\s+(?:global\s+)?(?:require|update|install)\s+(.+)'), 'composer_install'),
+    (re.compile(r'composer(?:\.phar)?\s+(?:install|update)(?:\s+--?\S+)*\s*$'), 'lockfile_install'),
     # claude plugins install/update/add (CLI variants: `claude plugins install`,
     # `claude plugins:install`, `claude /plugins install`, `claude plugins enable`)
     (re.compile(r'claude\s+/?plugins[:\s]+(?:install|update|add|enable)\s+(.+)'), 'claude_plugin_install'),
@@ -232,7 +236,8 @@ def extract_package_names(pattern_type, match):
     """Extract package names from install command match."""
     if pattern_type in ('pip_install', 'npm_install', 'yarn_add', 'gem_install',
                         'cargo_install', 'go_install', 'brew_install', 'openclaw_install',
-                        'claude_plugin_install', 'uv_install', 'bun_install', 'pnpm_install'):
+                        'claude_plugin_install', 'uv_install', 'bun_install', 'pnpm_install',
+                        'composer_install'):
         raw = match.group(1)
         # Strip flags
         cleaned = INSTALL_FLAGS.sub('', raw).strip()
@@ -347,6 +352,21 @@ def _semver_tuple(v):
     return tuple(nums[:3])
 
 
+def split_composer_name_version(token):
+    """Split a composer install token into (base_name, constraint). Mirrors
+    pre_scan.split_composer_name_version (both files stay standalone)."""
+    m = re.match(r'^([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+):(.+)$', token)
+    if m:
+        return m.group(1), m.group(2)
+    m = re.match(r'^([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)=(.+)$', token)
+    if m:
+        return m.group(1), m.group(2)
+    m = re.match(r'^([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)$', token)
+    if m:
+        return m.group(1), None
+    return token, None
+
+
 def _spec_could_match(spec, concrete):
     """Could the npm version SPEC (^1.2.0, ~1.2, >=1.0.0, 1.x, 1.2.3, =1.2.3)
     resolve to the concrete COMPROMISED version? The offline gate cannot query
@@ -412,7 +432,11 @@ def check_ioc_pinned_versions(pattern_type, package_names):
 
     Fail-open on IOC-load failure, same contract as check_ioc_packages().
     """
-    if pattern_type not in NPM_FAMILY_INSTALLS:
+    if pattern_type == 'composer_install':
+        splitter = split_composer_name_version
+    elif pattern_type in NPM_FAMILY_INSTALLS:
+        splitter = split_npm_name_version
+    else:
         return []
     try:
         import ioc_manager
@@ -425,7 +449,7 @@ def check_ioc_pinned_versions(pattern_type, package_names):
 
     findings = []
     for pkg in package_names:
-        base, version = split_npm_name_version(pkg)
+        base, version = splitter(pkg)
         if version is None:
             continue  # bare names are already covered by check_ioc_packages()
         base_lower = base.lower()
@@ -624,12 +648,13 @@ def run_scanner(scanner_script, repo_path):
 
 
 def run_targeted_scan(repo_path):
-    """Run 19 targeted scanners in parallel on a cloned/installed repo."""
+    """Run 20 targeted scanners in parallel on a cloned/installed repo."""
     if not os.path.isdir(repo_path):
         return []
 
     targeted_scanners = [
         'scan_dependencies.py',
+        'scan_runtime_floors.py',
         'scan_secrets.py',
         'scan_lifecycle.py',
         'scan_skill_threats.py',
@@ -877,7 +902,7 @@ def main(argv=None):
     # `npm install --production`) — deps still changed, so scan CWD.
     _lockfile_like = pattern_type in ('git_pull', 'uv_sync', 'lockfile_install') or (
         pattern_type in ('pip_install', 'npm_install', 'uv_install',
-                         'bun_install', 'pnpm_install') and not package_names)
+                         'bun_install', 'pnpm_install', 'composer_install') and not package_names)
     if _lockfile_like:
         cwd = os.getcwd()
         if os.path.isdir(cwd) and _is_safe_scan_path(cwd):
@@ -887,7 +912,7 @@ def main(argv=None):
 
     # For pip/npm-style install with a local path: scan it (with path containment)
     if pattern_type in ('pip_install', 'npm_install', 'uv_install', 'bun_install',
-                        'pnpm_install'):
+                        'pnpm_install', 'composer_install'):
         for pkg in package_names:
             pkg_path = os.path.realpath(pkg)
             if os.path.isdir(pkg_path) and _is_safe_scan_path(pkg_path):

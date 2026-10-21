@@ -83,7 +83,7 @@ Deep security auditing for repositories, AI agent skills, and MCP servers.
 - **Content-based archive detection** (v2.11.2): archives are identified by magic bytes (`PK`/`ustar`/gzip) and `is_zipfile`, not extension, so a zip renamed to dodge gating (e.g. a `.docx.txt`) or a polyglot/self-extracting zip is still opened and scanned. Scripts/executables smuggled inside an OOXML (Office) document are flagged HIGH on structure alone.
 - **Bytecode poisoning detection** (v2.11.2): a benign `.py` source shipping a malicious compiled `.pyc` (Python loads the cache over source) is caught by diffing raw `.pyc` danger markers against the sibling source — **no unmarshalling, no execution, cross-version-safe**, so the verdict never runs attacker bytecode. Best-effort multi-interpreter decode enriches the report; obfuscated `getattr`+char-built-name gadgets are also detected.
 - **Registry-hijack / dependency-confusion detection** (v2.11.2): npm/yarn/pip/bun registry or `index-url` redirected to a non-canonical host is flagged (MEDIUM — corporate mirrors are legitimate), escalating to HIGH only when the redirect co-occurs with reviewer-disarming assurance prose. Resolves `${VAR}` indirection; runs in the install-time hook too.
-- **28 scanners** with 41 correlation rules
+- **29 scanners** with 41 correlation rules
 
 ## How Detection Stays Fresh
 
@@ -132,7 +132,7 @@ Detection runs in layers, each with its own update cadence:
 
 ## Quick Start
 
-Full audit (all 28 scanners):
+Full audit (all 29 scanners):
 ```bash
 ./scripts/run_forensics.sh /path/to/repo
 ```
@@ -184,7 +184,8 @@ JSON output for automation:
 | **entropy** | Per-string Shannon entropy, base64 blocks, hex strings (combo detection) | full |
 | **infra** | Docker (ENV/ARG secrets, .env COPY), K8s, GitHub Actions, Claude Code config (CVE-2025-59536, CVE-2026-21852, CVE-2026-33068) | full |
 | **devcontainer** | JSON-based devcontainer.json analysis: host mounts, privileged mode, docker.sock, remoteEnv localEnv interpolation, lifecycle commands, untrusted features | skill + full |
-| **dependencies** | NPM + Python typosquatting, l33t normalization, IOC packages (SANDWORM_MODE 2026), 190+ package IOCs, compromised version detection (Axios, liteLLM, vpmdhaj, Miasma), suspicious scope detection (iflow-mcp) | full |
+| **runtime_floors** | Vulnerable language-runtime declarations (PHP2Shell class): composer.json/lock `php` constraints and platform pins, Dockerfile/docker-compose `php:` image tags, setup-php workflow pins below the patched floors. Data-driven via `data/runtime_floors.json` | full |
+| **dependencies** | NPM + Python + Composer (Packagist) typosquatting, l33t normalization, IOC packages (SANDWORM_MODE 2026), 190+ package IOCs, compromised version detection (Axios, liteLLM, vpmdhaj, Miasma), suspicious scope detection (iflow-mcp) | full |
 | **ast_analysis** | Python AST: obfuscated exec chains, `__reduce__` backdoors, marshal/types bytecode, audit hook abuse, self-modification | full |
 | **binary** | Executables hidden as images/text files | full |
 | **git_forensics** | Time anomalies, GPG signature issues, identity inconsistencies | full |

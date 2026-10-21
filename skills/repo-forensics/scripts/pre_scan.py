@@ -85,6 +85,10 @@ INSTALL_PATTERNS = [
     (re.compile(r'brew\s+(?:install|upgrade)\s+(.+)'), 'brew_install'),
     (re.compile(r'openclaw\s+(?:skills|plugins)\s+(?:install|update)\s+(.+)'), 'openclaw_install'),
     (re.compile(r'clawhub\s+(?:install|publish)\s+(.+)'), 'openclaw_install'),
+    # composer require/install/update (Packagist). Composer plugins and
+    # autoload.files execute at install time (intercom-php 2026-04,
+    # laravel-lang 2026-05), so this gate matters exactly like npm's.
+    (re.compile(r'composer(?:\.phar)?\s+(?:global\s+)?(?:require|update|install)\s+(.+)'), 'composer_install'),
 ]
 
 _DOWNLOADERS = r'(?:curl|wget|aria2c|http|Invoke-WebRequest)'
@@ -218,7 +222,7 @@ def extract_package_names(pattern_type, match):
         return []
     if pattern_type not in ('pip_install', 'npm_install', 'yarn_add', 'gem_install',
                             'cargo_install', 'go_install', 'brew_install', 'openclaw_install',
-                            'uv_install', 'bun_install', 'pnpm_install'):
+                            'uv_install', 'bun_install', 'pnpm_install', 'composer_install'):
         return []
     raw = match.group(1)
     cleaned = INSTALL_FLAGS.sub('', raw).strip()
@@ -279,6 +283,30 @@ def split_npm_name_version(token):
         return token, None
     version = token[idx + 1:]
     return token[:idx], (version or None)
+
+
+def split_composer_name_version(token):
+    """Split a composer install token into (base_name, constraint).
+
+    composer require takes `vendor/pkg:constraint` (colon is the documented
+    form) or `vendor/pkg=constraint`. Only tokens with the vendor/package
+    shape are Packagist names; anything else (paths, URLs) returns the raw
+    token with no version and simply never matches an IOC name:
+      monolog/monolog:^3.0   -> ('monolog/monolog', '^3.0')
+      monolog/monolog=3.9.0  -> ('monolog/monolog', '3.9.0')
+      monolog/monolog        -> ('monolog/monolog', None)
+      ./packages/local       -> ('./packages/local', None)
+    """
+    m = re.match(r'^([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+):(.+)$', token)
+    if m:
+        return m.group(1), m.group(2)
+    m = re.match(r'^([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)=(.+)$', token)
+    if m:
+        return m.group(1), m.group(2)
+    m = re.match(r'^([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)$', token)
+    if m:
+        return m.group(1), None
+    return token, None
 
 
 def _semver_tuple(v):
@@ -366,7 +394,11 @@ def check_ioc_pinned_versions(pattern_type, package_names, iocs=None):
     each checker paying the disk+verify cost (the npm path calls both). When
     None, loads on its own (standalone/test use). Fail-open on load failure.
     """
-    if pattern_type not in NPM_FAMILY_INSTALLS:
+    if pattern_type == 'composer_install':
+        splitter = split_composer_name_version
+    elif pattern_type in NPM_FAMILY_INSTALLS:
+        splitter = split_npm_name_version
+    else:
         return []
     if iocs is None:
         try:
@@ -380,7 +412,7 @@ def check_ioc_pinned_versions(pattern_type, package_names, iocs=None):
 
     blocked = []
     for pkg in package_names:
-        base, version = split_npm_name_version(pkg)
+        base, version = splitter(pkg)
         base_lower = base.lower()
         # Check the RESOLVED base name first — for alias (foo@npm:rimarf) and git/URL
         # forms the base is malicious even with no pinned version, and the raw token

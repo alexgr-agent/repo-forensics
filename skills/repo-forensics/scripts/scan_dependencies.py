@@ -1408,6 +1408,140 @@ def scan_python_deps(filepath, rel_path):
     return findings
 
 
+
+# --- Composer (Packagist) ------------------------------------------------------
+#
+# Platform requisites are not Packagist packages: "php", "hhvm", "composer*",
+# "ext-*", "lib-*". They name the runtime the code needs, never something
+# `composer install` downloads, so IOC/vuln package checks must skip them.
+# (The "php" requirement itself is checked by scan_runtime_floors.py.)
+_COMPOSER_PLATFORM_RE = re.compile(
+    r'^(php|hhvm|composer|composer-plugin-api|composer-runtime-api|ext-[^/]+|lib-[^/]+)$',
+    re.IGNORECASE)
+
+
+def _is_composer_platform_req(name):
+    return bool(_COMPOSER_PLATFORM_RE.match(name))
+
+
+def scan_composer_json(filepath, rel_path):
+    """Scan composer.json require/require-dev packages against the IOC,
+    compromised-version and OSV (Packagist) checks.
+
+    Version strings here are CONSTRAINTS (^3.0, >=1.2 <2.0), so the
+    compromised-version check runs strict_pin=True and OSV only sees values
+    that normalize to an exact version.
+    """
+    findings = []
+    try:
+        with open(filepath, 'r', encoding='utf-8') as f:
+            content = f.read()
+    except (UnicodeDecodeError, OSError) as e:
+        findings.append(core.Finding(
+            scanner=SCANNER_NAME, severity="low",
+            title="composer.json read error",
+            description=f"Could not read composer.json: {e}",
+            file=rel_path, line=0, snippet=str(e)[:120],
+            category="parse-error"))
+        return findings
+    try:
+        data = json.loads(content)
+    except json.JSONDecodeError as e:
+        findings.append(core.Finding(
+            scanner=SCANNER_NAME, severity="low",
+            title="Package manifest parse error",
+            description=f"Could not fully parse composer.json: {e}",
+            file=rel_path, line=0, snippet=str(e)[:120],
+            category="parse-error"))
+        return findings
+    except RecursionError:
+        findings.append(core.Finding(
+            scanner=SCANNER_NAME, severity="medium",
+            title="Adversarial composer.json structure",
+            description="Refused to parse hostile composer.json: RecursionError",
+            file=rel_path, line=0, snippet="",
+            category="parse-error"))
+        return findings
+    if not isinstance(data, dict):
+        return findings
+
+    all_deps = {}
+    for section in ('require', 'require-dev'):
+        reqs = data.get(section)
+        if not isinstance(reqs, dict):
+            continue
+        for name, constraint in reqs.items():
+            if not isinstance(name, str) or not isinstance(constraint, str):
+                continue
+            if _is_composer_platform_req(name):
+                continue
+            all_deps[name] = constraint
+
+    dep_names = list(all_deps.keys())
+    findings.extend(check_known_ioc_packages(dep_names, rel_path))
+    findings.extend(check_compromised_versions(all_deps, rel_path, strict_pin=True))
+    findings.extend(_check_vulns("Packagist", all_deps, rel_path))
+    # No Packagist freshness fetcher, popular corpus or slopsquat corpus yet;
+    # those checks are npm/PyPI-only by design.
+    return findings
+
+
+def parse_composer_lock(filepath, rel_path):
+    """Scan composer.lock resolved packages. Versions here are exact pins, so
+    the compromised-version check runs non-strict and every pin feeds OSV."""
+    findings = []
+    try:
+        with open(filepath, 'r', encoding='utf-8') as f:
+            content = f.read()
+    except (UnicodeDecodeError, OSError) as e:
+        findings.append(core.Finding(
+            scanner=SCANNER_NAME, severity="low",
+            title="composer.lock read error",
+            description=f"Could not read composer.lock: {e}",
+            file=rel_path, line=0, snippet=str(e)[:120],
+            category="parse-error"))
+        return findings
+    try:
+        data = json.loads(content)
+    except json.JSONDecodeError as e:
+        findings.append(core.Finding(
+            scanner=SCANNER_NAME, severity="low",
+            title="Lockfile parse error",
+            description=f"Could not fully parse composer.lock: {e}",
+            file=rel_path, line=0, snippet=str(e)[:120],
+            category="parse-error"))
+        return findings
+    except RecursionError:
+        findings.append(core.Finding(
+            scanner=SCANNER_NAME, severity="medium",
+            title="Adversarial composer.lock structure",
+            description="Refused to parse hostile composer.lock: RecursionError",
+            file=rel_path, line=0, snippet="",
+            category="parse-error"))
+        return findings
+    if not isinstance(data, dict):
+        return findings
+
+    pins = {}
+    for section in ('packages', 'packages-dev'):
+        entries = data.get(section)
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            name, version = entry.get('name'), entry.get('version')
+            if isinstance(name, str) and isinstance(version, str):
+                if not _is_composer_platform_req(name):
+                    pins[name] = version
+
+    dep_names = list(pins.keys())
+    findings.extend(check_known_ioc_packages(dep_names, rel_path))
+    findings.extend(check_compromised_versions(pins, rel_path))
+    findings.extend(_check_vulns("Packagist", pins, rel_path))
+    return findings
+
+
 def scan_lockfile(filepath, rel_path):
     findings = []
     try:
@@ -2477,6 +2611,11 @@ def main():
         elif basename in ('requirements.txt', 'requirements-dev.txt', 'requirements-test.txt',
                           'constraints.txt', 'pyproject.toml', 'Pipfile'):
             all_findings.extend(scan_python_deps(file_path, rel_path))
+        elif basename == 'composer.json':
+            all_findings.extend(scan_composer_json(file_path, rel_path))
+        elif basename == 'composer.lock':
+            all_findings.extend(parse_composer_lock(file_path, rel_path))
+            all_findings.extend(scan_lockfile_injection(file_path, rel_path))
 
     # Surface enrichment state (offline/no-vulns/rulepack-degraded) as
     # a scanner-emitted finding, never as a cross-import from aggregate_json.

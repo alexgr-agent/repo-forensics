@@ -4,6 +4,11 @@ All notable changes to repo-forensics. Versions follow semver.
 
 ## [Unreleased]
 
+### Added
+- **Vulnerable-runtime detection (PHP2Shell class).** New `runtime_floors` scanner flags declared PHP runtimes pinned to, or capped below, the patched floors for CVE-2026-109618 / CVE-2026-109619 (unauthenticated RCE + memory disclosure in the PHP engine, disclosed 2026-10-21): composer.json `require`/`require-dev` `php` constraints and `config.platform.php` pins, composer.lock `platform`/`platform-overrides`, Dockerfile `FROM php:` tags (ARG-resolved), docker-compose `php:` images and `*phpX.Y` tags, and `setup-php` workflow pins (advisory severity). Floors live in `data/runtime_floors.json` keyed by advisory, so the next engine-level event is a data edit. Exact pins and EOL branches flag; constraints that admit a patched release stay silent.
+- **Composer (Packagist) dependency coverage.** `scan_dependencies.py` now parses composer.json (`require`/`require-dev`) and composer.lock (`packages`/`packages-dev`) and runs them through the known-IOC, compromised-version and OSV (Packagist) checks. This activates the laravel-lang campaign data that previously shipped but was never matched. Platform requisites (`php`, `ext-*`, `lib-*`, `composer*`) are excluded.
+- **Composer install gate.** The pre-execution gate and post-install auto-scan now recognise `composer require/install/update` (incl. `composer.phar`, `composer global`): package names check against the IOC database, and `vendor/pkg:constraint` / `vendor/pkg=version` pins check against compromised-version data with the same conservative range handling as npm. Bare `composer install` triggers a post-install rescan like other lockfile installs.
+
 ## [2.14.15] - 2026-10-16
 
 ### Fixed
