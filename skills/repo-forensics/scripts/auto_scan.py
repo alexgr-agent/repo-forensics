@@ -54,7 +54,7 @@ INSTALL_PATTERNS = [
     # uv sync (lockfile install — scans CWD after sync, like git_pull)
     (re.compile(r'uv\s+sync(?:\s|$)'), 'uv_sync'),
     # pip install (with package names) — also catches --upgrade
-    (re.compile(r'pip3?\s+install\s+(.+)'), 'pip_install'),
+    (re.compile(r'pip(?:3(?:\.\d+)?)?\s+' + _PM_FLAGS + r'install\s+(.+)'), 'pip_install'),
     # pnpm install/add/update — must precede npm: 'pnpm install x'
     # substring-matches the npm entry. _PM_FLAGS covers monorepo/workspace
     # forms: `pnpm -r add x`, `pnpm --filter web add x`.
@@ -241,7 +241,7 @@ def extract_package_names(pattern_type, match):
         # Strip version specifiers for pip; .strip() handles `pkg @ url` form
         # which leaves trailing whitespace after the @ split.
         if pattern_type in ('pip_install', 'uv_install'):
-            names = [re.split(r'[>=<!\[\];@]', n)[0].strip() for n in names]
+            names = [re.split(r'[>=<!\[\];@]', n.strip('"\''))[0].strip() for n in names]
             names = [n for n in names if n]
         return names
     return []
@@ -481,6 +481,42 @@ def check_ioc_pinned_versions(pattern_type, package_names):
                 break
 
     return findings
+
+
+def check_pypi_pinned_versions(pattern_type, match):
+    """Findings for `pip`/`uv` installs that pin a compromised PyPI release.
+
+    extract_package_names() strips pip version specifiers, so the name checks
+    cannot see `litellm==1.107.0`. Re-reads the pins from the raw arguments and
+    checks the PyPI-only compromised-version map (exact pins, `==X.*`, wheel or
+    sdist URLs, `name @ url`). Ranges and bare names are not matched; see
+    pypi_pins. Fail-open on IOC-load failure, like the other checkers.
+    """
+    if pattern_type not in ('pip_install', 'uv_install') or not match:
+        return []
+    try:
+        import pypi_pins
+        import ioc_manager
+        versions = ioc_manager.get_iocs().get('compromised_versions_pypi', {})
+        if not versions:
+            return []
+        reqs = pypi_pins.parse_install_args(match.group(1))
+        out = []
+        for desc in pypi_pins.blocked_by(reqs, versions):
+            out.append({
+                'scanner': 'auto_scan',
+                'severity': 'critical',
+                'title': f"Compromised Package Version: '{desc.split(' (', 1)[0]}'",
+                'description': f"{desc}. DO NOT INSTALL this version; if it was installed, "
+                               f"treat the environment as exposed.",
+                'file': 'N/A',
+                'line': 0,
+                'snippet': desc,
+                'category': 'known-ioc'
+            })
+        return out
+    except Exception:
+        return []
 
 
 def check_ioc_packages(package_names):
@@ -861,6 +897,8 @@ def main(argv=None):
             # Version-pinned npm-family tokens (`name@version`) never match the
             # name sets above, so re-check them by base name and exact version.
             all_findings.extend(check_ioc_pinned_versions(pattern_type, package_names))
+            # pip/uv pins (`litellm==1.107.0`) are re-read from the raw args.
+            all_findings.extend(check_pypi_pinned_versions(pattern_type, match))
 
     # For git clone: scan the cloned directory
     if pattern_type == 'git_clone':

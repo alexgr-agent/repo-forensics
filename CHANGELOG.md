@@ -4,6 +4,13 @@ All notable changes to repo-forensics. Versions follow semver.
 
 ## [Unreleased]
 
+### Fixed
+- Compromised PyPI pins are now caught before install and in files. The `pip`/`uv` install gate discarded version specifiers and only consulted the compromised-version map for npm-family installs, and requirements-style files never passed their pins to the compromised-version check. So `pip install litellm==1.82.8` and a `requirements.txt` pin were approved. The gate now denies exact pins (`==X`, `===X`, `==X.*`), wheel or sdist URLs and `name @ url` forms of a compromised release, including chained commands and quoted or extras forms. `requirements*.txt`, `constraints.txt`, `pyproject.toml` and `Pipfile` pins raise a critical finding. Lookups use a PyPI-only view of the map with PEP 503 names and PEP 440 versions (`1.107` equals `1.107.0`; `1.107.0.post1` does not). Ranges and bare names are still not blocked, because they resolve at install time.
+- Quoted requirements (`pip install "pkg==1"`) kept their quote in the name and skipped the known-malicious-name check.
+
+### Added
+- IOC: LiteLLM 1.107.0 (October 2026 PyPI wheel compromise: `cook.pth`, `cook.py`, `sitecustomize.py` loader; payload is absent from the git tag), exfil domain `www.litellm.dev`, and `cook.pth` as a known-malicious `.pth` name.
+
 ## [2.14.15] - 2026-10-16
 
 ### Fixed

@@ -73,7 +73,7 @@ INSTALL_PATTERNS = [
     # 'uv pip install x' / 'pnpm install x' substring-match the pip/npm entries.
     # _PM_FLAGS covers flags between the tool and subcommand (monorepo forms).
     (re.compile(r'uv\s+' + _PM_FLAGS + r'(?:add|pip\s+install|tool\s+install)\s+(.+)'), 'uv_install'),
-    (re.compile(r'pip3?\s+install\s+(.+)'), 'pip_install'),
+    (re.compile(r'pip(?:3(?:\.\d+)?)?\s+' + _PM_FLAGS + r'install\s+(.+)'), 'pip_install'),
     (re.compile(r'pnpm\s+' + _PM_FLAGS + r'(?:install|i|add|update)\s+(.+)'), 'pnpm_install'),
     (re.compile(r'bun\s+' + _PM_FLAGS + r'(?:install|i|add|update)\s+(.+)'), 'bun_install'),
     (re.compile(r'npm\s+(?:install|i)\s+(.+)'), 'npm_install'),
@@ -224,7 +224,9 @@ def extract_package_names(pattern_type, match):
     cleaned = INSTALL_FLAGS.sub('', raw).strip()
     names = [n.strip() for n in cleaned.split() if n.strip() and not n.startswith('-')]
     if pattern_type in ('pip_install', 'uv_install'):
-        names = [re.split(r'[>=<!\[\];@]', n)[0] for n in names]
+        # A quoted requirement (`pip install "pkg==1.0"`) keeps its leading
+        # quote through the split, so the IOC name check never matched it.
+        names = [re.split(r'[>=<!\[\];@]', n.strip('"\''))[0] for n in names]
     return names
 
 
@@ -409,6 +411,35 @@ def check_ioc_pinned_versions(pattern_type, package_names, iocs=None):
                 )
                 break
     return blocked
+
+
+PYPI_INSTALLS = ('pip_install', 'uv_install')
+
+
+def check_pypi_pinned_versions(pattern_type, match, iocs=None):
+    """Block `pip`/`uv` installs that pin a compromised PyPI release.
+
+    extract_package_names() strips every pip version specifier, so the name
+    checks never saw `litellm==1.107.0` as anything but `litellm`. This reads
+    the pins from the raw install arguments and checks them against the
+    PyPI-only compromised-version map. Exact pins, `==X.*` prefixes, wheel or
+    sdist URLs and `name @ url` forms are covered; ranges and bare names are
+    not (see pypi_pins). Fail-open when the IOC set cannot be loaded.
+    Returns a list of description strings.
+    """
+    if pattern_type not in PYPI_INSTALLS or not match:
+        return []
+    try:
+        import pypi_pins
+        if iocs is None:
+            import ioc_manager
+            iocs = ioc_manager.get_iocs()
+        versions = iocs.get('compromised_versions_pypi', {})
+        if not versions:
+            return []
+        return pypi_pins.blocked_by(pypi_pins.parse_install_args(match.group(1)), versions)
+    except Exception:
+        return []
 
 
 def check_ioc_packages(package_names, iocs=None):
@@ -606,6 +637,12 @@ def decide(command):
     blocked_pinned = check_ioc_pinned_versions(pattern_type, package_names, iocs=shared_iocs)
     if blocked_pinned:
         return hook_adapter.DENY, _block_packages_reason(', '.join(blocked_pinned))
+
+    # pip/uv strip version specifiers above, so pins like `litellm==1.107.0`
+    # are re-read from the raw arguments here.
+    blocked_pypi = check_pypi_pinned_versions(pattern_type, match, iocs=shared_iocs)
+    if blocked_pypi:
+        return hook_adapter.DENY, _block_packages_reason(', '.join(blocked_pypi))
 
     # No IOC match. A redirected package index is the one remaining signal
     # worth a human's attention without stopping the agent.

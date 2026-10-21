@@ -1698,6 +1698,17 @@
         "litellm": ["1.82.7", "1.82.8"]
       }
     },
+    "litellm_pypi_oct_2026": {
+      "title": "LiteLLM 1.107.0 PyPI wheel compromise",
+      "ecosystem": "pypi",
+      "disclosed": "2026-10",
+      "family": "credential stealer with remote code loader",
+      "reference": "https://www.upwind.io/feed/litellm-1-107-0-supply-chain-attack-malicious-code-found-in-pypi-package",
+      "notes": "All seven 1.107.0 wheels on PyPI carry cook.pth, cook.py and a sitecustomize.py that fetches and executes code roughly hourly; exfiltration goes to the lookalike domain www.litellm.dev. The payload is not in the v1.107.0 git tag, so scanning upstream source cannot see it. Source: https://www.upwind.io/feed/litellm-1-107-0-supply-chain-attack-malicious-code-found-in-pypi-package",
+      "packages": {
+        "litellm": ["1.107.0"]
+      }
+    },
     "teampcp_xinference_pypi_apr_2026": {
       "title": "TeamPCP PyPI campaign (Xinference)",
       "ecosystem": "pypi",
