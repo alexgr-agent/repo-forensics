@@ -93,7 +93,7 @@ INSTALL_PATTERNS = [
     (re.compile(r'clawhub\s+(?:install|publish)\s+(.+)'), 'openclaw_install'),
     # composer require/install/update (Packagist). Bare `composer install` /
     # `composer update` (no args) is a lockfile install -> rescan CWD.
-    (re.compile(r'composer(?:\.phar)?\s+(?:global\s+)?(?:require|update|install)\s+(.+)'), 'composer_install'),
+    (re.compile(r'composer(?:\.phar)?\s+' + _PM_FLAGS + r'(?:global\s+)?(?:require|update|install)\s+(.+)'), 'composer_install'),
     (re.compile(r'composer(?:\.phar)?\s+(?:install|update)(?:\s+--?\S+)*\s*$'), 'lockfile_install'),
     # claude plugins install/update/add (CLI variants: `claude plugins install`,
     # `claude plugins:install`, `claude /plugins install`, `claude plugins enable`)

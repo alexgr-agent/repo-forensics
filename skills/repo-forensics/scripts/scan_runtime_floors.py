@@ -65,6 +65,12 @@ def load_runtime_floors(path=DATA_PATH):
     runtimes = data.get('runtimes')
     if not isinstance(runtimes, dict):
         return {}, "missing 'runtimes' object"
+    for name, raw in runtimes.items():
+        if not isinstance(raw, dict):
+            return {}, "runtime %r is not an object" % (name,)
+        advs = raw.get('advisories')
+        if not isinstance(advs, list) or not all(isinstance(a, dict) for a in advs):
+            return {}, "runtime %r has a malformed 'advisories' list" % (name,)
     return runtimes, None
 
 
@@ -322,7 +328,7 @@ def _read_text(filepath):
         return None
     if len(raw) > MAX_READ_BYTES:
         raw = raw[:MAX_READ_BYTES]
-    return raw.decode('utf-8', errors='replace')
+    return raw.decode('utf-8-sig', errors='replace')  # utf-8-sig strips a BOM
 
 
 def _finding(severity, title, description, rel_path, line, snippet, confidence=0.9):
@@ -450,11 +456,15 @@ def scan_composer_lock(filepath, rel_path, advisories):
 
 _TAG_VERSION_RE = re.compile(r'^v?(\d+(?:\.\d+){0,2})((?:[-+].*)?)$')
 _ARG_RE = re.compile(r'^\s*ARG\s+([A-Za-z_][A-Za-z0-9_]*)(?:=(\S+))?\s*$')
-_FROM_PHP_RE = re.compile(r'^\s*FROM\s+(?:--platform=\S+\s+)?php:([^\s]+)', re.IGNORECASE)
+_FROM_PHP_RE = re.compile(
+    r'^\s*FROM\s+(?:--platform=\S+\s+)?["\']?(?:[\w.-]+(?::\d+)?/)*(?:library/)?php:([^\s"\']+)',
+    re.IGNORECASE)
 _VAR_RE = re.compile(r'^\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}$|^\$([A-Za-z_][A-Za-z0-9_]*)$')
 # <image>:...php8.1 or ...php8.1.4 tags (wordpress:php8.1-apache etc.)
 _IMAGE_PHP_TAG_RE = re.compile(r'^\s*image:\s*["\']?[^\s"\']*:([^\s"\']*php(\d+(?:\.\d+){0,2})[^\s"\']*)["\']?', re.IGNORECASE)
-_IMAGE_PHP_RE = re.compile(r'^\s*image:\s*["\']?php:([^\s"\']+)', re.IGNORECASE)
+_IMAGE_PHP_RE = re.compile(
+    r'^\s*image:\s*["\']?(?:[\w.-]+(?::\d+)?/)*(?:library/)?php:([^\s"\']+)',
+    re.IGNORECASE)
 
 
 def _resolve_tag_var(tag, args):
@@ -477,6 +487,7 @@ def _check_docker_tag(advisory, tag, source_desc, rel_path, line_no, line_text,
     """Check one image tag; returns a Finding or None. Handles exact pins,
     branch-only moving tags (EOL = critical; maintained = low rebuild note),
     and non-version tags (latest/cli/fpm -> silent)."""
+    tag = tag.split('@', 1)[0]  # drop digest pins (image:tag@sha256:...)
     m = _TAG_VERSION_RE.match(tag)
     if not m:
         return None  # latest / cli / fpm-alpine etc: no version to judge

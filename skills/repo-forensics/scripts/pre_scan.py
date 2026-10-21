@@ -88,7 +88,7 @@ INSTALL_PATTERNS = [
     # composer require/install/update (Packagist). Composer plugins and
     # autoload.files execute at install time (intercom-php 2026-04,
     # laravel-lang 2026-05), so this gate matters exactly like npm's.
-    (re.compile(r'composer(?:\.phar)?\s+(?:global\s+)?(?:require|update|install)\s+(.+)'), 'composer_install'),
+    (re.compile(r'composer(?:\.phar)?\s+' + _PM_FLAGS + r'(?:global\s+)?(?:require|update|install)\s+(.+)'), 'composer_install'),
 ]
 
 _DOWNLOADERS = r'(?:curl|wget|aria2c|http|Invoke-WebRequest)'
