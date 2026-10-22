@@ -214,3 +214,57 @@ def test_module_from_spec_on_fixed_sibling_paths_is_inferred(tmp_path):
     # Caller-chosen, escaping, absolute or cwd-rooted paths stay direct and high.
     for line in (34, 41, 48, 55):
         assert (hits[line].evidence_class, hits[line].severity) == ("direct", "high"), line
+
+
+# ---------------------------------------------------------------------------
+# Lethal Trifecta: an environment copy is not the network side
+# ---------------------------------------------------------------------------
+
+def _leaf(scanner, title, description, category, line, rule_id=""):
+    import forensics_core as core
+    return core.Finding(scanner=scanner, severity="medium", title=title,
+                        description=description, file="tool.py", line=line,
+                        snippet=title, category=category, rule_id=rule_id)
+
+
+def _trifecta(findings):
+    import forensics_core as core
+    return [c for c in core.correlate(findings) if c.category == "lethal-trifecta"]
+
+
+def test_env_copy_for_a_subprocess_does_not_complete_the_trifecta():
+    leaves = [
+        _leaf("trifecta_raw", "Code execution primitive",
+              "Raw-content match for exec primitive (os.system, subprocess, eval, exec, shell=true)",
+              "code-execution", 10),
+        _leaf("trifecta_raw", "Credential read primitive",
+              "Raw-content match for credential read (.aws/credentials, .ssh/id_rsa, GITHUB_TOKEN)",
+              "credential-read", 12),
+        _leaf("skill_threats", "Full environment copy", "Full environment copy.",
+              "credential-exfiltration", 11, rule_id="ST-EX-007"),
+        _leaf("skill_threats", "Bulk environment access", "Bulk environment access.",
+              "credential-exfiltration", 13, rule_id="ST-EX-005"),
+    ]
+    assert _trifecta(leaves) == []
+
+
+def test_real_outbound_call_still_completes_the_trifecta():
+    leaves = [
+        _leaf("trifecta_raw", "Code execution primitive",
+              "Raw-content match for exec primitive (os.system, subprocess, eval, exec, shell=true)",
+              "code-execution", 10),
+        _leaf("trifecta_raw", "Credential read primitive",
+              "Raw-content match for credential read (.aws/credentials, .ssh/id_rsa, GITHUB_TOKEN)",
+              "credential-read", 12),
+        _leaf("skill_threats", "Full environment copy", "Full environment copy.",
+              "credential-exfiltration", 11, rule_id="ST-EX-007"),
+        _leaf("trifecta_raw", "Outbound network primitive",
+              "Raw-content match for outbound network primitive (http.client, requests.post, urllib, socket, axios, httpx, aiohttp)",
+              "network", 14),
+    ]
+    assert len(_trifecta(leaves)) == 1
+    # A known exfiltration webhook (ST-EX-001) is egress and still counts.
+    webhook = leaves[:3] + [_leaf("skill_threats", "Exfiltration webhook",
+                                  "Known exfiltration webhook service", "credential-exfiltration",
+                                  14, rule_id="ST-EX-001")]
+    assert len(_trifecta(webhook)) == 1

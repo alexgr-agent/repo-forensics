@@ -2804,7 +2804,17 @@ def correlate(findings, repo_path=None):
             return ids
 
         exec_ids = _primitive_finding_ids(trifecta_exec_keywords)
-        network_ids = _primitive_finding_ids(trifecta_network_keywords)
+        # skill_threats' `credential-exfiltration` category holds environment
+        # READS (ST-EX-005..008: os.environ.items(), dict(os.environ)); the word
+        # "exfiltration" in that category name is not an outbound call. Only its
+        # typed egress rule (ST-EX-001) may stand for the network side, the
+        # same split _exfil_capabilities makes for Rule 1.
+        network_ids = {
+            i for i in _primitive_finding_ids(trifecta_network_keywords)
+            if not (file_findings[i].scanner == "skill_threats"
+                    and (file_findings[i].category or "").lower() == "credential-exfiltration"
+                    and "network" not in _exfil_capabilities(file_findings[i]))
+        }
         credential_ids = _primitive_finding_ids(trifecta_credential_keywords)
 
         # All three primitives must be present AND at least 2 must come from
