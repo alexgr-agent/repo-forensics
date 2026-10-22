@@ -7,7 +7,7 @@ Runs as a Claude Code / Codex / OpenClaw PostToolUse hook and as a Cursor
 afterShellExecution hook (`--adapter cursor`). Reads JSON from stdin, writes its
 report to stdout. Fast path (<10ms for non-matching commands).
 
-OBSERVE-ONLY on every adapter. This is where the deep 28-scanner audit runs, so
+OBSERVE-ONLY on every adapter. This is where the deep targeted-scanner audit runs, so
 it deliberately never gates execution — the blocking decision belongs to
 pre_scan.py, which is the only thing fast enough to sit in front of the agent's
 inner loop (PRD v3 R2).

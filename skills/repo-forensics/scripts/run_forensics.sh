@@ -53,11 +53,46 @@ FOCUSED_SCANNERS=(
     "git_config:scan_git_config.py"
 )
 
+# Full-audit (default mode) scanner set, same "name:script" shape and the
+# same reason: the printed count is generated from what actually launches.
+# integrity gets --watch appended when --watch is set.
+FULL_SCANNERS=(
+    "entropy:scan_entropy.py"
+    "binary:scan_binary.py"
+    "yara:scan_yara.py"
+    "git_forensics:scan_git_forensics.py"
+    "dependencies:scan_dependencies.py"
+    "runtime_floors:scan_runtime_floors.py"
+    "secrets:scan_secrets.py"
+    "sast:scan_sast.py"
+    "infra:scan_infra.py"
+    "lifecycle:scan_lifecycle.py"
+    "skill_threats:scan_skill_threats.py"
+    "dataflow:scan_dataflow.py"
+    "mcp_security:scan_mcp_security.py"
+    "ast_analysis:scan_ast.py"
+    "runtime_dynamism:scan_runtime_dynamism.py"
+    "manifest_drift:scan_manifest_drift.py"
+    "agent_skills:scan_agent_skills.py"
+    "integrity:scan_integrity.py"
+    "dast:scan_dast.py"
+    "post_incident:scan_post_incident.py"
+    "devcontainer:scan_devcontainer.py"
+    "entrypoint:scan_entrypoint.py"
+    "oversize:scan_oversize.py"
+    "bytecode:scan_bytecode.py"
+    "archive:scan_archive.py"
+    "splitstream:scan_splitstream.py"
+    "provenance:scan_provenance.py"
+    "dead_anchors:scan_dead_anchors.py"
+    "git_config:scan_git_config.py"
+)
+
 if [ -z "${1:-}" ]; then
     echo "Usage: $0 <repo_path> [options]"
     echo ""
     echo "Modes:"
-    echo "  (default)              Full audit - all 29 scanners"
+    echo "  (default)              Full audit - all ${#FULL_SCANNERS[@]} scanners"
     echo "  --skill-scan           Focused on AI skill threats (${#FOCUSED_SCANNERS[@]} scanners, faster)"
     echo "  --inventory            Enumerate installed AI-agent stacks (zero-LLM, JSON output)"
     echo ""
@@ -433,41 +468,16 @@ else
     # Full audit: all scanners in parallel
     if ! $MACHINE_FORMAT; then
         echo ""
-        echo "[*] Running all 29 scanners in parallel..."
+        echo "[*] Running all ${#FULL_SCANNERS[@]} scanners in parallel..."
     fi
-    throttled_run run_scanner "entropy" "scan_entropy.py" &
-    throttled_run run_scanner "binary" "scan_binary.py" &
-    throttled_run run_scanner "yara" "scan_yara.py" &
-    throttled_run run_scanner "git_forensics" "scan_git_forensics.py" &
-    throttled_run run_scanner "dependencies" "scan_dependencies.py" &
-    throttled_run run_scanner "runtime_floors" "scan_runtime_floors.py" &
-    throttled_run run_scanner "secrets" "scan_secrets.py" &
-    throttled_run run_scanner "sast" "scan_sast.py" &
-    throttled_run run_scanner "infra" "scan_infra.py" &
-    throttled_run run_scanner "lifecycle" "scan_lifecycle.py" &
-    throttled_run run_scanner "skill_threats" "scan_skill_threats.py" &
-    throttled_run run_scanner "dataflow" "scan_dataflow.py" &
-    throttled_run run_scanner "mcp_security" "scan_mcp_security.py" &
-    throttled_run run_scanner "ast_analysis" "scan_ast.py" &
-    throttled_run run_scanner "runtime_dynamism" "scan_runtime_dynamism.py" &
-    throttled_run run_scanner "manifest_drift" "scan_manifest_drift.py" &
-    throttled_run run_scanner "agent_skills" "scan_agent_skills.py" &
-    if $WATCH_MODE; then
-        throttled_run run_scanner "integrity" "scan_integrity.py" "--watch" &
-    else
-        throttled_run run_scanner "integrity" "scan_integrity.py" &
-    fi
-    throttled_run run_scanner "dast" "scan_dast.py" &
-    throttled_run run_scanner "post_incident" "scan_post_incident.py" &
-    throttled_run run_scanner "devcontainer" "scan_devcontainer.py" &
-    throttled_run run_scanner "entrypoint" "scan_entrypoint.py" &
-    throttled_run run_scanner "oversize" "scan_oversize.py" &
-    throttled_run run_scanner "bytecode" "scan_bytecode.py" &
-    throttled_run run_scanner "archive" "scan_archive.py" &
-    throttled_run run_scanner "splitstream" "scan_splitstream.py" &
-    throttled_run run_scanner "provenance" "scan_provenance.py" &
-    throttled_run run_scanner "dead_anchors" "scan_dead_anchors.py" &
-    throttled_run run_scanner "git_config" "scan_git_config.py" &
+    for _full_spec in "${FULL_SCANNERS[@]}"; do
+        if [ "${_full_spec%%:*}" = "integrity" ] && $WATCH_MODE; then
+            throttled_run run_scanner "integrity" "${_full_spec##*:}" "--watch" &
+        else
+            throttled_run run_scanner "${_full_spec%%:*}" "${_full_spec##*:}" &
+        fi
+    done
+    unset _full_spec
     wait
 fi
 
