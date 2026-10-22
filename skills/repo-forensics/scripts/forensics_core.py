@@ -1443,8 +1443,13 @@ IGNORE_DIRS = {'.git', 'node_modules', 'venv', '.venv', '__pycache__', 'dist', '
 BINARY_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.ico', '.pdf', '.zip', '.tar', '.gz', '.7z',
                      '.exe', '.dll', '.so', '.dylib', '.bin', '.pyc', '.class', '.woff', '.woff2',
                      '.ttf', '.eot', '.mp3', '.mp4', '.mov', '.avi', '.bmp', '.tiff'}
+# Generated dependency lockfiles. They are full of integrity hashes and download
+# URLs, so the text scanners skip them; the dependency engines (which walk with
+# skip_lockfiles=False) parse them instead. uv.lock and pdm.lock share
+# poetry.lock's layout, bun.lock is bun's text lockfile, deno.lock is Deno's.
 LOCKFILES = {'pnpm-lock.yaml', 'package-lock.json', 'yarn.lock', 'go.sum', 'Cargo.lock',
-             'Gemfile.lock', 'poetry.lock', 'Pipfile.lock', 'composer.lock'}
+             'Gemfile.lock', 'poetry.lock', 'Pipfile.lock', 'composer.lock',
+             'uv.lock', 'pdm.lock', 'bun.lock', 'deno.lock'}
 MAX_FILE_SIZE_MB = 10
 MAX_LINE_LENGTH = 10000  # Truncate lines longer than this to prevent ReDoS (C3)
 # C2: coarse per-call wall-clock budget for scan_patterns / scan_rule_patterns.

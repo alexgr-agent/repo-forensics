@@ -235,3 +235,32 @@ class TestIssue38HexStringDescription:
                     "Long Hex String finding must not contain exec_keywords "
                     f"substring {kw!r}; found in: {tags!r}"
                 )
+
+
+def test_modern_lockfile_integrity_hashes_are_not_encoded_blobs(tmp_path):
+    """uv.lock / pdm.lock / bun.lock / deno.lock are generated lockfiles like
+    poetry.lock: every line is an integrity hash or a download URL. The text
+    scanners skip them (the dependency engines parse them), so a repo with a
+    uv.lock no longer reports hundreds of Long Hex / Base64 findings."""
+    import forensics_core as core
+    digest = "aff07c09a53a08bc8cfccb9c85b05f1aa9a2a6f23728d790723543408344ce89"
+    sri = "zYt6cz+ivnTmiT/ksRVriMBOiuoUpDCJJlZ5KPl2/FRdvwU3f7MPh9qftvbkXJThragzUZieit2nyHUyw53Seg=="
+    bodies = {
+        "uv.lock": f'sdist = {{ url = "https://files.example/x.tar.gz", hash = "sha256:{digest}", size = 1 }}\n',
+        "pdm.lock": f'    {{file = "x.whl", hash = "sha256:{digest}"}},\n',
+        "bun.lock": f'    "x": ["x@1.0.0", "", {{}}, "sha512-{sri}"],\n',
+        "deno.lock": f'    "https://deno.example/std/mod.ts": "{digest}",\n',
+    }
+    for name, body in bodies.items():
+        assert name in core.LOCKFILES
+        lock = tmp_path / name
+        lock.write_text(body)
+        assert not [f for f in scanner.scan_file(str(lock), name)
+                    if f.title in ("Long Hex String", "Base64 Encoded Block")], name
+        assert name not in {rel for _, rel in core.walk_repo(str(tmp_path))}
+
+    # The same hash in an ordinary source file is still reported.
+    other = tmp_path / "blob.py"
+    other.write_text(f'blob = "{digest}{digest}"\n')
+    assert [f for f in scanner.scan_file(str(other), other.name)
+            if f.title == "Long Hex String"]
