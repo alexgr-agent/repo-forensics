@@ -30,6 +30,28 @@ import rule_loader
 SCANNER_NAME = "sast"
 
 
+# SA-SH-004 (nested command substitution). These inner substitutions only
+# read a path, the time or a fixed setting, and $(( )) is arithmetic, so they
+# are replaced by a plain word before the rule is applied again: nesting that
+# remains around any other command is still reported.
+_INERT_SUBSTITUTION = re.compile(
+    r'\$\(\(\s*[^()]*\)\)'
+    r'|\$\(\s*(?:dirname|basename|pwd|realpath|readlink|date|nproc|mktemp|getconf'
+    r'|tput|command\s+-v|type\s+-[Pp]|git\s+rev-parse)\b(?:[^()$`]|\$(?!\())*\)')
+_MAX_INERT_PASSES = 16
+
+
+def _nesting_survives(rule, line):
+    if rule.id != "SA-SH-004":
+        return True
+    for _ in range(_MAX_INERT_PASSES):
+        stripped = _INERT_SUBSTITUTION.sub('X', line)
+        if stripped == line:
+            break
+        line = stripped
+    return rule.regex.search(line) is not None
+
+
 _DYNAMIC_IMPORT_IDS = frozenset({"SA-PY-003"})
 
 
@@ -1019,7 +1041,7 @@ def scan_file(file_path, rel_path):
                 for rule in rules:
                     if rule.id in _STRUCTURED_TLS_IDS:
                         continue
-                    if rule.regex.search(line):
+                    if rule.regex.search(line) and _nesting_survives(rule, line):
                         findings.append(core.Finding(
                             scanner=SCANNER_NAME,
                             severity=rule.severity,
@@ -1038,7 +1060,8 @@ def scan_file(file_path, rel_path):
             findings.extend(_scan_structured_tls(text, rel_path, ext, rules))
     except (OSError, UnicodeDecodeError) as e:
         print(f"[!] Skipped {rel_path}: {e}", file=sys.stderr)
-    findings = core.downgrade_inert_literal_imports(findings, source, _DYNAMIC_IMPORT_IDS)
+    findings = core.downgrade_inert_literal_imports(findings, source, _DYNAMIC_IMPORT_IDS,
+                                                    file_path, rel_path)
     return _filter_python_shell_docstring_examples(findings, source, ext)
 
 
@@ -1077,7 +1100,7 @@ def scan_text(text, rel_path, ext=None):
         for rule in rules:
             if rule.id in _STRUCTURED_TLS_IDS:
                 continue
-            if rule.regex.search(line):
+            if rule.regex.search(line) and _nesting_survives(rule, line):
                 findings.append(core.Finding(
                     scanner=SCANNER_NAME,
                     severity=rule.severity,
