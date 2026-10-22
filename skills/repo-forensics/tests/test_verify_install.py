@@ -426,3 +426,10 @@ class TestWindowsPathNormalization:
         files = verify_install.get_tracked_files(str(skill_root))
         assert not any("\\" in f for f in files), files
         assert any(f.endswith("data/x.txt") for f in files), files
+
+
+def test_windows_symlink_targets_compare_with_forward_slashes():
+    import verify_install
+    assert verify_install._portable_link("skills\\repo-forensics", sep="\\") == "skills/repo-forensics"
+    # On POSIX a backslash is part of the name, never a separator.
+    assert verify_install._portable_link("odd\\name", sep="/") == "odd\\name"

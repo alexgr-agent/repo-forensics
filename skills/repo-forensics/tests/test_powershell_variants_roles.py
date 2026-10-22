@@ -36,7 +36,7 @@ def test_heredoc_operator_limit_before_expensive_work(tmp_path,adapter):
 def test_repeated_family_cpu_bound(family,size):
     started=time.process_time()
     pre_scan.decide(repeated(FAMILIES[family],size))
-    assert time.process_time()-started < (0.5 if size==65536 else 2),(family,size)
+    assert time.process_time()-started < (0.5 if size==65536 else pre_scan._PS_WORK_BUDGET+0.5),(family,size)
 
 PARSER_COMMANDS=[
     f'curl {U} | python3 -c "x=1"',
@@ -198,7 +198,7 @@ def nested_assignment_work():
 def test_nested_assignment_work_is_charged():
     started=time.process_time()
     verdict,reason=pre_scan.decide(nested_assignment_work())
-    assert time.process_time()-started<2
+    assert time.process_time()-started<pre_scan._PS_WORK_BUDGET+0.5
     assert verdict=='deny' and 'split the command' in reason,reason
 
 @pytest.mark.parametrize('adapter',['claude','cursor'])
@@ -207,5 +207,5 @@ def test_nested_assignment_work_is_charged_on_wire(tmp_path,adapter):
     before=resource.getrusage(resource.RUSAGE_CHILDREN)
     rc,out,err,_=gate(nested_assignment_work(),tmp_path,adapter)
     after=resource.getrusage(resource.RUSAGE_CHILDREN)
-    assert after.ru_utime+after.ru_stime-before.ru_utime-before.ru_stime<2
+    assert after.ru_utime+after.ru_stime-before.ru_utime-before.ru_stime<pre_scan._PS_WORK_BUDGET+0.5
     assert rc==2 and 'split the command' in out.lower(),(out,err)

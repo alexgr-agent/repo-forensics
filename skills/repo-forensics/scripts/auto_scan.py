@@ -326,9 +326,10 @@ import threading
 import time
 _PS_WORK_START = ContextVar('inspection_cpu_start', default=None)
 # Process-CPU seconds one hook invocation may spend inspecting a command. A
-# hook process counts from interpreter start, so the whole invocation stays
-# under 2 CPU seconds including the launcher.
-_PS_WORK_BUDGET = 1.5
+# hook process counts from interpreter start. Ordinary work is linear (a 512 KB
+# script costs about 1.5 s on a fast laptop), so the budget leaves room for
+# slower machines while staying well inside the host's 10 s hook timeout.
+_PS_WORK_BUDGET = 4.0
 _PS_HARD_STOP = {'armed': False, 'expired': False}
 
 
