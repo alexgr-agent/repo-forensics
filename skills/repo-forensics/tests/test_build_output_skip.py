@@ -80,3 +80,18 @@ def test_symlinked_gitignore_is_not_trusted(tmp_path):
     except (OSError, NotImplementedError):
         return
     assert '.next/a.js' in _walked(repo)
+
+
+def test_gitignored_typescript_build_cache_is_skipped(tmp_path):
+    _tree(tmp_path, {'.gitignore': '*.tsbuildinfo\n', 'tsconfig.tsbuildinfo': '{}', 'src/a.ts': 'x'})
+    assert _walked(tmp_path) == {'.gitignore', 'src/a.ts'}
+
+
+def test_committed_typescript_build_cache_is_scanned(tmp_path):
+    _tree(tmp_path, {'tsconfig.tsbuildinfo': '{}'})
+    assert 'tsconfig.tsbuildinfo' in _walked(tmp_path)
+
+
+def test_glob_patterns_match_build_folders(tmp_path):
+    _tree(tmp_path, {'.gitignore': '.next*\n', '.next/a.js': 'y', 'next.js': 'x'})
+    assert _walked(tmp_path) == {'.gitignore', 'next.js'}

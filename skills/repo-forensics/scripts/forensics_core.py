@@ -1590,10 +1590,26 @@ def _gitignore_patterns(directory, cache):
     return patterns
 
 
+# Generated build files with the same rule (TypeScript's incremental cache is
+# a file of content hashes that reads as high-entropy noise).
+GENERATED_BUILD_FILE_SUFFIXES = ('.tsbuildinfo',)
+
+
 def is_ignored_build_output(repo_path, root, name, cache):
     """True when `root/name` is framework build output that .gitignore excludes."""
     if name not in GENERATED_BUILD_DIRS:
         return False
+    return _gitignore_lists(repo_path, root, name, cache)
+
+
+def is_ignored_build_file(repo_path, root, name, cache):
+    """True when `root/name` is a generated build file that .gitignore excludes."""
+    if not name.endswith(GENERATED_BUILD_FILE_SUFFIXES):
+        return False
+    return _gitignore_lists(repo_path, root, name, cache)
+
+
+def _gitignore_lists(repo_path, root, name, cache):
     target = os.path.join(root, name)
     repo_abs = os.path.abspath(repo_path)
     directory = os.path.abspath(root)
@@ -1607,7 +1623,7 @@ def is_ignored_build_output(repo_path, root, name, cache):
             if pattern.startswith('**/'):
                 pattern = pattern[3:]
             anchored = pattern.startswith('/') or '/' in pattern
-            hit = (pattern.lstrip('/') == rel) if anchored else (pattern == name)
+            hit = fnmatch.fnmatchcase(rel, pattern.lstrip('/')) if anchored else fnmatch.fnmatchcase(name, pattern)
             if hit:
                 if negated:
                     return False  # Re-included on purpose: scan it.
@@ -1636,6 +1652,8 @@ def walk_repo(repo_path, ignore_patterns=None, skip_dirs=None, skip_lockfiles=Tr
 
         for filename in files:
             if skip_lockfiles and filename in LOCKFILES:
+                continue
+            if is_ignored_build_file(repo_path, root, filename, gitignores):
                 continue
 
             file_path = os.path.join(root, filename)
@@ -1700,6 +1718,8 @@ def walk_aux(repo_path, ignore_patterns=None, skip_dirs=None, *,
 
         for filename in sorted(files):
             if skip_lockfiles and filename in LOCKFILES:
+                continue
+            if is_ignored_build_file(repo_path, root, filename, gitignores):
                 continue
 
             file_path = os.path.join(root, filename)
