@@ -2779,7 +2779,7 @@
     {
       "id": "SA-SH-004",
       "type": "regex",
-      "pattern": "\\$\\([^)]*\\$\\(",
+      "pattern": "\\$\\((?!\\()[^)]*\\$\\((?!\\(|\\s*(?:dirname|basename|pwd|realpath|readlink|date|uname|id|nproc|mktemp|hostname|getconf|tput|command\\s+-v|type\\s+-[Pp]|git\\s+rev-parse)\\b)",
       "extensions": [
         ".sh"
       ],
@@ -2787,16 +2787,19 @@
       "severity": "high",
       "confidence": 0.7,
       "category": "code-execution",
-      "explanation": "Nested Command Substitution (code-execution) detected in a .sh file.",
+      "explanation": "Nested command substitution (code-execution) detected in a .sh file. Arithmetic expansion and a fixed path, time or system query as the inner command (dirname, pwd, date, uname, git rev-parse and similar) are not counted.",
       "examples": {
         "match": [
           "$(echo $(whoami))",
-          "x=$(ls $(pwd))",
+          "x=$(ls $(cat dirs.txt))",
           "$( cat $(find) )"
         ],
         "no_match": [
           "$(whoami)",
-          "x=$(pwd)"
+          "x=$(pwd)",
+          "DIR=\"$(cd \"$(dirname \"$0\")\" && pwd)\"",
+          "elapsed=$(( $(date +%s) - start ))",
+          "n=$(awk -v n=\"$((i + 1))\" 1)"
         ]
       }
     },
