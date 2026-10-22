@@ -1253,7 +1253,7 @@
     {
       "id": "ST-ST-003",
       "type": "regex",
-      "pattern": "(?i)2>\\s*/dev/null.*(?<![&>|])&(?![&>])",
+      "pattern": "(?i)2>\\s*/dev/null.*(?<![&>|])&(?!&)",
       "title": "Stderr suppression with background exec",
       "severity": "high",
       "confidence": 0.7,
@@ -1277,7 +1277,7 @@
     {
       "id": "ST-ST-004",
       "type": "regex",
-      "pattern": "(?i)(>\\s*/dev/null\\s+2>&1|&>\\s*/dev/null)\\s*&(?![&>])",
+      "pattern": "(?i)(>\\s*/dev/null\\s+2>&1|&>\\s*/dev/null)\\s*&(?!&)",
       "title": "Full output suppression with background",
       "severity": "high",
       "confidence": 0.7,
