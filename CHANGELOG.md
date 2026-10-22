@@ -4,6 +4,12 @@ All notable changes to repo-forensics. Versions follow semver.
 
 ## [Unreleased]
 
+### Added
+- **Persistent adjudication downgrades.** A WARN-tier finding the adjudicator downgrades as benign can now be recorded as a rejected-claim fingerprint (rule id + repo-relative file + content hash) in the local history DB via `scripts/suppressions.py add`; exact re-matches are suppressed on later scans (including the install-time auto-scan hook) instead of re-emitting the same standing WARN. Guards: WARN tier only - BLOCK findings and pre-scan blocks can never be persisted away - any edit to the file's content re-fires the finding, every full-scan report lists all active suppressions with a one-command revoke (`suppressions.py revoke --all`), and the auto-scan hook names any suppression it applied.
+
+### Fixed
+- `run_forensics.sh`: focused `--skill-scan` mode printed "18 scanners" but launched 19. The printed counts in the run banner and usage text are now generated from the launcher list, so the number cannot drift again.
+
 ## [2.14.15] - 2026-10-16
 
 ### Fixed

@@ -28,12 +28,37 @@ unset _rf_profile_user
 PATH="${PATH#:}"
 export PATH
 
+# Focused (--skill-scan) scanner set, as "name:script" pairs. The printed
+# scanner counts in usage and in the run banner are generated from this list,
+# so the number can never drift from what actually launches.
+FOCUSED_SCANNERS=(
+    "skill_threats:scan_skill_threats.py"
+    "secrets:scan_secrets.py"
+    "dataflow:scan_dataflow.py"
+    "sast:scan_sast.py"
+    "lifecycle:scan_lifecycle.py"
+    "mcp_security:scan_mcp_security.py"
+    "runtime_dynamism:scan_runtime_dynamism.py"
+    "manifest_drift:scan_manifest_drift.py"
+    "agent_skills:scan_agent_skills.py"
+    "devcontainer:scan_devcontainer.py"
+    "oversize:scan_oversize.py"
+    "bytecode:scan_bytecode.py"
+    "archive:scan_archive.py"
+    "splitstream:scan_splitstream.py"
+    "git_forensics:scan_git_forensics.py"
+    "provenance:scan_provenance.py"
+    "dead_anchors:scan_dead_anchors.py"
+    "yara:scan_yara.py"
+    "git_config:scan_git_config.py"
+)
+
 if [ -z "${1:-}" ]; then
     echo "Usage: $0 <repo_path> [options]"
     echo ""
     echo "Modes:"
     echo "  (default)              Full audit - all 28 scanners"
-    echo "  --skill-scan           Focused on AI skill threats (18 scanners, faster)"
+    echo "  --skill-scan           Focused on AI skill threats (${#FOCUSED_SCANNERS[@]} scanners, faster)"
     echo "  --inventory            Enumerate installed AI-agent stacks (zero-LLM, JSON output)"
     echo ""
     echo "Options:"
@@ -392,31 +417,16 @@ except: print(0)
 }
 
 if $SKILL_SCAN; then
-    # Focused mode: 18 scanners most relevant to vetting skills
+    # Focused mode: the scanners most relevant to vetting skills
     if ! $MACHINE_FORMAT; then
         echo ""
-        echo "[*] Running focused skill scan (18 scanners)..."
+        echo "[*] Running focused skill scan (${#FOCUSED_SCANNERS[@]} scanners)..."
     fi
 
-    throttled_run run_scanner "skill_threats" "scan_skill_threats.py" &
-    throttled_run run_scanner "secrets" "scan_secrets.py" &
-    throttled_run run_scanner "dataflow" "scan_dataflow.py" &
-    throttled_run run_scanner "sast" "scan_sast.py" &
-    throttled_run run_scanner "lifecycle" "scan_lifecycle.py" &
-    throttled_run run_scanner "mcp_security" "scan_mcp_security.py" &
-    throttled_run run_scanner "runtime_dynamism" "scan_runtime_dynamism.py" &
-    throttled_run run_scanner "manifest_drift" "scan_manifest_drift.py" &
-    throttled_run run_scanner "agent_skills" "scan_agent_skills.py" &
-    throttled_run run_scanner "devcontainer" "scan_devcontainer.py" &
-    throttled_run run_scanner "oversize" "scan_oversize.py" &
-    throttled_run run_scanner "bytecode" "scan_bytecode.py" &
-    throttled_run run_scanner "archive" "scan_archive.py" &
-    throttled_run run_scanner "splitstream" "scan_splitstream.py" &
-    throttled_run run_scanner "git_forensics" "scan_git_forensics.py" &
-    throttled_run run_scanner "provenance" "scan_provenance.py" &
-    throttled_run run_scanner "dead_anchors" "scan_dead_anchors.py" &
-    throttled_run run_scanner "yara" "scan_yara.py" &
-    throttled_run run_scanner "git_config" "scan_git_config.py" &
+    for _focused_spec in "${FOCUSED_SCANNERS[@]}"; do
+        throttled_run run_scanner "${_focused_spec%%:*}" "${_focused_spec##*:}" &
+    done
+    unset _focused_spec
     wait
 
 else

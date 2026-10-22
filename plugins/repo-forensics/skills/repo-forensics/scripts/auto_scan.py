@@ -693,6 +693,25 @@ def run_targeted_scan(repo_path):
     return [f for f in all_findings if f.get("scanner") != "trifecta_raw"]
 
 
+def apply_adjudication_suppressions(findings, repo_path):
+    """Move persisted WARN-tier downgrades out of freshly scanned findings.
+
+    Reads the local suppressions store failure-safely (a missing or corrupt DB
+    changes nothing) and returns (active, suppressed). Only exact re-matches
+    (same rule, same repo-relative file, byte-identical content) are moved;
+    BLOCK-tier and correlation findings are never eligible.
+    """
+    try:
+        import suppressions as _supp
+        records = _supp.load_active_records()
+        if not records:
+            return findings, []
+        return _supp.partition_suppressed(findings, repo_path, records)
+    except (ImportError, OSError, ValueError, TypeError, KeyError) as e:
+        print(f"[!] Adjudication suppressions skipped: {e}", file=sys.stderr)
+        return findings, []
+
+
 def build_pipe_to_shell_warning(command):
     """Build CRITICAL warning for pipe-to-shell commands."""
     return [{
@@ -711,7 +730,31 @@ def build_pipe_to_shell_warning(command):
     }]
 
 
-def format_output(findings, command='', pattern_type='', scanned_target=''):
+def _format_suppression_lines(adjudication_suppressed):
+    """One compact line surfacing persisted-adjudication filtering plus the
+    inspect/revoke commands. Every report that applied suppressions must name
+    them — a silent 'no issues found' over suppressed WARNs would be a false
+    clean."""
+    if not adjudication_suppressed:
+        return []
+    try:
+        import suppressions as _supp
+        active_count = len(_supp.load_active_records())
+        return [
+            f"[repo-forensics] {len(adjudication_suppressed)} finding(s) "
+            f"suppressed by prior adjudication ({active_count} active). "
+            f"List: {_supp.command_hint('list')} — "
+            f"revoke: {_supp.command_hint('revoke', '--all')}"
+        ]
+    except (ImportError, OSError, ValueError, TypeError):
+        return [
+            f"[repo-forensics] {len(adjudication_suppressed)} finding(s) "
+            f"suppressed by prior adjudication."
+        ]
+
+
+def format_output(findings, command='', pattern_type='', scanned_target='',
+                  adjudication_suppressed=None):
     """Format scan results as plain text so Claude Code surfaces it to the model.
 
     Always produces output when a scan ran (even if clean) so the model knows
@@ -721,8 +764,10 @@ def format_output(findings, command='', pattern_type='', scanned_target=''):
     severity_order = {'critical': 0, 'high': 1, 'medium': 2, 'low': 3}
 
     if not findings:
-        if scanned_target:
-            return f"[repo-forensics] auto-scan complete: {scanned_target} — no issues found."
+        if scanned_target or adjudication_suppressed:
+            lines = [f"[repo-forensics] auto-scan complete: {scanned_target or 'scan'} — no issues found."]
+            lines.extend(_format_suppression_lines(adjudication_suppressed))
+            return '\n'.join(lines)
         return ''
 
     findings.sort(key=lambda f: severity_order.get(f.get('severity', 'low'), 3))
@@ -773,6 +818,10 @@ def format_output(findings, command='', pattern_type='', scanned_target=''):
         lines.append(f"VERDICT: {critical_count} CRITICAL finding(s). Do not proceed without review.")
     elif high_count > 0:
         lines.append(f"VERDICT: {high_count} HIGH finding(s). Review before proceeding.")
+
+    # Persistent adjudication suppressions: surface what was filtered and how
+    # to inspect/revoke it. One compact line — hook output stays terse.
+    lines.extend(_format_suppression_lines(adjudication_suppressed))
 
     # Adjudication block (U8): WARN-tier findings get an injection-safe block
     # the host agent reads as tool output. auto_scan does not run aggregate_json,
@@ -848,6 +897,7 @@ def main(argv=None):
         sys.exit(0)
 
     all_findings = []
+    adjudication_suppressed = []
     scanned_target = ''
 
     # For package install commands: check IOC list
@@ -868,6 +918,9 @@ def main(argv=None):
         if clone_dir and os.path.isdir(clone_dir):
             scanned_target = clone_dir
             scan_findings = run_targeted_scan(clone_dir)
+            scan_findings, _adj_supp = apply_adjudication_suppressions(
+                scan_findings, clone_dir)
+            adjudication_suppressed.extend(_adj_supp)
             all_findings.extend(scan_findings)
 
     # For git pull / uv sync / bare lockfile install: scan CWD (repo or its
@@ -883,6 +936,9 @@ def main(argv=None):
         if os.path.isdir(cwd) and _is_safe_scan_path(cwd):
             scanned_target = cwd
             scan_findings = run_targeted_scan(cwd)
+            scan_findings, _adj_supp = apply_adjudication_suppressions(
+                scan_findings, cwd)
+            adjudication_suppressed.extend(_adj_supp)
             all_findings.extend(scan_findings)
 
     # For pip/npm-style install with a local path: scan it (with path containment)
@@ -893,9 +949,13 @@ def main(argv=None):
             if os.path.isdir(pkg_path) and _is_safe_scan_path(pkg_path):
                 scanned_target = pkg_path
                 scan_findings = run_targeted_scan(pkg_path)
+                scan_findings, _adj_supp = apply_adjudication_suppressions(
+                    scan_findings, pkg_path)
+                adjudication_suppressed.extend(_adj_supp)
                 all_findings.extend(scan_findings)
 
-    output = format_output(all_findings, command, pattern_type, scanned_target)
+    output = format_output(all_findings, command, pattern_type, scanned_target,
+                           adjudication_suppressed=adjudication_suppressed)
     emit_report(adapter, output)
     sys.exit(0)
 
