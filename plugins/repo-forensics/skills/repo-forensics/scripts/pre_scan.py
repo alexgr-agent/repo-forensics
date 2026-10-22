@@ -76,7 +76,7 @@ class _PmPattern:
         valid = [None] * (len(words) + 2)
         reserved = re.compile(r'(?:install|i|add|update|sync|pip|tool|remove|run)\b')
         for i in range(len(words) - 1, -1, -1):
-            if not i % 256:
+            if not i % 16:
                 _ps_check_work()
             word = words[i][0]
             if re.fullmatch(r'-{1,2}[^-\s]\S*', word) and words[i].end() < len(command):
@@ -128,7 +128,7 @@ def has_pipe_to_shell(command):
         return True
     fetched_pipe = fetched_file = False
     for index, event in enumerate(_PIPE_EVENTS.finditer(command)):
-        if not index % 256:
+        if not index % 16:
             _ps_check_work()
         if event[0] == '|':
             if fetched_pipe and _PIPE_SINK.match(command, event.start()):
@@ -275,20 +275,85 @@ class _PsInspectionLimit(Exception):
 
 
 from contextvars import ContextVar
+import signal
+import threading
 import time
 _PS_WORK_START = ContextVar('inspection_cpu_start', default=None)
+# Process-CPU seconds one hook invocation may spend inspecting a command. A
+# hook process counts from interpreter start, so the whole invocation stays
+# under 2 CPU seconds including the launcher.
+_PS_WORK_BUDGET = 1.5
+_PS_HARD_STOP = {'armed': False, 'expired': False}
 
 
 def _ps_check_work():
     started = _PS_WORK_START.get()
-    if started is not None and time.process_time() - started > 1.75:
+    if started is not None and (_PS_HARD_STOP['expired'] or time.process_time() - started > _PS_WORK_BUDGET):
         raise _PsInspectionLimit('inspection work budget exceeded')
 
 
-def _ps_guard_inspection(operation, *args, on_error):
+_PS_TICKS = [0]
+
+
+def _ps_tick():
+    """Cheap budget check for hot helpers called from nested token loops."""
+    _PS_TICKS[0] += 1
+    if not _PS_TICKS[0] & 1023:
+        _ps_check_work()
+
+
+def _ps_on_budget_signal(signum, frame):
+    _PS_HARD_STOP['expired'] = True
+    # Never raise inside the guard itself: it is entering or leaving the
+    # timer, and its own final check turns the expired flag into a refusal.
+    if _PS_HARD_STOP['armed'] and frame is not None and frame.f_code not in _PS_HARD_STOP_QUIET:
+        raise _PsInspectionLimit('inspection work budget exceeded')
+
+
+def _ps_arm_hard_stop():
+    """Make the work budget a hard stop, not only a check between steps.
+
+    On POSIX, in the main thread, a process-CPU timer interrupts whatever
+    Python code is running once the budget is spent, and keeps re-firing every
+    20 ms so a broad except cannot swallow it. Elsewhere (Windows, worker
+    threads) the cooperative checks remain the only bound.
+    """
+    if _PS_HARD_STOP['armed'] or not hasattr(signal, 'setitimer'):
+        return None
+    if threading.current_thread() is not threading.main_thread():
+        return None
+    started = _PS_WORK_START.get()
+    remaining = _PS_WORK_BUDGET - (time.process_time() - started if started is not None else 0.0)
+    try:
+        previous = signal.signal(signal.SIGPROF, _ps_on_budget_signal)
+    except (ValueError, OSError):
+        return None
+    _PS_HARD_STOP.update(armed=True, expired=False)
+    try:
+        prior_timer = signal.setitimer(signal.ITIMER_PROF, max(remaining, 0.001), 0.02)
+    except (ValueError, OSError, AttributeError):
+        _PS_HARD_STOP.update(armed=False)
+        signal.signal(signal.SIGPROF, previous)
+        return None
+    return previous, prior_timer
+
+
+def _ps_disarm_hard_stop(state):
+    if state is None:
+        return
+    signal.setitimer(signal.ITIMER_PROF, 0)
+    _PS_HARD_STOP.update(armed=False, expired=False)
+    signal.signal(signal.SIGPROF, state[0])
+    if state[1][0] > 0:
+        signal.setitimer(signal.ITIMER_PROF, *state[1])
+
+
+def _ps_guard_inspection(operation, *args, on_error, hard_stop=True):
     """Unexpected inspection failures cannot approve work or leak tracebacks."""
     token = _PS_WORK_START.set(time.process_time()) if _PS_WORK_START.get() is None else None
+    armed = None
     try:
+        armed = _ps_arm_hard_stop() if hard_stop else None
         result = operation(*args)
         _ps_check_work()
         return result
@@ -297,8 +362,12 @@ def _ps_guard_inspection(operation, *args, on_error):
     except Exception:
         return on_error
     finally:
+        _ps_disarm_hard_stop(armed)
         if token is not None:
             _PS_WORK_START.reset(token)
+
+
+_PS_HARD_STOP_QUIET = frozenset((_ps_guard_inspection.__code__, _ps_disarm_hard_stop.__code__, _ps_arm_hard_stop.__code__))
 
 
 class _PsTokens(list):
@@ -346,7 +415,7 @@ def _ps_shell_hosts(command):
     command = re.sub(r'\$\((?:which|command\s+-v)\s+(pwsh|powershell)(?:\.exe)?\s*\)|`(?:which|command\s+-v)\s+(pwsh|powershell)(?:\.exe)?\s*`', lambda m: m[1] or m[2], command, flags=re.I)
     output, i = [], 0
     while i < len(command):
-        if not i % 256:
+        if not i % 16:
             _ps_check_work()
         if command[i].isspace():
             span = _PS_SPACE.match(command, i)
@@ -411,6 +480,7 @@ _PS_LAUNCHERS = frozenset(_PS_LAUNCH_OPTIONS) | frozenset((
 
 def _ps_position(tokens, index, start=0):
     """Walk launcher argv roles; stop at a real command's arguments."""
+    _ps_tick()
     if index == start or tokens[index - 1][1] in ('(', '|', ';', '{', '&', '.', '=', '-command', '-c', '/c', '/command', 'in'):
         return True
     if not isinstance(tokens, _PsTokens):
@@ -462,11 +532,13 @@ def _ps_position(tokens, index, start=0):
 
 
 def _ps_command_flag(value):
+    _ps_tick()
     flag = value.lstrip('-/').split(':', 1)[0].lower()
     return value.startswith(('-', '/')) and (flag == 'c' or (len(flag) >= 2 and 'command'.startswith(flag)) or (flag == 'cwa' or (len(flag) >= 7 and 'commandwithargs'.startswith(flag))))
 
 
 def _ps_code_flag(value, host):
+    _ps_tick()
     if host in _PS_SHELL:
         return bool(re.fullmatch(r'-[a-zA-Z]*c[a-zA-Z]*', value))
     return _ps_command_flag(value)
@@ -508,7 +580,7 @@ def _ps_tokens(command, dialect='shell'):
         c = command[i]
         if not c.isspace():
             fragments += 1
-            if not fragments % 256:
+            if not fragments % 16:
                 _ps_check_work()
             if fragments > 2097152:
                 raise _PsInspectionLimit('executable fragment count limit exceeded')
@@ -634,13 +706,89 @@ def _ps_tokens(command, dialect='shell'):
     return tokens
 
 
+def _ps_glob_units(pattern, longest):
+    """Parse a wildcard word in one pass; None when it cannot match a short name.
+
+    A command word is attacker text, so it is never handed to fnmatch as a
+    pattern (fnmatch rescans for ']' after every '[', which is quadratic). Each
+    '[' looks for its closing ']' only when one exists further on, so the scan
+    is linear, and a word with more single-character units than the longest
+    candidate name cannot match any of them.
+    """
+    units, at, end = [], 0, len(pattern)
+    last_close = pattern.rfind(']')
+    singles = 0
+    while at < end:
+        char = pattern[at]
+        at += 1
+        if char == '*':
+            if not units or units[-1] != '*':
+                units.append('*')
+            continue
+        singles += 1
+        if singles > longest:
+            return None
+        if char == '?':
+            units.append('?')
+            continue
+        if char == '[':
+            start = at + (at < end and pattern[at] == '!')
+            start += start < end and pattern[start] == ']'
+            if start <= last_close:
+                close = pattern.find(']', start)
+                body = pattern[at:close]
+                negate = body.startswith('!')
+                body = body[1:] if negate else body
+                spans, k = [], 0
+                while k < len(body):
+                    if k + 2 < len(body) and body[k + 1] == '-':
+                        spans.append((body[k], body[k + 2]))
+                        k += 3
+                    else:
+                        spans.append((body[k], body[k]))
+                        k += 1
+                units.append((negate, tuple(spans)))
+                at = close + 1
+                continue
+        units.append(char)
+    return units
+
+
+def _ps_glob_unit_matches(unit, char):
+    if unit == '?':
+        return True
+    if isinstance(unit, str):
+        return unit == char
+    negate, spans = unit
+    return any(low <= char <= high for low, high in spans) != negate
+
+
+def _ps_glob_matches(pattern, names):
+    """Return the names a PowerShell/fnmatch-style wildcard word matches."""
+    names = sorted(names)
+    units = _ps_glob_units(pattern, max(map(len, names)))
+    if units is None:
+        return []
+    matched = []
+    for name in names:
+        reach = [True] + [False] * len(name)
+        for unit in units:
+            if unit == '*':
+                for k in range(1, len(reach)):
+                    reach[k] = reach[k] or reach[k - 1]
+                continue
+            reach = [False] + [reach[k] and _ps_glob_unit_matches(unit, name[k]) for k in range(len(name))]
+        if reach[-1]:
+            matched.append(name)
+    return matched
+
+
 def _ps_known_command(value):
     name = value.lower().replace('\\', '/').rsplit('/', 1)[-1]
     if name in _PS_COMMAND_NAMES:
         return name
     if any(char in name for char in '*?['):
-        import fnmatch
-        matches = [host for host in _PS_HOST if fnmatch.fnmatchcase(host, name)]
+        matches = _ps_glob_matches(name, _PS_HOST)
         if matches:
             return matches[0]
     return ''
@@ -657,7 +805,7 @@ def _ps_normalize_tokens(tokens, dialect):
     def lookup(scopes, name):
         return next((scope[name] for scope in reversed(scopes) if name in scope), None)
     while at < len(tokens):
-        if not at % 256:
+        if not at % 16:
             _ps_check_work()
         kind, value = tokens[at]
         if _ps_name(tokens, at) in _PS_FETCH and _ps_position(tokens, at):
@@ -720,8 +868,7 @@ def _ps_normalize_tokens(tokens, dialect):
             at += 2
             continue
         if value == '&' and at + 4 < len(tokens) and tokens[at + 1][1] == '(' and tokens[at + 2][1] in ('gcm', 'get-command') and tokens[at + 4][1] == ')':
-            import fnmatch
-            names = [name for name in _PS_EXEC | _PS_HOST if fnmatch.fnmatchcase(name, tokens[at + 3][1].lower())]
+            names = _ps_glob_matches(tokens[at + 3][1].lower(), _PS_EXEC | _PS_HOST)
             if names and (all(name in _PS_EXEC for name in names) or all(name in _PS_HOST for name in names)):
                 output.append(('word', names[0]))
                 at += 5
@@ -744,7 +891,7 @@ def _ps_tuple_assignments(tokens):
     output = _PsTokens()
     at = 0
     while at < len(tokens):
-        if not at % 256:
+        if not at % 16:
             _ps_check_work()
         first = at
         targets = []
@@ -920,6 +1067,7 @@ def _ps_embedded_programs(tokens, index, stop=None):
 
 
 def _ps_name(tokens, index):
+    _ps_tick()
     kind, value = tokens[index]
     # Quoted names are invoked ONLY after &, never just because text names a tool.
     if kind in ('string', 'double') and not (index and tokens[index - 1] in (('symbol', '&'), ('word', '.'))):
@@ -930,8 +1078,9 @@ def _ps_name(tokens, index):
 
 
 def _ps_fetches(tokens, functions=()):
+    _ps_tick()
     for i, (kind, value) in enumerate(tokens):
-        if not i % 256:
+        if not i % 16:
             _ps_check_work()
         name = _ps_name(tokens, i)
         if name in _PS_FETCH or name in functions:
@@ -1155,7 +1304,7 @@ def _ps_without_literal_heredocs(command):
             latest_sink = max((basenames.get(_ps_name(view, at), -1) for at in range(len(view)) if _ps_name(view, at) in sinks and _ps_position(view, at)), default=-1)
         return latest_sink > position
     while i < len(lines):
-        if not i % 256:
+        if not i % 16:
             _ps_check_work()
         line = lines[i]
         inside_quote = quote is not None
@@ -1315,7 +1464,7 @@ def _ps_assignments(tokens, start, stop):
             continue
         depth, end = 0, i
         while end < len(tokens):
-            if not end % 256:
+            if not end % 16:
                 _ps_check_work()
             kind, value = tokens[end]
             if kind == 'symbol' and value in ('(', '{'):
@@ -1341,7 +1490,7 @@ def _ps_brace_scopes(tokens):
     # walking backwards from each one made ordinary padding quadratic.
     pairs, parens = {}, []
     for index, token in enumerate(tokens):
-        if not index % 256:
+        if not index % 16:
             _ps_check_work()
         if token == ('symbol', '('):
             parens.append(index)
@@ -1349,7 +1498,7 @@ def _ps_brace_scopes(tokens):
             pairs[index] = parens.pop()
     kinds, chains, stack, chain = [], [], [], ()
     for i, token in enumerate(tokens):
-        if not i % 256:
+        if not i % 16:
             _ps_check_work()
         kinds.append(stack[-1][1] if stack else None)
         chains.append(chain)
@@ -1397,7 +1546,7 @@ def _ps_group_end(tokens, i):
     """Index of the bracket closing tokens[i], or len(tokens) when unbalanced."""
     depth = 0
     for j in range(i, len(tokens)):
-        if not j % 256:
+        if not j % 16:
             _ps_check_work()
         if tokens[j][0] == 'symbol' and tokens[j][1] in ('(', '{'):
             depth += 1
@@ -1412,7 +1561,7 @@ def _ps_top_level(tokens, test):
     """First index of a token at bracket depth 0 for which test(token) holds."""
     i = 0
     while i < len(tokens):
-        if not i % 256:
+        if not i % 16:
             _ps_check_work()
         if tokens[i][0] == 'symbol' and tokens[i][1] in ('(', '{'):
             i = _ps_group_end(tokens, i)
@@ -1484,7 +1633,7 @@ def _ps_expr(tokens, remote_vars, collection_vars, dialect='shell', depth=0):
     pending = None  # (sanitizes, shape) of a standalone cast waiting for its operand
     i = 0
     while i < len(tokens):
-        if not i % 256:
+        if not i % 16:
             _ps_check_work()
         kind, value = tokens[i]
         if kind == 'word' and _PS_CAST.fullmatch(value):
@@ -1541,6 +1690,7 @@ def _ps_derives_remote(tokens, remote_vars):
     Covers plain copies ($b=$a, ($a), [string]$a, "$a", $a.Trim()), appends
     and concatenation. Unrelated members ($a.Length) stay untainted.
     """
+    _ps_tick()
     if not remote_vars:
         return False
     for kind, value in tokens:
@@ -1552,6 +1702,7 @@ def _ps_derives_remote(tokens, remote_vars):
 
 
 def _ps_path(value):
+    _ps_tick()
     value = value.lower().replace('\\', '/')
     value = re.sub(r'^\$(?:pwd|\{pwd\})/', '', value)
     value = re.sub(r'^/(?:mnt/)?([a-z])/', r'\1:/', value)
@@ -1574,7 +1725,7 @@ def _ps_reads_remote(tokens, remote_files, clipboard=False):
 def _ps_download_paths(tokens):
     """Interpret downloader output argv, including default URL basenames."""
     for i in range(len(tokens)):
-        if not i % 256:
+        if not i % 16:
             _ps_check_work()
         name = _ps_name(tokens, i)
         if name not in _PS_FETCH or not _ps_position(tokens, i):
@@ -1638,6 +1789,7 @@ def _ps_profile_write(tokens):
 
 def _ps_remote_program_input(value, depth=0):
     """Command substitutions yield program text only at a code argv site."""
+    _ps_tick()
     if depth > 32:
         raise _PsInspectionLimit('executable nesting limit exceeded')
     expressions = list(_ps_subexpressions(value))
@@ -1666,7 +1818,7 @@ def _ps_file_flow(tokens, remote_files, clipboard, remote_vars, depth=0):
     fetched = _ps_fetches(tokens) or _ps_derives_remote(tokens, remote_vars)
     names, remote_url = [], False
     for i, (_, value) in enumerate(tokens):
-        if not i % 256:
+        if not i % 16:
             _ps_check_work()
         names.append(_ps_name(tokens, i))
         remote_url = remote_url or bool(re.search(r'https?://', value, re.I))
@@ -1693,7 +1845,7 @@ def _ps_file_flow(tokens, remote_files, clipboard, remote_vars, depth=0):
         if url_at is not None and url_at + 1 < len(tokens) and not tokens[url_at + 1][1].startswith('-'):
             remote_files.add(_ps_path(tokens[url_at + 1][1]))
     for i, (kind, value) in enumerate(tokens):
-        if not i % 256:
+        if not i % 16:
             _ps_check_work()
         if fetched and value in ('-outfile', '-o', '-destination') and i + 1 < len(tokens):
             remote_files.add(_ps_path(tokens[i + 1][1]))
@@ -1721,7 +1873,7 @@ def _ps_file_flow(tokens, remote_files, clipboard, remote_vars, depth=0):
             clipboard = True
     # Inspect executable paths and reads, not arbitrary data arguments.
     for i, (kind, value) in enumerate(tokens):
-        if not i % 256:
+        if not i % 16:
             _ps_check_work()
         name = names[i]
         path_match = _ps_path(value) in remote_files
@@ -1789,7 +1941,7 @@ def _ps_file_flow(tokens, remote_files, clipboard, remote_vars, depth=0):
 def _ps_named_writes(tokens, remote_vars, function_returns, owner):
     """Remote-returning commandlets and flow bindings share normal taint."""
     for i, (kind, value) in enumerate(tokens):
-        if not i % 256:
+        if not i % 16:
             _ps_check_work()
         if value in ('set-variable', 'new-variable', 'sv', 'nv') and _ps_position(tokens, i):
             at = i + 1
@@ -1861,7 +2013,7 @@ def detects_powershell_execution(command, depth=0, heredocs_masked=False, dialec
     # have their own scope, so an unused function cannot rename outer commands.
     aliases = [{}]
     for i in range(len(tokens)):
-        if not i % 256:
+        if not i % 16:
             _ps_check_work()
         kind, value = tokens[i]
         if (kind, value) == ('symbol', '{'):
@@ -1903,9 +2055,14 @@ def detects_powershell_execution(command, depth=0, heredocs_masked=False, dialec
 
     file_scopes, function_returns, clipboards = {}, set(), {}
     pending_scripts = set()
+    # Index of the next here-string operator at or after each token, so the
+    # per-command `<<<` checks below do not rescan the rest of the statement.
+    next_herestring = [len(tokens)] * (len(tokens) + 1)
+    for k in range(len(tokens) - 1, -1, -1):
+        next_herestring[k] = k if tokens[k][1] == '<<<' else next_herestring[k + 1]
     start = 0
     for stop in range(len(tokens) + 1):
-        if not stop % 256:
+        if not stop % 16:
             _ps_check_work()
         if stop < len(tokens) and tokens[stop] != ('symbol', ';'):
             continue
@@ -1960,7 +2117,13 @@ def detects_powershell_execution(command, depth=0, heredocs_masked=False, dialec
                 shape = shape if kind is None else kind
                 if shape:
                     as_collection.append(t)
-            clean = {t for n, t in enumerate(targets) if any(target_sans[n:])}
+            # A target is clean when it or any target to its right sanitizes;
+            # one right-to-left pass keeps long `$a=$b=...` chains linear.
+            clean, sanitized = set(), False
+            for n in range(len(targets) - 1, -1, -1):
+                sanitized = sanitized or bool(target_sans[n])
+                if sanitized:
+                    clean.add(targets[n])
             as_scalar = [t for t in targets if t not in as_collection]
             if as_collection:
                 shapes.update(as_collection)
@@ -1971,7 +2134,7 @@ def detects_powershell_execution(command, depth=0, heredocs_masked=False, dialec
             if clears:
                 owner.difference_update(t for t in targets if t in clean or not tainted)
         for j in range(start, stop):
-            if not j % 256:
+            if not j % 16:
                 _ps_check_work()
             rv = visible(j)
             name = _ps_name(tokens, j)
@@ -1997,7 +2160,7 @@ def detects_powershell_execution(command, depth=0, heredocs_masked=False, dialec
             if name in _PS_STDIN_HOST and positioned and _ps_pipe_before(tokens, j, start) and _ps_fetches(tokens[start:j]) and _ps_interpreter_uses_download(tokens, j, stop, name):
                 return True
             if name in _PS_CODE_HOST | {'source', '.'} and positioned:
-                if any(value == '<<<' for _, value in tokens[j + 1:stop]) and any(_ps_remote_program_input(value) for kind, value in tokens[j + 1:stop] if kind in ('string','double')):
+                if next_herestring[j + 1] < stop and any(_ps_remote_program_input(value) for kind, value in tokens[j + 1:stop] if kind in ('string','double')):
                     return True
                 operand=j+1
                 while operand<stop and (tokens[operand][1].startswith('-') or tokens[operand][1] in ('<','/dev/stdin')):operand+=1
@@ -2005,7 +2168,7 @@ def detects_powershell_execution(command, depth=0, heredocs_masked=False, dialec
                     return True
             if (name in _PS_HOST or name in _PS_SHELL or name in ('cmd', 'cmd.exe')) and positioned:
                 for k in range(j + 1, stop):
-                    if not k % 256:
+                    if not k % 16:
                         _ps_check_work()
                     kind, value = tokens[k]
                     if kind == 'symbol' and value in ('|', ')', '}'):
@@ -2030,7 +2193,7 @@ def detects_powershell_execution(command, depth=0, heredocs_masked=False, dialec
                     if j and tokens[j - 1][1] in ('start-process', 'saps'):
                         if any(kind in ('string', 'double') and detects_powershell_execution('pwsh ' + value, depth + 1) for kind, value in tokens[j + 1:stop]):
                             return True
-                    if any(value == '<<<' for kind, value in tokens[j + 1:stop]):
+                    if next_herestring[j + 1] < stop:
                         if any(kind in ('string','double') and any(_ps_fetches(_ps_tokens(expr)) for expr in _ps_subexpressions(value)) for kind,value in tokens[j+1:stop]):
                             return True
                         if any(kind in ('string', 'double') and detects_powershell_execution(value, depth + 1, dialect='powershell') for kind, value in tokens[j + 1:stop]):
@@ -2641,7 +2804,7 @@ def _main(argv=None):
 
 
 def main(argv=None):
-    result = _ps_guard_inspection(_main, argv,
+    result = _ps_guard_inspection(_main, argv, hard_stop=False,
         on_error=(hook_adapter.DENY, '[repo-forensics] Inspection failed; split the command and retry.'))
     if result is not None:
         args = list(sys.argv[1:]) if argv is None else list(argv)
@@ -2651,4 +2814,7 @@ def main(argv=None):
 
 
 if __name__ == '__main__':
+    # This process exists only for the check: charge interpreter start-up
+    # and envelope parsing to the same work budget.
+    _PS_WORK_START.set(0.0)
     main()

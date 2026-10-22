@@ -197,9 +197,16 @@ JSON output for automation:
 
 ### Hook inspection limits
 
-The command gate inspects the tested ordinary scripts and executable heredocs through 512 KiB. Its stdin JSON envelope is limited to 1 MiB. Pathological syntax can stop inspection at 256 heredoc openers on one line, 4,096 levels of lexical or launcher nesting, 32 executable recursion levels, or a 1.75-second process-CPU work budget. Refusals name incomplete inspection and ask you to split the command. Scheduling delays do not affect the verdict.
+The command gate inspects the tested ordinary scripts and executable heredocs through 512 KiB. Its stdin JSON envelope is limited to 1 MiB. Pathological syntax can stop inspection at 256 heredoc openers on one line, 4,096 levels of lexical or launcher nesting, 32 executable recursion levels, or a 1.5-second process-CPU work budget counted from interpreter start. On macOS and Linux a process-CPU timer enforces the budget as a hard stop, so one hook invocation stays under 2 CPU seconds whatever the input. On Windows the budget is checked between inspection steps. Refusals name incomplete inspection and ask you to split the command. Scheduling delays do not affect the verdict.
 
-Known limits: this is a bounded static detector, not a general shell or PowerShell interpreter. Unsupported cases remain for shell escape/alias and descriptor obfuscations, custom network-producing programs, COM response objects, assembly and job execution, indirect process launch interfaces, and persistence through non-PowerShell startup files, scheduler/service/registry interfaces, or generated task files. Do not assume those families are covered. The tested PowerShell profile writes are covered.
+Known limits: the PowerShell check is a bounded detector for the common download-and-run forms in issue #55 (`irm | iex`, `iex (irm ...)`, `DownloadString | iex`, `[scriptblock]::Create(...)`, `powershell -enc ...` and their tested spellings). It is not a complete shell or PowerShell parser, and new spellings of the same idea can get through. In the round-four review it refused 161 of 270 fresh ordinary and launcher-wrapped variants (released 2.14.15 refused 72) and lost none of the earlier refusals. Known gaps:
+
+- Launchers it does not recognise in front of an interpreter, such as `runuser`, `systemd-run`, `firejail`, `conda run`, `poetry run`, `cmd /c start`, `runas` or `psexec`.
+- Downloads handed to an interpreter through `<(...)`, `<<<`, a variable plus `eval`, or a saved file that a later command runs, and fetches by other programs (`lynx`, `w3m`, `php`).
+- `$SHELL`, `$(which bash)` and other computed interpreter names, and runtimes that fetch and run code themselves (`deno run URL`, `node -e` with `fetch`, Python `urllib` plus `exec`).
+- Shell escape, alias and descriptor obfuscation, COM response objects, assembly and job execution, indirect process launch, and persistence through non-PowerShell startup files, scheduler, service or registry interfaces, or generated task files.
+
+Do not assume those families are covered. The tested PowerShell profile writes are covered.
 
 ### Dead-anchor coverage and known scope (Skilljacking / repojacking)
 
