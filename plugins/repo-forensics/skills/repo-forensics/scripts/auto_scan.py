@@ -2382,13 +2382,19 @@ def _is_safe_scan_path(resolved_path):
     from pathlib import PurePath
     cwd = os.getcwd()
     try:
-        # PurePath.is_relative_to handles all edge cases (cwd='/', symlinks, etc.)
         p = PurePath(resolved_path)
-        return (p.is_relative_to(cwd)
-                or p.is_relative_to('/tmp')
-                or p.is_relative_to('/private/tmp'))
-    except (TypeError, ValueError):
+    except TypeError:
         return False
+
+    def _within(base):
+        # Same answer as PurePath.is_relative_to (3.9+), which 3.8 lacks.
+        try:
+            p.relative_to(base)
+            return True
+        except ValueError:
+            return False
+
+    return _within(cwd) or _within('/tmp') or _within('/private/tmp')
 
 
 def extract_clone_target(match):
