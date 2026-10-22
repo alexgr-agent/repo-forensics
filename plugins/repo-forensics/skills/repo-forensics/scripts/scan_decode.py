@@ -81,6 +81,7 @@ import os
 import re
 import sys
 import time
+import warnings
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import forensics_core as core
@@ -376,6 +377,14 @@ _DANGEROUS_ATTR_CALLS = {
 }
 
 
+def _parse_quietly(text):
+    """ast.parse without letting SyntaxWarning (e.g. invalid escape sequences
+    in a decoded blob) leak to stderr."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        return ast.parse(text)
+
+
 def _attr_root_name(node):
     """Return the leftmost identifier of an attribute chain (`os.path.join` -> 'os',
     `shutil.rmtree` -> 'shutil'), or None if the chain bottoms out in something
@@ -399,7 +408,7 @@ def _ast_has_dangerous_call(text):
     ONLY `ast.parse` (a pure parser) is used — never compile/exec/eval, so the
     no-exec invariant and the AST self-check test stay green."""
     try:
-        tree = ast.parse(text)
+        tree = _parse_quietly(text)
     except (SyntaxError, ValueError, MemoryError, RecursionError):
         return False
     for node in ast.walk(tree):
@@ -470,7 +479,7 @@ def _looks_code_like(text):
         a one-line benign string ("hello world") does not register as code.
     Prose raises SyntaxError under either branch and returns False."""
     try:
-        tree = ast.parse(text)
+        tree = _parse_quietly(text)
     except (SyntaxError, ValueError, MemoryError, RecursionError):
         return False
     body = getattr(tree, "body", [])

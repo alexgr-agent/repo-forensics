@@ -20,7 +20,7 @@ import rule_loader
 
 def _ids(tmp_path, name, body):
     f = tmp_path / name
-    f.write_text(body, newline="")
+    f.open("w", newline="").write(body)
     return [(x.rule_id, x.severity) for x in scan_sast.scan_file(str(f), name)]
 
 
@@ -54,7 +54,7 @@ class TestLogicalLinesRegression:
 
 def _w(tmp_path, name, body):
     f = tmp_path / name
-    f.write_text(body, newline="")
+    f.open("w", newline="").write(body)
     return f
 
 
@@ -124,7 +124,7 @@ class TestSandboxMarkerSplit:
     def _run(self, tmp_path, name, body):
         import scan_runtime_dynamism
         f = tmp_path / name
-        f.write_text(body, newline="")
+        f.open("w", newline="").write(body)
         return [(x.rule_id, x.severity, x.category)
                 for x in scan_runtime_dynamism.scan_file(str(f), name)]
 

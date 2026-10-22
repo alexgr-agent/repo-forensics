@@ -1,9 +1,9 @@
 {
-  "bundle_version": 7,
-  "generated": "2026-10-16",
+  "bundle_version": 8,
+  "generated": "2026-10-22",
   "packs": {
     "dead_anchors": {
-      "pack_version": 7,
+      "pack_version": 8,
       "rules": [
         {
           "category": "dead-anchor-extract",
@@ -279,7 +279,7 @@
       "schema_version": "1.0"
     },
     "mcp_security": {
-      "pack_version": 7,
+      "pack_version": 8,
       "rules": [
         {
           "category": "sql-injection",
@@ -1280,7 +1280,7 @@
       "schema_version": "1.0"
     },
     "runtime_dynamism": {
-      "pack_version": 7,
+      "pack_version": 8,
       "rules": [
         {
           "asset": "loaded code",
@@ -2778,7 +2778,7 @@
       "schema_version": "1.0"
     },
     "sast": {
-      "pack_version": 7,
+      "pack_version": 8,
       "rules": [
         {
           "asset": "server runtime",
@@ -6515,7 +6515,7 @@
       "schema_version": "1.0"
     },
     "secrets": {
-      "pack_version": 7,
+      "pack_version": 8,
       "rules": [
         {
           "asset": "asymmetric private key",
@@ -7531,7 +7531,7 @@
       "schema_version": "1.0"
     },
     "shared": {
-      "pack_version": 7,
+      "pack_version": 8,
       "rules": [
         {
           "category": "shared-verb-list",
@@ -7727,7 +7727,7 @@
       "schema_version": "1.0"
     },
     "skill_threats": {
-      "pack_version": 9,
+      "pack_version": 10,
       "rules": [
         {
           "asset": "agent behavior",
@@ -8921,12 +8921,14 @@
             ],
             "no_match": [
               "credentials documentation",
-              "pass the test"
+              "pass the test",
+              "# In 3.11, we need to pass show_caches=True.",
+              "bypass showing the dialog"
             ]
           },
           "explanation": "Accessing credential stores.",
           "id": "ST-SP-007",
-          "pattern": "(?i)(credential-store|git-credential|pass\\s+show)",
+          "pattern": "(?i)(credential-store|git-credential|\\bpass\\s+show\\b)",
           "severity": "high",
           "title": "Accessing credential stores",
           "type": "regex"

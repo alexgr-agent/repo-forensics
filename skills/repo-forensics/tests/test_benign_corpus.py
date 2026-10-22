@@ -413,7 +413,7 @@ _extended_items = _extended_corpus_items()
 @pytest.mark.parametrize(
     "abs_path",
     [item[0] for item in _extended_items],
-    ids=lambda p: os.path.basename(p),
+    ids=lambda p: os.path.basename(p) if isinstance(p, str) else str(p),
 )
 def test_extended_corpus_item_no_critical(abs_path):
     """Extended corpus items (from corpus_sync.py) must produce zero CRITICAL

@@ -395,7 +395,7 @@ class TestSelfScanClean:
         import pre_scan
         body = Path(os.path.join(ch.REPO_ROOT, *rel.split("/"))).read_text(encoding="utf-8")
         offenders = [line for line in body.splitlines()
-                     if line.lstrip().startswith("#") and pre_scan.PIPE_TO_SHELL.search(line)]
+                     if line.lstrip().startswith("#") and pre_scan.has_pipe_to_shell(line)]
         assert not offenders, (
             f"{rel} documents the attack with a literal payload, which its own "
             f"scanner then reports: {offenders[:3]}")

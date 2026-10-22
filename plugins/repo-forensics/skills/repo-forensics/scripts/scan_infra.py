@@ -83,6 +83,38 @@ PROC_SECRET_PATH_RE = re.compile(
 )
 
 
+_RUN_BLOCK_HEADER_RE = re.compile(r'run:\s*[|>]-?\s*$')
+
+
+def _multiline_run_blocks(content):
+    """Yield (header_line_no, block_text) for each `run: |` / `run: >` block.
+
+    A block ends at the first non-blank line indented at or below the `run:`
+    key, so a later step's `env:` or `with:` never joins an earlier script.
+    One pass over the lines (linear time)."""
+    lines = content.split('\n')
+    i, n = 0, len(lines)
+    while i < n:
+        header = _RUN_BLOCK_HEADER_RE.search(lines[i])
+        if not header:
+            i += 1
+            continue
+        key_col = header.start()
+        j = i + 1
+        body = []
+        while j < n:
+            ln = lines[j]
+            if ln.strip() and len(ln) - len(ln.lstrip()) <= key_col:
+                break
+            body.append(ln)
+            j += 1
+        while body and not body[-1].strip():
+            body.pop()
+        if body:
+            yield i + 1, ''.join(ln + '\n' for ln in body)
+        i = j
+
+
 def _strip_shell_comment(line):
     """Strip shell comments, respecting single and double quotes.
 
@@ -449,9 +481,7 @@ def scan_github_actions(file_path, rel_path):
 
         # Multi-line run block check
         secret_lines = {f.line for f in findings if 'Secret' in f.title}
-        for m in re.finditer(r'run:\s*[|>]-?\s*\n((?:\s+.*\n)+)', content):
-            block = m.group(1)
-            line_no = content[:m.start()].count('\n') + 1
+        for line_no, block in _multiline_run_blocks(content):
             if '${{ secrets.' in block:
                 if line_no not in secret_lines:
                     findings.append(core.Finding(

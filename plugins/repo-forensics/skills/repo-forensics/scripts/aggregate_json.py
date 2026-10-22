@@ -10,6 +10,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 
 # Make forensics_core importable so we can run the correlation engine on
 # aggregated findings. Without this step, Rules 1-19 in forensics_core.
@@ -1054,6 +1055,36 @@ def build_report(tmpdir, repo_path, skill_scan):
         all_findings, repo_path
     )
 
+    # Persistent adjudication suppressions (rejected-claim fingerprints).
+    # WARN-tier findings the adjudicator previously downgraded for this exact
+    # rule + file + byte-identical content move out of the active set into the
+    # suppressed list, so a standing benign WARN stops re-burning a host-agent
+    # adjudication on every auto-scan. Guards: WARN-band confidence only
+    # (BLOCK and correlation findings are never eligible), any content edit
+    # re-fires, and the store is read failure-safe — a missing/corrupt DB
+    # changes nothing.
+    adjudication_suppressions = {"applied": [], "active": []}
+    try:
+        import suppressions as _supp
+        _supp_records = _supp.load_active_records()
+        # Only records whose file exists in THIS repo: the store is
+        # machine-wide, and other projects' paths and reasons must not leak
+        # into this report.
+        adjudication_suppressions["active"] = [
+            _supp.summarize_record(r) for r in _supp_records
+            if _supp.record_applies_to_repo(r, repo_path)
+        ]
+        if _supp_records:
+            all_findings, _adj_suppressed = _supp.partition_suppressed(
+                all_findings, repo_path, _supp_records
+            )
+            suppressed_findings.extend(_adj_suppressed)
+            adjudication_suppressions["applied"] = [
+                _adj_suppressed_meta(f) for f in _adj_suppressed
+            ]
+    except (ImportError, OSError, ValueError, TypeError, KeyError) as exc:
+        print(f"[!] Adjudication suppressions skipped: {exc}", file=sys.stderr)
+
     # Coverage-honesty gate. coverage_status is computed BEFORE the
     # summary so a blocking gap — an unopened .7z, a zip nested past MAX_DEPTH,
     # a .pyc padded past the size cap, base64 nested past the decode limit, the
@@ -1086,6 +1117,19 @@ def build_report(tmpdir, repo_path, skill_scan):
         "core_verdict": core_verdict,
         "enrichment_status": enrichment_status,
         "capability_ledger": capability_ledger,
+        "adjudication_suppressions": adjudication_suppressions,
+    }
+
+
+def _adj_suppressed_meta(finding):
+    """Compact audit view of one adjudication-suppressed finding."""
+    supp = finding.get("suppression", {})
+    return {
+        "rule_id": finding.get("rule_id", ""),
+        "title": finding.get("title", ""),
+        "file": finding.get("file", ""),
+        "fingerprint": supp.get("fingerprint", ""),
+        "reason": supp.get("reason", ""),
     }
 
 
@@ -1190,6 +1234,37 @@ def format_report_as_text(report):
         if gaps:
             lines.append("    capability_gaps: " + ", ".join(
                 f"{g.get('scanner', '?')} ({g.get('reason', 'unknown')})" for g in gaps))
+
+    adj_supp = report.get("adjudication_suppressions")
+    if adj_supp and (adj_supp.get("active") or adj_supp.get("applied")):
+        active_records = adj_supp.get("active", [])
+        applied = adj_supp.get("applied", [])
+        lines.append(
+            f"  ADJUDICATION SUPPRESSIONS: {len(active_records)} active "
+            f"({len(applied)} applied this run)"
+        )
+        for record in active_records[:10]:
+            stamp = time.strftime(
+                "%Y-%m-%d", time.localtime(record.get("created_at", 0) or 0)
+            )
+            lines.append(
+                f"    {str(record.get('fingerprint', ''))[:12]} "
+                f"{_sanitize(record.get('rule_id', ''), max_len=80)} "
+                f"{_sanitize(record.get('file', ''), max_len=160)}"
+            )
+            lines.append(
+                f"      reason: {_sanitize(record.get('reason', ''), max_len=300)} "
+                f"(recorded {stamp})"
+            )
+        if len(active_records) > 10:
+            lines.append(f"    ... and {len(active_records) - 10} more")
+        try:
+            import suppressions as _supp_cli
+            lines.append(
+                f"  Revoke: {_supp_cli.command_hint('revoke', '--all')}"
+            )
+        except ImportError:
+            pass
 
     capability_ledger = report.get("capability_ledger")
     if capability_ledger and capability_ledger.get("declared"):

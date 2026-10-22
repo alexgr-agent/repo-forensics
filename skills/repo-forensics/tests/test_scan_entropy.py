@@ -36,6 +36,26 @@ def test_sha256_manifest_digests_are_not_long_hex_warnings(tmp_path):
             if f.title == "Long Hex String"]
 
 
+def test_pinned_image_and_pip_digests_are_not_long_hex_warnings(tmp_path):
+    digest = "cce12316475d7d56d605f76e1d811d0dc4e7227f2d4afd29951521264f504ff8"
+    dockerfile = tmp_path / "Dockerfile"
+    dockerfile.write_text(f"FROM python:3.11-slim@sha256:{digest} AS runtime\n")
+    reqs = tmp_path / "requirements.txt"
+    reqs.write_text(f"requests==2.32.3 \\\n    --hash=sha256:{digest}\n")
+    for path in (dockerfile, reqs):
+        assert not [f for f in scanner.scan_file(str(path), path.name)
+                    if f.title == "Long Hex String"], path.name
+
+    # The rule still fires on other long hex runs, including a longer run
+    # hiding behind a digest prefix.
+    other = tmp_path / "blob.py"
+    other.write_text(f'blob = "{digest}"\nx = "img@sha256:{digest}{digest}"\n')
+    hits = [f for f in scanner.scan_file(str(other), other.name)
+            if f.title == "Long Hex String"]
+    assert [f.line for f in hits] == [1, 2]
+    assert all(f.severity == "high" for f in hits)
+
+
 class TestDecodeAndRescan:
     def test_base64_payload_flags_both_findings(self, tmp_path):
         """A base64 blob encoding os.system produces BOTH the existing encoding

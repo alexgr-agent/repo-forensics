@@ -360,7 +360,7 @@ def probe_gh(repo_path, deadline=None):
     return verdict
 
 
-def _verify(artifact_type, repo_path, marker):
+def _verify(artifact_type, repo_path, marker, offline=False):
     """Run the appropriate probe(s) and collapse to a single verdict.
 
     Order of precedence across probes: invalid > valid > unsigned > unchecked.
@@ -371,10 +371,14 @@ def _verify(artifact_type, repo_path, marker):
     timeout is clamped to the time remaining, and once the budget is spent we
     STOP probing further tools (they degrade to 'unchecked' = silent). This caps
     the SUM of sequential per-tool timeouts well under the auto_scan ~15s SIGKILL,
-    so a hung/PATH-shimmed cosign/gh/npm can never drive us to a silent zero."""
+    so a hung/PATH-shimmed cosign/gh/npm can never drive us to a silent zero.
+
+    offline=True skips every probe that contacts a registry (npm audit
+    signatures, gh attestation verify); those degrade to 'unchecked'. cosign
+    already runs with its own --offline flag, so it stays."""
     deadline = _Deadline()
     verdicts = []
-    if artifact_type == "npm":
+    if artifact_type == "npm" and not offline:
         verdicts.append(probe_npm(repo_path, deadline=deadline))
     elif artifact_type == "pypi":
         verdicts.append(probe_pypi(repo_path, marker, deadline=deadline))
@@ -384,7 +388,7 @@ def _verify(artifact_type, repo_path, marker):
     # is 'unchecked' (silent), which is safe — being SIGKILLed is not.
     if not deadline.expired():
         verdicts.append(probe_cosign(repo_path, deadline=deadline))
-    if not deadline.expired():
+    if not offline and not deadline.expired():
         verdicts.append(probe_gh(repo_path, deadline=deadline))
 
     if "invalid" in verdicts:
@@ -396,7 +400,7 @@ def _verify(artifact_type, repo_path, marker):
     return "unchecked"
 
 
-def scan_repo(repo_path, ignore_patterns=None):
+def scan_repo(repo_path, ignore_patterns=None, offline=False):
     """Verify artifact provenance; emit at most ONE finding.
 
     ignore_patterns is accepted for uniform registration (U5) but provenance is
@@ -414,7 +418,7 @@ def scan_repo(repo_path, ignore_patterns=None):
     findings = []
 
     artifact_type, marker = detect_artifact(repo_path)
-    verdict = _verify(artifact_type, repo_path, marker)
+    verdict = _verify(artifact_type, repo_path, marker, offline=offline)
 
     if verdict == "invalid":
         findings.append(core.Finding(
@@ -439,13 +443,16 @@ def scan_repo(repo_path, ignore_patterns=None):
 
 
 def main():
-    args = core.parse_common_args(sys.argv, "Artifact Provenance / Attestation Scanner")
+    # --offline: skip the probes that contact a registry (npm, gh).
+    offline = "--offline" in sys.argv[1:]
+    argv = [a for a in sys.argv if a != "--offline"]
+    args = core.parse_common_args(argv, "Artifact Provenance / Attestation Scanner")
     repo_path = args.repo_path
 
     core.emit_status(args.format, f"[*] Checking artifact provenance for {repo_path}...")
 
     ignore_patterns = core.load_ignore_patterns(repo_path)
-    all_findings = scan_repo(repo_path, ignore_patterns)
+    all_findings = scan_repo(repo_path, ignore_patterns, offline=offline)
     core.output_findings(all_findings, args.format, SCANNER_NAME)
 
 

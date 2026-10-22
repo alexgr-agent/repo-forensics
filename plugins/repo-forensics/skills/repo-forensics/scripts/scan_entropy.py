@@ -38,6 +38,18 @@ def _is_sha256_manifest_hash(rel_path, line, match):
             and _SHA256SUM_LINE.fullmatch(line) is not None)
 
 
+# Pinned digests are best practice, not payloads: a container image digest
+# (`image@sha256:<64 hex>`) and a pip hash pin (`--hash=sha256:<64 hex>`).
+_PINNED_DIGEST_PREFIX = re.compile(r'(?:@|--hash=)sha256:$')
+
+
+def _is_pinned_digest(line, match):
+    """True when the hex run is exactly a sha256 digest right after an image
+    `@sha256:` or a pip `--hash=sha256:` prefix."""
+    return (len(match.group(0)) == 64
+            and _PINNED_DIGEST_PREFIX.search(line, 0, match.start()) is not None)
+
+
 def shannon_entropy(data):
     if not data:
         return 0
@@ -146,7 +158,8 @@ def scan_file(file_path, rel_path, threshold=5.8, budget=None):
             # Check for long hex strings (display finding; decode routing is the
             # once-per-file detect_encoded_blobs pass above).
             for m in HEX_PATTERN.finditer(stripped):
-                if _is_sha256_manifest_hash(rel_path, stripped, m):
+                if (_is_sha256_manifest_hash(rel_path, stripped, m)
+                        or _is_pinned_digest(stripped, m)):
                     continue
                 matched = m.group(0)
                 findings.append(core.Finding(

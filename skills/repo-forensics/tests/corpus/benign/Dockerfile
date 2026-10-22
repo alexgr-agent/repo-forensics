@@ -1,7 +1,7 @@
 # Dockerfile - multi-stage build with normal ARG/ENV usage.
 # No secrets in ARG or ENV (only non-sensitive build metadata).
 
-FROM python:3.11-slim AS builder
+FROM python:3.11-slim@sha256:cce12316475d7d56d605f76e1d811d0dc4e7227f2d4afd29951521264f504ff8 AS builder
 
 # Non-sensitive build arguments only
 ARG APP_VERSION=1.0.0
@@ -10,10 +10,10 @@ ARG GIT_COMMIT=unknown
 
 WORKDIR /build
 COPY requirements.txt .
-RUN pip install --no-cache-dir --user -r requirements.txt
+RUN pip install --no-cache-dir --user --require-hashes -r requirements.txt
 
 # ---------------------------------------------------------------------------
-FROM python:3.11-slim AS runtime
+FROM python:3.11-slim@sha256:cce12316475d7d56d605f76e1d811d0dc4e7227f2d4afd29951521264f504ff8 AS runtime
 
 # Non-sensitive runtime environment variables
 ENV APP_ENV=production

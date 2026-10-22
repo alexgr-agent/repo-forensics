@@ -28,12 +28,72 @@ unset _rf_profile_user
 PATH="${PATH#:}"
 export PATH
 
+# Focused (--skill-scan) scanner set, as "name:script" pairs. The printed
+# scanner counts in usage and in the run banner are generated from this list,
+# so the number can never drift from what actually launches.
+FOCUSED_SCANNERS=(
+    "skill_threats:scan_skill_threats.py"
+    "secrets:scan_secrets.py"
+    "dataflow:scan_dataflow.py"
+    "sast:scan_sast.py"
+    "lifecycle:scan_lifecycle.py"
+    "mcp_security:scan_mcp_security.py"
+    "runtime_dynamism:scan_runtime_dynamism.py"
+    "manifest_drift:scan_manifest_drift.py"
+    "agent_skills:scan_agent_skills.py"
+    "devcontainer:scan_devcontainer.py"
+    "oversize:scan_oversize.py"
+    "bytecode:scan_bytecode.py"
+    "archive:scan_archive.py"
+    "splitstream:scan_splitstream.py"
+    "git_forensics:scan_git_forensics.py"
+    "provenance:scan_provenance.py"
+    "dead_anchors:scan_dead_anchors.py"
+    "yara:scan_yara.py"
+    "git_config:scan_git_config.py"
+)
+
+# Full-audit (default mode) scanner set, same "name:script" shape and the
+# same reason: the printed count is generated from what actually launches.
+# integrity gets --watch appended when --watch is set.
+FULL_SCANNERS=(
+    "entropy:scan_entropy.py"
+    "binary:scan_binary.py"
+    "yara:scan_yara.py"
+    "git_forensics:scan_git_forensics.py"
+    "dependencies:scan_dependencies.py"
+    "runtime_floors:scan_runtime_floors.py"
+    "secrets:scan_secrets.py"
+    "sast:scan_sast.py"
+    "infra:scan_infra.py"
+    "lifecycle:scan_lifecycle.py"
+    "skill_threats:scan_skill_threats.py"
+    "dataflow:scan_dataflow.py"
+    "mcp_security:scan_mcp_security.py"
+    "ast_analysis:scan_ast.py"
+    "runtime_dynamism:scan_runtime_dynamism.py"
+    "manifest_drift:scan_manifest_drift.py"
+    "agent_skills:scan_agent_skills.py"
+    "integrity:scan_integrity.py"
+    "dast:scan_dast.py"
+    "post_incident:scan_post_incident.py"
+    "devcontainer:scan_devcontainer.py"
+    "entrypoint:scan_entrypoint.py"
+    "oversize:scan_oversize.py"
+    "bytecode:scan_bytecode.py"
+    "archive:scan_archive.py"
+    "splitstream:scan_splitstream.py"
+    "provenance:scan_provenance.py"
+    "dead_anchors:scan_dead_anchors.py"
+    "git_config:scan_git_config.py"
+)
+
 if [ -z "${1:-}" ]; then
     echo "Usage: $0 <repo_path> [options]"
     echo ""
     echo "Modes:"
-    echo "  (default)              Full audit - all 28 scanners"
-    echo "  --skill-scan           Focused on AI skill threats (18 scanners, faster)"
+    echo "  (default)              Full audit - all ${#FULL_SCANNERS[@]} scanners"
+    echo "  --skill-scan           Focused on AI skill threats (${#FOCUSED_SCANNERS[@]} scanners, faster)"
     echo "  --inventory            Enumerate installed AI-agent stacks (zero-LLM, JSON output)"
     echo ""
     echo "Options:"
@@ -226,17 +286,21 @@ fi
 
 SKILL_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-# Kill orphaned scanners from previous runs (stuck beyond SCANNER_TIMEOUT)
+# Stop orphaned scanners from previous runs: only processes whose parent is
+# gone (PPID 1), that run THIS install's own scan_*.py, and that have outlived
+# SCANNER_TIMEOUT. A scan running in another session still has a live parent
+# and is left alone. Thanks to @ryanduguid for reporting the broad sweep.
 # shellcheck disable=SC2009  # pgrep can't provide etime; we need ps output for age filtering
-_stale_pids=$(ps ax -o pid=,etime=,command= 2>/dev/null | grep '[r]epo-forensics/.*scan_.*\.py' | awk '{
-    split($2, t, "[-:]"); n = length(t)
-    secs = t[n]+0 + (t[n-1]+0)*60
-    if (n >= 3) secs += (t[n-2]+0)*3600
-    if (n >= 4) secs += (t[n-3]+0)*86400
-    if (secs > 150) print $1
-}' || true)
+_stale_pids=$(ps ax -o pid=,ppid=,etime=,command= 2>/dev/null | awk -v dir="$SKILL_DIR/scan_" '
+    $2 == 1 && index($0, dir) > 0 && $0 ~ /\.py/ {
+        split($3, t, "[-:]"); n = length(t)
+        secs = t[n]+0 + (t[n-1]+0)*60
+        if (n >= 3) secs += (t[n-2]+0)*3600
+        if (n >= 4) secs += (t[n-3]+0)*86400
+        if (secs > 150) print $1
+    }' || true)
 if [ -n "$_stale_pids" ]; then
-    echo "[repo-forensics] Cleaning up stale scanner processes from a previous run..." >&2
+    echo "[repo-forensics] Stopping orphaned scanner processes from a previous run: $(echo $_stale_pids)" >&2
     echo "$_stale_pids" | xargs kill 2>/dev/null || true
 fi
 
@@ -358,6 +422,12 @@ run_scanner() {
         $OFFLINE && scanner_args+=("--offline")
     fi
 
+    # provenance shells out to npm audit signatures / gh attestation verify,
+    # which contact their registries; --offline skips them.
+    if [ "$name" = "provenance" ]; then
+        $OFFLINE && scanner_args+=("--offline")
+    fi
+
     if [ "$name" = "skill_threats" ]; then
         scanner_args+=("--full-audit")
     fi
@@ -392,71 +462,32 @@ except: print(0)
 }
 
 if $SKILL_SCAN; then
-    # Focused mode: 18 scanners most relevant to vetting skills
+    # Focused mode: the scanners most relevant to vetting skills
     if ! $MACHINE_FORMAT; then
         echo ""
-        echo "[*] Running focused skill scan (18 scanners)..."
+        echo "[*] Running focused skill scan (${#FOCUSED_SCANNERS[@]} scanners)..."
     fi
 
-    throttled_run run_scanner "skill_threats" "scan_skill_threats.py" &
-    throttled_run run_scanner "secrets" "scan_secrets.py" &
-    throttled_run run_scanner "dataflow" "scan_dataflow.py" &
-    throttled_run run_scanner "sast" "scan_sast.py" &
-    throttled_run run_scanner "lifecycle" "scan_lifecycle.py" &
-    throttled_run run_scanner "mcp_security" "scan_mcp_security.py" &
-    throttled_run run_scanner "runtime_dynamism" "scan_runtime_dynamism.py" &
-    throttled_run run_scanner "manifest_drift" "scan_manifest_drift.py" &
-    throttled_run run_scanner "agent_skills" "scan_agent_skills.py" &
-    throttled_run run_scanner "devcontainer" "scan_devcontainer.py" &
-    throttled_run run_scanner "oversize" "scan_oversize.py" &
-    throttled_run run_scanner "bytecode" "scan_bytecode.py" &
-    throttled_run run_scanner "archive" "scan_archive.py" &
-    throttled_run run_scanner "splitstream" "scan_splitstream.py" &
-    throttled_run run_scanner "git_forensics" "scan_git_forensics.py" &
-    throttled_run run_scanner "provenance" "scan_provenance.py" &
-    throttled_run run_scanner "dead_anchors" "scan_dead_anchors.py" &
-    throttled_run run_scanner "yara" "scan_yara.py" &
-    throttled_run run_scanner "git_config" "scan_git_config.py" &
+    for _focused_spec in "${FOCUSED_SCANNERS[@]}"; do
+        throttled_run run_scanner "${_focused_spec%%:*}" "${_focused_spec##*:}" &
+    done
+    unset _focused_spec
     wait
 
 else
     # Full audit: all scanners in parallel
     if ! $MACHINE_FORMAT; then
         echo ""
-        echo "[*] Running all 28 scanners in parallel..."
+        echo "[*] Running all ${#FULL_SCANNERS[@]} scanners in parallel..."
     fi
-    throttled_run run_scanner "entropy" "scan_entropy.py" &
-    throttled_run run_scanner "binary" "scan_binary.py" &
-    throttled_run run_scanner "yara" "scan_yara.py" &
-    throttled_run run_scanner "git_forensics" "scan_git_forensics.py" &
-    throttled_run run_scanner "dependencies" "scan_dependencies.py" &
-    throttled_run run_scanner "secrets" "scan_secrets.py" &
-    throttled_run run_scanner "sast" "scan_sast.py" &
-    throttled_run run_scanner "infra" "scan_infra.py" &
-    throttled_run run_scanner "lifecycle" "scan_lifecycle.py" &
-    throttled_run run_scanner "skill_threats" "scan_skill_threats.py" &
-    throttled_run run_scanner "dataflow" "scan_dataflow.py" &
-    throttled_run run_scanner "mcp_security" "scan_mcp_security.py" &
-    throttled_run run_scanner "ast_analysis" "scan_ast.py" &
-    throttled_run run_scanner "runtime_dynamism" "scan_runtime_dynamism.py" &
-    throttled_run run_scanner "manifest_drift" "scan_manifest_drift.py" &
-    throttled_run run_scanner "agent_skills" "scan_agent_skills.py" &
-    if $WATCH_MODE; then
-        throttled_run run_scanner "integrity" "scan_integrity.py" "--watch" &
-    else
-        throttled_run run_scanner "integrity" "scan_integrity.py" &
-    fi
-    throttled_run run_scanner "dast" "scan_dast.py" &
-    throttled_run run_scanner "post_incident" "scan_post_incident.py" &
-    throttled_run run_scanner "devcontainer" "scan_devcontainer.py" &
-    throttled_run run_scanner "entrypoint" "scan_entrypoint.py" &
-    throttled_run run_scanner "oversize" "scan_oversize.py" &
-    throttled_run run_scanner "bytecode" "scan_bytecode.py" &
-    throttled_run run_scanner "archive" "scan_archive.py" &
-    throttled_run run_scanner "splitstream" "scan_splitstream.py" &
-    throttled_run run_scanner "provenance" "scan_provenance.py" &
-    throttled_run run_scanner "dead_anchors" "scan_dead_anchors.py" &
-    throttled_run run_scanner "git_config" "scan_git_config.py" &
+    for _full_spec in "${FULL_SCANNERS[@]}"; do
+        if [ "${_full_spec%%:*}" = "integrity" ] && $WATCH_MODE; then
+            throttled_run run_scanner "integrity" "${_full_spec##*:}" "--watch" &
+        else
+            throttled_run run_scanner "${_full_spec%%:*}" "${_full_spec##*:}" &
+        fi
+    done
+    unset _full_spec
     wait
 fi
 

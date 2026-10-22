@@ -18,6 +18,7 @@ from urllib.parse import urlparse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import forensics_core as core
+import pypi_pins
 
 SCANNER_NAME = "dependencies"
 
@@ -460,8 +461,13 @@ COMPROMISED_PACKAGE_VERSIONS = {
     "@shadanai/openclaw": {"2026.3.28-2", "2026.3.28-3", "2026.3.31-1", "2026.3.31-2"},
     "@qqbrowser/openclaw-qbot": {"0.0.130"},
     # liteLLM supply chain attack (March 24, 2026)
-    "litellm": {"1.82.7", "1.82.8"},
+    "litellm": {"1.82.7", "1.82.8", "1.107.0"},
 }
+
+# Names in the fallback dict above that are PyPI packages. The shipped JSON
+# knows each campaign's ecosystem; this offline fallback does not, and the npm
+# entries must not be matched against PyPI requirements.
+_PYPI_FALLBACK_NAMES = ("litellm",)
 
 # Suspicious npm scopes (systematic MCP server forking campaigns)
 SUSPICIOUS_NPM_SCOPES = {
@@ -919,6 +925,131 @@ def check_compromised_versions(all_deps_with_versions, rel_path, db=None, strict
     return findings
 
 
+def _pypi_compromised_db():
+    """{PEP 503 name: {version: campaign}} for PyPI only: shipped JSON campaigns
+    marked ecosystem "pypi", plus the offline fallback for PyPI names."""
+    db = {}
+    for name in _PYPI_FALLBACK_NAMES:
+        for v in COMPROMISED_PACKAGE_VERSIONS.get(name, ()):
+            db.setdefault(pypi_pins.normalize_name(name), {})[v] = "local-fallback"
+    try:
+        import ioc_manager as _ioc
+        for name, vmap in _ioc.get_iocs().get('compromised_versions_pypi', {}).items():
+            db.setdefault(name, {}).update(vmap)
+    except (ImportError, OSError, json.JSONDecodeError, ValueError, KeyError) as e:
+        print(f"[!] PyPI compromised-version IOC load failed, using fallback: {e}",
+              file=sys.stderr)
+    return db
+
+
+def _python_manifest_requirements(basename, content):
+    """(name, spec, line_no) for every requirement in a Python manifest that
+    could pin a version: requirements-style lines, PEP 508 strings in
+    pyproject.toml, and `name = "==x"` entries in Pipfile / poetry tables."""
+    reqs = []
+    lines = content.split('\n')
+    if basename in ('requirements.txt', 'requirements-dev.txt', 'requirements-test.txt',
+                    'constraints.txt'):
+        # pip joins a line ending in a backslash with the next one, so a pin
+        # split across lines (`litellm \` / `==1.107.0`) is one requirement.
+        joined, start, buf = [], 0, ''
+        for n, line in enumerate(lines, 1):
+            line = re.sub(r'(^|\s)#.*$', '', line).rstrip()
+            if not buf:
+                start = n
+            if line.endswith('\\'):
+                buf += line[:-1] + ' '
+                continue
+            joined.append((start, buf + line))
+            buf = ''
+        if buf:
+            joined.append((start, buf))
+        for n, line in joined:
+            line = line.strip()
+            if not line or line.startswith('-'):
+                continue
+            for name, spec in pypi_pins.parse_install_args(line):
+                reqs.append((name, spec, n))
+        return reqs
+    table_entry = re.compile(
+        r'^\s*["\']?([A-Za-z0-9][A-Za-z0-9._-]*)["\']?\s*=\s*'
+        r'(?:["\']([^"\']*)["\']|\{[^}]*\bversion\s*=\s*["\']([^"\']*)["\'])')
+    for n, line in enumerate(lines, 1):
+        m = table_entry.match(line)
+        if m:
+            spec = (m.group(2) if m.group(2) is not None else m.group(3)) or ''
+            # Poetry reads a bare version ("1.107.0") and "=1.107.0" as exact pins.
+            if re.match(r'^\s*=?\s*v?\d[\d.]*(?:\.\*)?\s*$', spec):
+                spec = '==' + spec.strip().lstrip('=').strip()
+            reqs.append((pypi_pins.normalize_name(m.group(1)), spec, n))
+        if basename == 'pyproject.toml':
+            for q in re.finditer(r'"([^"\n]+)"|\'([^\'\n]+)\'', line):
+                req = pypi_pins.parse_requirement(q.group(1) or q.group(2))
+                if req and req[1]:
+                    reqs.append((req[0], req[1], n))
+    return reqs
+
+
+def check_pypi_pins(requirements, rel_path, db=None):
+    """Findings for requirements (name, spec, line) that pin a compromised
+    PyPI release. Exact pins and `==X.*` prefixes only; see pypi_pins."""
+    if db is None:
+        db = _pypi_compromised_db()
+    findings = []
+    seen = set()
+    for name, spec, line_no in requirements:
+        bad = db.get(name)
+        if not bad or not spec:
+            continue
+        for ver in pypi_pins.spec_hits(spec, bad):
+            if (name, ver, line_no) in seen:
+                continue
+            seen.add((name, ver, line_no))
+            findings.append(core.Finding(
+                scanner=SCANNER_NAME, severity="critical",
+                title=f"Compromised Package Version: {name}=={ver}",
+                description=(
+                    f"'{name}' is pinned to {ver} ('{spec.strip()}'), a release known to be "
+                    f"compromised (supply chain attack IOC, campaign: {bad[ver]}). "
+                    f"Do not install it; if it was installed, treat the environment as exposed."
+                ),
+                file=rel_path, line=line_no,
+                snippet=f"{name}{re.sub(chr(32), '', spec)} (known compromised, {bad[ver]})",
+                category="supply-chain"
+            ))
+    return findings
+
+
+_REQ_FILE_RE = re.compile(
+    r'^(?:.*[-_.])?(?:requirements?|constraints?)(?:[-_.][\w.-]*)?\.(?:txt|in)$', re.I)
+
+
+def is_extra_requirements_file(file_path):
+    """True for requirements-style files outside the four names that get the
+    full Python dependency checks: requirements-prod.txt, dev-requirements.txt,
+    requirements.in, constraints-3.12.txt, requirements/base.txt."""
+    base = os.path.basename(file_path)
+    if base in ('requirements.txt', 'requirements-dev.txt', 'requirements-test.txt',
+                'constraints.txt'):
+        return False
+    if _REQ_FILE_RE.match(base):
+        return True
+    parent = os.path.basename(os.path.dirname(file_path)).lower()
+    return parent in ('requirements', 'requirement', 'reqs') and base.lower().endswith(('.txt', '.in'))
+
+
+def scan_pypi_pins_only(filepath, rel_path):
+    """Compromised-pin check alone, for requirements-style files that do not get
+    the rest of scan_python_deps (no unbounded-range or typosquat noise)."""
+    try:
+        with open(filepath, 'r', encoding='utf-8') as f:
+            content = f.read()
+    except (UnicodeDecodeError, OSError) as e:
+        print(f"[!] Skipped {rel_path}: {e}", file=sys.stderr)
+        return []
+    return check_pypi_pins(_python_manifest_requirements('requirements.txt', content), rel_path)
+
+
 def check_suspicious_scopes(dependencies, rel_path):
     """Flag packages from suspicious npm scopes (systematic forking campaigns)."""
     findings = []
@@ -1369,6 +1500,10 @@ def scan_python_deps(filepath, rel_path):
         # Known IOC check first
         findings.extend(check_known_ioc_packages(deps, rel_path))
 
+        # Pins on compromised releases (litellm==1.107.0 and friends)
+        findings.extend(check_pypi_pins(
+            _python_manifest_requirements(basename, content), rel_path))
+
         # Vuln enrichment on pinned versions only (ranges can't be queried)
         if pinned_pkg_versions:
             findings.extend(_check_vulns("PyPI", pinned_pkg_versions, rel_path))
@@ -1405,6 +1540,140 @@ def scan_python_deps(filepath, rel_path):
             file=rel_path, line=0, snippet=str(e)[:120],
             category="parse-error"
         ))
+    return findings
+
+
+
+# --- Composer (Packagist) ------------------------------------------------------
+#
+# Platform requisites are not Packagist packages: "php", "hhvm", "composer*",
+# "ext-*", "lib-*". They name the runtime the code needs, never something
+# `composer install` downloads, so IOC/vuln package checks must skip them.
+# (The "php" requirement itself is checked by scan_runtime_floors.py.)
+_COMPOSER_PLATFORM_RE = re.compile(
+    r'^(php|hhvm|composer|composer-plugin-api|composer-runtime-api|ext-[^/]+|lib-[^/]+)$',
+    re.IGNORECASE)
+
+
+def _is_composer_platform_req(name):
+    return bool(_COMPOSER_PLATFORM_RE.match(name))
+
+
+def scan_composer_json(filepath, rel_path):
+    """Scan composer.json require/require-dev packages against the IOC,
+    compromised-version and OSV (Packagist) checks.
+
+    Version strings here are CONSTRAINTS (^3.0, >=1.2 <2.0), so the
+    compromised-version check runs strict_pin=True and OSV only sees values
+    that normalize to an exact version.
+    """
+    findings = []
+    try:
+        with open(filepath, 'r', encoding='utf-8') as f:
+            content = f.read()
+    except (UnicodeDecodeError, OSError) as e:
+        findings.append(core.Finding(
+            scanner=SCANNER_NAME, severity="low",
+            title="composer.json read error",
+            description=f"Could not read composer.json: {e}",
+            file=rel_path, line=0, snippet=str(e)[:120],
+            category="parse-error"))
+        return findings
+    try:
+        data = json.loads(content)
+    except json.JSONDecodeError as e:
+        findings.append(core.Finding(
+            scanner=SCANNER_NAME, severity="low",
+            title="Package manifest parse error",
+            description=f"Could not fully parse composer.json: {e}",
+            file=rel_path, line=0, snippet=str(e)[:120],
+            category="parse-error"))
+        return findings
+    except RecursionError:
+        findings.append(core.Finding(
+            scanner=SCANNER_NAME, severity="medium",
+            title="Adversarial composer.json structure",
+            description="Refused to parse hostile composer.json: RecursionError",
+            file=rel_path, line=0, snippet="",
+            category="parse-error"))
+        return findings
+    if not isinstance(data, dict):
+        return findings
+
+    all_deps = {}
+    for section in ('require', 'require-dev'):
+        reqs = data.get(section)
+        if not isinstance(reqs, dict):
+            continue
+        for name, constraint in reqs.items():
+            if not isinstance(name, str) or not isinstance(constraint, str):
+                continue
+            if _is_composer_platform_req(name):
+                continue
+            all_deps[name] = constraint
+
+    dep_names = list(all_deps.keys())
+    findings.extend(check_known_ioc_packages(dep_names, rel_path))
+    findings.extend(check_compromised_versions(all_deps, rel_path, strict_pin=True))
+    findings.extend(_check_vulns("Packagist", all_deps, rel_path))
+    # No Packagist freshness fetcher, popular corpus or slopsquat corpus yet;
+    # those checks are npm/PyPI-only by design.
+    return findings
+
+
+def parse_composer_lock(filepath, rel_path):
+    """Scan composer.lock resolved packages. Versions here are exact pins, so
+    the compromised-version check runs non-strict and every pin feeds OSV."""
+    findings = []
+    try:
+        with open(filepath, 'r', encoding='utf-8') as f:
+            content = f.read()
+    except (UnicodeDecodeError, OSError) as e:
+        findings.append(core.Finding(
+            scanner=SCANNER_NAME, severity="low",
+            title="composer.lock read error",
+            description=f"Could not read composer.lock: {e}",
+            file=rel_path, line=0, snippet=str(e)[:120],
+            category="parse-error"))
+        return findings
+    try:
+        data = json.loads(content)
+    except json.JSONDecodeError as e:
+        findings.append(core.Finding(
+            scanner=SCANNER_NAME, severity="low",
+            title="Lockfile parse error",
+            description=f"Could not fully parse composer.lock: {e}",
+            file=rel_path, line=0, snippet=str(e)[:120],
+            category="parse-error"))
+        return findings
+    except RecursionError:
+        findings.append(core.Finding(
+            scanner=SCANNER_NAME, severity="medium",
+            title="Adversarial composer.lock structure",
+            description="Refused to parse hostile composer.lock: RecursionError",
+            file=rel_path, line=0, snippet="",
+            category="parse-error"))
+        return findings
+    if not isinstance(data, dict):
+        return findings
+
+    pins = {}
+    for section in ('packages', 'packages-dev'):
+        entries = data.get(section)
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            name, version = entry.get('name'), entry.get('version')
+            if isinstance(name, str) and isinstance(version, str):
+                if not _is_composer_platform_req(name):
+                    pins[name] = version
+
+    dep_names = list(pins.keys())
+    findings.extend(check_known_ioc_packages(dep_names, rel_path))
+    findings.extend(check_compromised_versions(pins, rel_path))
+    findings.extend(_check_vulns("Packagist", pins, rel_path))
     return findings
 
 
@@ -2470,13 +2739,21 @@ def main():
             all_findings.extend(scan_lockfile(file_path, rel_path))
             all_findings.extend(parse_pnpm_lock_file(file_path, rel_path))
             all_findings.extend(scan_lockfile_injection(file_path, rel_path))
-        elif basename == 'poetry.lock':
+        elif basename in ('poetry.lock', 'uv.lock', 'pdm.lock'):
+            # uv.lock and pdm.lock use the same [[package]] name/version layout
             all_findings.extend(parse_poetry_lock(file_path, rel_path))
         elif basename == 'Pipfile.lock':
             all_findings.extend(parse_pipfile_lock(file_path, rel_path))
         elif basename in ('requirements.txt', 'requirements-dev.txt', 'requirements-test.txt',
                           'constraints.txt', 'pyproject.toml', 'Pipfile'):
             all_findings.extend(scan_python_deps(file_path, rel_path))
+        elif basename == 'composer.json':
+            all_findings.extend(scan_composer_json(file_path, rel_path))
+        elif basename == 'composer.lock':
+            all_findings.extend(parse_composer_lock(file_path, rel_path))
+            all_findings.extend(scan_lockfile_injection(file_path, rel_path))
+        elif is_extra_requirements_file(file_path):
+            all_findings.extend(scan_pypi_pins_only(file_path, rel_path))
 
     # Surface enrichment state (offline/no-vulns/rulepack-degraded) as
     # a scanner-emitted finding, never as a cross-import from aggregate_json.

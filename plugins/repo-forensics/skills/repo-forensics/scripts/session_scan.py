@@ -1093,32 +1093,54 @@ def format_output(refresh_messages, changed_items, scan_results, is_first_run, t
     return lines
 
 
+def _etime_seconds(etime):
+    """ps etime ([[dd-]hh:]mm:ss) to seconds."""
+    days, _, rest = etime.rpartition("-")
+    parts = [int(x) for x in rest.split(":")]
+    secs = 0
+    for value in parts:
+        secs = secs * 60 + value
+    return secs + (int(days) * 86400 if days else 0)
+
+
 def _kill_stale_scanners():
-    """Kill orphaned repo-forensics scanner processes from previous runs."""
+    """Stop orphaned scanners left by a crashed run of THIS install.
+
+    Only processes whose parent is gone (PPID 1), whose command runs a
+    scan_*.py from this script's own directory, and that outlived
+    STALE_SCANNER_KILL_SEC. Scans still owned by another live session keep
+    their parent and are never touched.
+    """
+    own_prefix = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scan_")
+    killed = []
     try:
         result = subprocess.run(
-            ["ps", "ax", "-o", "pid=,etime=,command="],
+            ["ps", "ax", "-o", "pid=,ppid=,etime=,command="],
             capture_output=True, text=True, timeout=5,
         )
         for line in result.stdout.splitlines():
-            if "repo-forensics/" not in line or "scan_" not in line or ".py" not in line:
+            parts = line.split(None, 3)
+            if len(parts) < 4:
                 continue
-            parts = line.split()
-            if len(parts) < 3:
+            pid_str, ppid_str, etime, command = parts
+            if ppid_str != "1" or own_prefix not in command or ".py" not in command:
                 continue
-            pid_str, etime = parts[0], parts[1]
-            # Parse etime: [[dd-]hh:]mm:ss
-            segments = etime.replace("-", ":").split(":")
-            secs = 0
-            for i, seg in enumerate(reversed(segments)):
-                secs += int(seg) * (60 ** min(i, 2)) * (24 if i == 3 else 1)
-            if secs > STALE_SCANNER_KILL_SEC:
+            try:
+                age = _etime_seconds(etime)
+            except ValueError:
+                continue
+            if age > STALE_SCANNER_KILL_SEC:
                 try:
                     os.kill(int(pid_str), 15)
-                except (ProcessLookupError, PermissionError):
+                    killed.append(pid_str)
+                except (ProcessLookupError, PermissionError, ValueError):
                     pass
     except Exception:
         pass
+    if killed:
+        print(f"[repo-forensics] Stopped orphaned scanner process(es): {' '.join(killed)}",
+              file=sys.stderr)
+    return killed
 
 
 def main(argv=None):
@@ -1165,7 +1187,7 @@ def main(argv=None):
         findings = scan_item(dirpath, label, itype, checksums)
         scan_results[f"{itype}:{dirpath}"] = findings
 
-    # Step 3b: Deep scan — full 28-scanner suite on changed items (seconds)
+    # Step 3b: Deep scan — full run_forensics.sh scanner suite on changed items (seconds)
     # Catches zero-day supply chain attacks, obfuscated code, C2 beaconing,
     # manifest drift — threats that IOC-only checks miss.
     # Only runs when items actually changed (rare). Skipped on first run

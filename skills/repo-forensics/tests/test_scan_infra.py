@@ -826,3 +826,75 @@ class TestBase64DecodeAndExecute:
         hits = self._megalodon_findings(findings)
         assert len(hits) >= 1
         assert hits[0].severity == "critical"
+
+
+class TestMultilineRunBlockBoundaries:
+    """A `run: |` block ends at the first non-blank line indented at or below
+    the `run:` key; a later step's env must not be read as part of it."""
+
+    @staticmethod
+    def _scan(tmp_path, body):
+        wf = tmp_path / "ci.yml"
+        wf.write_text(body)
+        return scanner.scan_github_actions(str(wf), ".github/workflows/ci.yml")
+
+    def test_secret_in_later_step_env_not_attributed_to_run_block(self, tmp_path):
+        findings = self._scan(tmp_path, (
+            "on: push\n"
+            "jobs:\n"
+            "  build:\n"
+            "    runs-on: ubuntu-latest\n"
+            "    steps:\n"
+            "      - name: Build\n"
+            "        run: |\n"
+            "          echo building\n"
+            "\n"
+            "          make\n"
+            "      - name: Release\n"
+            "        env:\n"
+            "          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}\n"
+            "        run: gh release list\n"
+        ))
+        assert not [f for f in findings
+                    if f.title == "GHA: Secret in Multi-line Run Block"]
+
+    def test_sibling_env_key_ends_block(self, tmp_path):
+        findings = self._scan(tmp_path, (
+            "on: push\n"
+            "jobs:\n"
+            "  build:\n"
+            "    steps:\n"
+            "      - run: |\n"
+            "          echo hi\n"
+            "        env:\n"
+            "          TOKEN: ${{ secrets.NPM_TOKEN }}\n"
+        ))
+        assert not [f for f in findings
+                    if f.title == "GHA: Secret in Multi-line Run Block"]
+
+    def test_secret_inside_run_block_still_flagged(self, tmp_path):
+        findings = self._scan(tmp_path, (
+            "on: push\n"
+            "jobs:\n"
+            "  build:\n"
+            "    steps:\n"
+            "      - name: Deploy\n"
+            "        run: |\n"
+            "          echo start\n"
+            "          deploy --token ${{ secrets.DEPLOY_TOKEN }}\n"
+            "      - name: Next\n"
+            "        run: echo done\n"
+        ))
+        hits = [f for f in findings
+                if f.title == "GHA: Secret in Multi-line Run Block"]
+        assert [f.line for f in hits] == [6]
+        assert hits[0].severity == "critical"
+
+    def test_block_extraction_is_linear(self, tmp_path):
+        import time
+        body = "on: push\njobs:\n  b:\n    steps:\n" + (
+            "      - run: |\n" + "          echo x\n" * 50) * 2000
+        t0 = time.monotonic()
+        blocks = list(scanner._multiline_run_blocks(body))
+        assert len(blocks) == 2000
+        assert time.monotonic() - t0 < 2.0

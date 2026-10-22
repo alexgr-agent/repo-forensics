@@ -375,6 +375,7 @@ class TestBytecodeSandbox:
         raw = b"(" + (100001).to_bytes(4, "little") + b"N" * 100001
         assert len(child._Reader(raw).read()) == 100001
 
+    @pytest.mark.skipif(sys.version_info < (3, 11), reason="no inline caches")
     def test_inline_cache_bytes_cannot_forge_import(self, tmp_path):
         _, pyc = _compile_to_pyc("x = object()\ny = x.real\n", tmp_path)
         code = _decode_fixture(pyc)

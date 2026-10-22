@@ -754,8 +754,19 @@ def _action_env_line(content, line_number):
     return False
 
 
-_UNTRUSTED_EXPRESSION = re.compile(
-    r'\$\{\{.*?(?:\bgithub\.event(?:_path)?\b|\bgithub\.head_ref\b|\binputs\b'
+_WORKFLOW_PLAIN_KEY = re.compile(r'^([A-Za-z_][\w-]*)[ \t]*:(?:[ \t]+(.*))?$')
+_WORKFLOW_QUOTED_KEY = re.compile(r'''^(?:-\s*)?["'][^"']+["']\s*:''')
+_WORKFLOW_BLOCK_SCALAR = re.compile(r'^[|>](?:[+-][1-9]?|[1-9][+-]?|[+-]?[1-9])?$')
+_WORKFLOW_ANCHOR_ALIAS = re.compile(r'(?<![\w])(?:&|\*)[^\s\[\]{},]+')
+# Fail-closed limits. Lines longer than this are never reasoned about, and the
+# per-file budget bounds the regex work spent grading downgrades.
+_WORKFLOW_MAX_LINE = 4096
+_WORKFLOW_UNTRUSTED_BUDGET = 64 * 1024
+# Line breaks other parsers honor but this grader does not split on. A file that
+# has one cannot be indexed consistently, so nothing in it is downgraded.
+_WORKFLOW_ODD_BREAK = re.compile('[\x0b\x0c\x1c\x1d\x1e\x85\u2028\u2029]|\r(?!\n)')
+_UNTRUSTED_TAIL = re.compile(
+    r'(?:\bgithub\.event(?:_path)?\b|\bgithub\.head_ref\b|\binputs\b'
     r'|\bgithub\s*\[|\b(?:steps|needs)\s*'
     r'(?:\.\s*[\w-]+|\s*\[[^\]]+\])\s*'
     r'(?:\.\s*outputs\b|\s*\[\s*["\']outputs["\']\s*\])'
@@ -763,11 +774,99 @@ _UNTRUSTED_EXPRESSION = re.compile(
     re.IGNORECASE)
 
 
-_GITHUB_EXPRESSION = re.compile(r'\$\{\{.*?\}\}')
-_WORKFLOW_PLAIN_KEY = re.compile(r'^([A-Za-z_][\w-]*)\s*:\s*(.*)$')
-_WORKFLOW_QUOTED_KEY = re.compile(r'''^(?:-\s*)?["'][^"']+["']\s*:''')
-_WORKFLOW_BLOCK_SCALAR = re.compile(r'^[|>](?:[+-][1-9]?|[1-9][+-]?|[+-]?[1-9])?$')
-_WORKFLOW_ANCHOR_ALIAS = re.compile(r'(?<![\w])(?:&|\*)[^\s\[\]{},]+')
+def _workflow_strip_expressions(text):
+    """Remove every closed ${{ ... }} span in one linear pass. An expression
+    that never closes is left in place."""
+    parts = []
+    i = 0
+    while True:
+        start = text.find('${{', i)
+        if start < 0:
+            break
+        end = text.find('}}', start + 3)
+        if end < 0:
+            break
+        parts.append(text[i:start])
+        parts.append('x')                 # a neutral plain token keeps the lexical pass honest
+        i = end + 2
+    parts.append(text[i:])
+    return ''.join(parts)
+
+
+def _workflow_untrusted(line):
+    """True when an untrusted context follows a ${{ anywhere on the line. A
+    context after the first ${{ counts even outside an expression, so one search
+    from that point is enough (and linear, unlike a lazy prefix per ${{)."""
+    start = line.find('${{')
+    return start >= 0 and _UNTRUSTED_TAIL.search(line, start + 3) is not None
+
+
+def _workflow_scalar_open(text, depth=0, quote=''):
+    """Scan one line of a value for a YAML flow collection or quoted scalar and
+    return (bracket depth, open quote) at the end of the line. A quote opens only
+    at the start of a value (after { [ , : - ? or the start of the text), so an
+    apostrophe inside a plain scalar never counts. A property (anchor, tag or
+    alias) before the value is skipped."""
+    i, n = 0, len(text)
+    prev = ','
+    space = True
+    plain = False       # inside a plain scalar: quotes and brackets are text
+    while i < n:
+        c = text[i]
+        if plain:
+            if c == '#' and space:
+                break
+            if depth and (c in ',]}' or (c == ':' and text[i + 1:i + 2] in ('', ' ', '\t'))):
+                plain = False
+                continue
+            space = c in ' \t'
+            i += 1
+            continue
+        if quote:
+            if quote == '"' and c == '\\':
+                i += 2
+                continue
+            if c == quote:
+                if quote == "'" and text.startswith("''", i):
+                    i += 2
+                    continue
+                quote = ''
+                prev = 'v'
+            i += 1
+            continue
+        if c in ' \t':
+            space = True
+            i += 1
+            continue
+        if c == '#' and space:
+            break
+        if c in '&!*' and (space or prev in ',{[:-?'):
+            while i < n and text[i] not in ' \t,{}[]':
+                i += 1
+            prev = ','
+            space = False
+            continue
+        if c in '"\'' and prev in ',{[:-?':
+            quote = c
+        elif c in '{[':
+            if depth or prev in ',{[:-?':     # a mid-scalar [ or { is plain text
+                depth += 1
+            prev = c
+        elif c in '}]':
+            depth = max(0, depth - 1)
+            prev = c
+        else:
+            if c in ':-?' and text[i + 1:i + 2] not in ('', ' ', '\t'):
+                plain = True
+                prev = 'v'
+            elif c in ':-?':
+                prev = c
+            else:
+                plain = True
+                prev = 'v'
+        space = False
+        i += 1
+    return depth, quote
 
 
 def _workflow_without_comment(line):
@@ -834,15 +933,55 @@ def _workflow_line_is_inert(path, key_indent, stack):
     return False
 
 
+def _workflow_line_is_env_value(path, key_indent, stack):
+    """Recognize a value in a workflow, job or step `env:` mapping. Actions puts
+    the evaluated expression in an environment variable instead of splicing it
+    into a script, which is GitHub's recommended mitigation for injection."""
+    path = tuple(path)
+    count = len(path) - 1
+    if count not in (1, 3, 5) or len(stack) != count or path[-2] != 'env':
+        return False
+    if count == 3 and path[0] != 'jobs':
+        return False
+    if count == 5 and (path[0] != 'jobs' or path[2:4] != ('steps', '*')):
+        return False
+    return (tuple(entry[1] for entry in stack) == path[:-1]
+            and stack[0][0] == 0
+            and all(stack[i][0] > stack[i - 1][0] for i in range(1, count))
+            and key_indent > stack[-1][0])
+
+
+_WORKFLOW_ENV_KEY = re.compile(r'^\s*(?:-\s+)?([A-Za-z_][\w-]*)\s*:')
+_WORKFLOW_EVAL_TAIL = re.compile(r'\b(?:eval|(?:ba|z|da)?sh\s+-c)\b(.*)')
+_WORKFLOW_SHELL_VAR = re.compile(r'\$\{?([A-Za-z_]\w*)')
+
+
+def _workflow_evaluated_vars(lines):
+    """Names of shell variables the workflow re-evaluates as code (`eval "$X"`,
+    `sh -c "$X"`). An env value that reaches one of these is still injection."""
+    names = set()
+    for line in lines:
+        m = _WORKFLOW_EVAL_TAIL.search(line)
+        if m:
+            names.update(_WORKFLOW_SHELL_VAR.findall(m.group(1)))
+    return names
+
+
+_WORKFLOW_EMPTY_MAP_VALUE = re.compile(r':[ ]+\{[ ]*\}[ ]*$')
+
+
 def _workflow_inert_expression_lines(lines):
-    """Return expression lines positively identified as inert workflow fields.
+    """Return (inert, env) expression lines: those positively identified as
+    inert workflow fields, and those that are values of an `env:` mapping.
 
     This deliberately parses only plain block-style YAML mappings. Unsupported
     YAML constructs make the whole file ineligible for downgrading, since an
     alias, flow map, or quoted key can change which field actually executes.
     """
     if sum(len(line) + 1 for line in lines) > 1024 * 1024:
-        return frozenset()
+        return frozenset(), frozenset()
+    if any(len(line) > _WORKFLOW_MAX_LINE for line in lines):
+        return frozenset(), frozenset()
 
     candidates = {}
     stack = []
@@ -858,55 +997,100 @@ def _workflow_inert_expression_lines(lines):
             block_scalar = None
 
         line = _workflow_without_comment(raw)
-        if not line.strip():
+        if not line.strip(' \t'):
             continue
-        leading = line[:len(line) - len(line.lstrip())]
+        leading = line[:len(line) - len(line.lstrip(' \t'))]
         indent = len(leading)
         body = line[indent:]
         if '\t' in leading:
             ambiguous = True
             continue
 
-        structure = _GITHUB_EXPRESSION.sub('', body)
+        structure = _workflow_strip_expressions(body)
+        # An empty flow map as a whole value (`workflow_dispatch: {}`) holds no
+        # keys, so it cannot hide a field; any other brace stays ambiguous.
+        braces = _WORKFLOW_EMPTY_MAP_VALUE.sub(':', structure)
         if (_WORKFLOW_QUOTED_KEY.match(structure)
-                or any(token in structure for token in '{}')
+                or any(token in braces for token in '{}')
                 or _WORKFLOW_ANCHOR_ALIAS.search(structure)):
             ambiguous = True
 
         sequence_item = body == '-' or body.startswith('- ')
         if sequence_item:
-            while stack and stack[-1][0] >= indent:
+            # A sequence may sit at its parent key's own indent (`steps:` then
+            # `- run:`): that key stays open, only siblings and items pop.
+            while stack and (stack[-1][0] > indent or (stack[-1][0] == indent and stack[-1][1] == '*')):
                 stack.pop()
             stack.append((indent, '*'))
             if body == '-':
                 continue
-            key_indent = indent + 2
-            body = body[2:]
+            rest = body[2:]
+            if rest[:1] == '\t':
+                ambiguous = True
+            key_indent = indent + 2 + (len(rest) - len(rest.lstrip(' ')))
+            body = rest
         else:
             key_indent = indent
             while stack and stack[-1][0] >= key_indent:
                 stack.pop()
 
-        match = _WORKFLOW_PLAIN_KEY.match(body.strip())
+        match = _WORKFLOW_PLAIN_KEY.match(body.strip(' \t'))
+        head = body.strip(' \t')
+        if head[:1] in ('?', ':') and (len(head) == 1 or head[1] in ' \t'):
+            ambiguous = True                  # explicit key / value indicators
+        # A quoted scalar or flow collection that stays open past this line makes
+        # the lines after it text, not structure. Rather than track them, the
+        # whole file is left ungraded.
+        value_text = _workflow_strip_expressions((match.group(2) or '') if match else body)
+        depth, quote = _workflow_scalar_open(value_text)
+        if depth or quote:
+            ambiguous = True
         if not match:
+            if value_text.lstrip()[:1] in ('|', '>', '!'):
+                ambiguous = True              # a keyless block scalar or tagged item
             if '${{' in body:
                 ambiguous = True
             continue
 
-        key, value = match.groups()
+        key, value = match.group(1), match.group(2) or ''
         path = tuple(entry[1] for entry in stack) + (key,)
         if '${{' in raw:
             candidates[number] = (path, key_indent, tuple(stack))
 
-        if _WORKFLOW_BLOCK_SCALAR.fullmatch(value.strip()):
+        if value.lstrip()[:1] == '!':
+            ambiguous = True                  # a tag can hide a block scalar header
+        if _WORKFLOW_BLOCK_SCALAR.fullmatch(value.strip(' \t')):
             block_scalar = (key_indent, path, key_indent, tuple(stack))
-        elif not value.strip():
+        elif not value.strip(' \t'):
             stack.append((key_indent, key))
 
     if ambiguous:
-        return frozenset()
-    return frozenset(number for number, context in candidates.items()
-                     if _workflow_line_is_inert(*context))
+        return frozenset(), frozenset()
+    return (frozenset(number for number, context in candidates.items()
+                      if _workflow_line_is_inert(*context)),
+            frozenset(number for number, context in candidates.items()
+                      if _workflow_line_is_env_value(*context)))
+
+
+_CODE_COMMENT_START = re.compile(r'^\s*(?:#|//|/\*|\*|--|;|rem\b|::)', re.IGNORECASE)
+_AI_ADDRESSED = re.compile(
+    r'\b(?:ai|agents?|assistants?|claude|llms?|models?|gpt|copilot|you|your)\b',
+    re.IGNORECASE)
+
+
+def _drop_plain_comment_suppression(findings, content):
+    """ST-ST-002 on a whole-line code comment that addresses no AI ("loaders
+    we should silence warnings about") describes the program's own behavior,
+    not a directive. A comment aimed at an agent or the reader stays flagged."""
+    lines = content.split('\n')
+    kept = []
+    for f in findings:
+        if f.rule_id == 'ST-ST-002' and 1 <= f.line <= len(lines):
+            line = lines[f.line - 1]
+            if _CODE_COMMENT_START.match(line) and not _AI_ADDRESSED.search(line):
+                continue
+        kept.append(f)
+    return kept
 
 
 def _grade_quoted_defensive_examples(findings, content, rel_path):
@@ -1173,14 +1357,19 @@ def scan_file(file_path, rel_path, budget=None, decode_cache=None):
     if PACK_LOAD_ERROR:
         return [_pack_load_finding(rel_path)]
     try:
-        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-            content = f.read()
+        # newline='' keeps a lone \r visible; the text is then folded the way
+        # universal newlines would have, so every other scanner sees what it did.
+        with open(file_path, 'r', encoding='utf-8', errors='ignore', newline='') as f:
+            raw = f.read()
     except (OSError, UnicodeDecodeError):
         return []
-    return scan_content(content, rel_path, budget=budget, decode_cache=decode_cache)
+    odd_breaks = bool(_WORKFLOW_ODD_BREAK.search(raw))
+    content = raw.replace('\r\n', '\n').replace('\r', '\n')
+    return scan_content(content, rel_path, budget=budget, decode_cache=decode_cache,
+                        odd_breaks=odd_breaks)
 
 
-def scan_content(content, rel_path, budget=None, decode_cache=None):
+def scan_content(content, rel_path, budget=None, decode_cache=None, odd_breaks=False):
     """Run all categories over already-loaded text — an extracted archive
     member, a decoded blob. The KTD7 in-memory entry point scan_archive recurses
     so prompt-injection / unicode-smuggling / exfil / IOC detection reaches
@@ -1199,9 +1388,15 @@ def scan_content(content, rel_path, budget=None, decode_cache=None):
     # memory-heist layer on a file that still executes.
     code_exts = core._CODE_EXTS
     is_workflow = rel_path.replace('\\', '/').startswith('.github/workflows/')
-    workflow_lines = content.splitlines() if is_workflow else ()
-    workflow_inert_lines = (_workflow_inert_expression_lines(workflow_lines)
-                            if is_workflow else frozenset())
+    # Split the way finding.line is counted (on \n only), so a line number from
+    # a finding always indexes the same line here.
+    workflow_lines = ([ln[:-1] if ln.endswith('\r') else ln for ln in content.split('\n')]
+                      if is_workflow else ())
+    workflow_inert_lines, workflow_env_lines = (
+        _workflow_inert_expression_lines(workflow_lines)
+        if is_workflow and not odd_breaks and not _WORKFLOW_ODD_BREAK.search(content)
+        else (frozenset(), frozenset()))
+    workflow_budget = _WORKFLOW_UNTRUSTED_BUDGET
 
     # AI agent instruction files: treat like SKILL.MD for prompt injection + exfiltration + persistence.
     # Use core's canonical set so the scanner and the evidence-class layer agree
@@ -1231,6 +1426,19 @@ def scan_content(content, rel_path, budget=None, decode_cache=None):
         prerequisite_findings = scan_rules(content, rel_path, PREREQUISITE_RULES,
                                            "prerequisite-attack", "critical")
         is_action = os.path.basename(rel_path).lower() in ('action.yml', 'action.yaml')
+        if is_workflow and workflow_env_lines:
+            # An expression as a workflow/job/step env value is not spliced
+            # into a script; the inline use in `run:` is what gets flagged.
+            # Unless the variable is later re-evaluated as code (eval/sh -c).
+            evaluated = _workflow_evaluated_vars(workflow_lines)
+
+            def _safe_env_value(f):
+                if f.rule_id != "ST-PR-010" or f.line not in workflow_env_lines:
+                    return False
+                key = _WORKFLOW_ENV_KEY.match(workflow_lines[f.line - 1])
+                return not (key and key.group(1) in evaluated)
+            prerequisite_findings = [f for f in prerequisite_findings
+                                     if not _safe_env_value(f)]
         for finding in prerequisite_findings:
             action_env = is_action and _action_env_line(content, finding.line)
             if finding.rule_id == "ST-PR-010" and (is_workflow or ext == '.py'
@@ -1241,11 +1449,12 @@ def scan_content(content, rel_path, budget=None, decode_cache=None):
                 if action_env:
                     finding.title = "Action environment expression"
                 elif (is_workflow and finding.line in workflow_inert_lines
-                        and 1 <= finding.line <= len(workflow_lines)
-                        and not _UNTRUSTED_EXPRESSION.search(
-                            workflow_lines[finding.line - 1])):
-                    finding.severity = "low"
-                    finding.title = "Workflow expression in an inert field"
+                        and 1 <= finding.line <= len(workflow_lines)):
+                    line_text = workflow_lines[finding.line - 1]
+                    workflow_budget -= len(line_text)
+                    if workflow_budget >= 0 and not _workflow_untrusted(line_text):
+                        finding.severity = "low"
+                        finding.title = "Workflow expression in an inert field"
         findings.extend(_grade_quoted_defensive_examples(prerequisite_findings,
                                                           content, rel_path))
 
@@ -1260,7 +1469,10 @@ def scan_content(content, rel_path, budget=None, decode_cache=None):
         # Cat 6: Scope escalation
         findings.extend(scan_rules(content, rel_path, SCOPE_RULES, "scope-escalation", "high"))
         # Cat 7: Stealth
-        findings.extend(scan_rules(content, rel_path, STEALTH_RULES, "stealth", "high"))
+        stealth = scan_rules(content, rel_path, STEALTH_RULES, "stealth", "high")
+        if ext in code_exts and not is_agent_instruction_file:
+            stealth = _drop_plain_comment_suppression(stealth, content)
+        findings.extend(stealth)
 
     # Cat 4b: Credential-path directives (agent instruction files + text files)
     if is_agent_instruction_file or ext in text_exts:

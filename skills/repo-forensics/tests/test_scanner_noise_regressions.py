@@ -42,8 +42,9 @@ class TestWorkflowExpressions:
             "        env:\n"
             "          GH_TOKEN: ${{ github.token }}\n"
             "        run: echo done\n"))
-        assert len(hits) == 4
-        assert [h.severity for h in hits] == ["low", "high", "high", "high"]
+        # The step env value is GitHub's recommended pattern and is not flagged.
+        assert len(hits) == 3
+        assert [h.severity for h in hits] == ["low", "high", "high"]
 
     def test_expression_inside_run_block_stays_high(self, tmp_path):
         hits = _pr010(tmp_path, (
@@ -218,14 +219,40 @@ class TestWorkflowExpressions:
         assert len(hits) == 12_000
         assert cpu_seconds < 2.0, f"scanning 12,000 expressions used {cpu_seconds:.3f} CPU seconds"
 
-    def test_environment_sibling_after_run_stays_high(self, tmp_path):
+    def test_env_sibling_after_run_is_an_env_value(self, tmp_path):
         hits = _pr010(tmp_path, (
             "jobs:\n  b:\n    steps:\n"
             "      - run: |\n"
             "          echo ok\n"
             "        env:\n"
             "          X: ${{ secrets.TOKEN }}\n"))
+        assert hits == []
+
+    def test_env_shaped_text_inside_run_scalar_stays_high(self, tmp_path):
+        hits = _pr010(tmp_path, (
+            "jobs:\n  b:\n    steps:\n"
+            "      - run: |\n"
+            "          env:\n"
+            "            X: ${{ github.event.issue.title }}\n"))
         assert [h.severity for h in hits] == ["high"]
+
+    def test_env_values_are_not_flagged_but_inline_run_is(self, tmp_path):
+        hits = _pr010(tmp_path, (
+            "on: pull_request\n"
+            "env:\n"
+            "  TOP: ${{ github.event.pull_request.title }}\n"
+            "jobs:\n"
+            "  b:\n"
+            "    env:\n"
+            "      JOB: ${{ secrets.NPM_TOKEN }}\n"
+            "    steps:\n"
+            "      - name: Release\n"
+            "        env:\n"
+            "          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}\n"
+            "          X: ${{ steps.y.outputs.z }}\n"
+            "        run: gh release create \"$X\"\n"
+            "      - run: echo ${{ github.event.pull_request.title }}\n"))
+        assert [(h.line, h.severity) for h in hits] == [(14, "high")]
 
 
     def test_key_shaped_text_inside_run_scalar_cannot_mask_it(self, tmp_path):
@@ -271,7 +298,9 @@ class TestWorkflowExpressions:
             "      - uses: some/action@v1\n"
             "        with:\n"
             "          rev: ${{ needs.detect.outputs.rev }}\n"))
-        assert [h.severity for h in hits] == ["high", "high"]
+        # The env value reaches the script as "$T", the recommended mitigation;
+        # the action input stays high.
+        assert [(h.line, h.severity) for h in hits] == [(11, "high")]
 
 
 class TestCssZeroSize:

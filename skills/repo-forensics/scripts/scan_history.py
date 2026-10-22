@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import platform
+import re
 import sqlite3
 import sys
 import time
@@ -40,6 +41,14 @@ CREATE TABLE IF NOT EXISTS evidence_state (
     checked_at REAL NOT NULL,
     ttl_seconds REAL NOT NULL,
     details TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS suppressions (
+    fingerprint TEXT PRIMARY KEY,
+    rule_id TEXT NOT NULL,
+    relpath TEXT NOT NULL,
+    file_hash TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    created_at REAL NOT NULL
 );
 CREATE TABLE IF NOT EXISTS retry_queue (
     id INTEGER PRIMARY KEY,
@@ -226,6 +235,57 @@ class HistoryStore:
                 (new_attestation_id, retry_id),
             )
 
+    def add_suppression(self, fingerprint: str, rule_id: str, relpath: str,
+                        file_hash: str, reason: str, created_at: float | None = None):
+        """Persist (or refresh) a WARN-tier adjudication downgrade."""
+        with self.connect() as db:
+            db.execute(
+                "INSERT OR REPLACE INTO suppressions "
+                "(fingerprint, rule_id, relpath, file_hash, reason, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (fingerprint, rule_id, relpath, file_hash, reason,
+                 time.time() if created_at is None else created_at),
+            )
+
+    def list_suppressions(self) -> list[dict]:
+        with self.connect() as db:
+            db.row_factory = sqlite3.Row
+            rows = db.execute(
+                "SELECT fingerprint, rule_id, relpath, file_hash, reason, created_at "
+                "FROM suppressions ORDER BY created_at"
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def revoke_suppression(self, prefix: str) -> int:
+        """Revoke by exact fingerprint or unique prefix.
+
+        Returns the number of records removed. Raises ValueError when the
+        prefix matches more than one record (ambiguous) so the caller can
+        refuse rather than delete the wrong suppression.
+        """
+        if not isinstance(prefix, str) or not re.fullmatch(r"[0-9a-f]{4,64}", prefix):
+            raise ValueError("fingerprint must be 4 to 64 lowercase hex characters")
+        with self.connect() as db:
+            rows = db.execute(
+                "SELECT fingerprint FROM suppressions "
+                "WHERE substr(fingerprint, 1, length(?)) = ?",
+                (prefix, prefix),
+            ).fetchall()
+            matches = [row[0] for row in rows]
+            if len(matches) > 1:
+                raise ValueError(
+                    f"ambiguous fingerprint prefix {prefix!r}: matches {len(matches)} records"
+                )
+            if not matches:
+                return 0
+            db.execute("DELETE FROM suppressions WHERE fingerprint = ?", (matches[0],))
+            return 1
+
+    def clear_suppressions(self) -> int:
+        with self.connect() as db:
+            cursor = db.execute("DELETE FROM suppressions")
+            return cursor.rowcount
+
 
 def record_report_safely(repo_path: str, report: dict, db_path: str | None = None,
                          rulepack_digest: str | None = None) -> dict | None:
@@ -279,3 +339,41 @@ def evidence_freshness_safely(db_path: str | None = None, now: float | None = No
     except (OSError, sqlite3.Error, ValueError, TypeError) as exc:
         print(f"[!] Evidence freshness unavailable: {exc}", file=sys.stderr)
         return []
+
+
+def suppressions_db_path() -> str:
+    """Suppressions share the history DB file. REPO_FORENSICS_HISTORY_DB
+    overrides the location (used by tests and power users); unlike the
+    attestations feature, suppressions are NOT gated on REPO_FORENSICS_HISTORY
+    — a recorded downgrade must apply on every scan, history or not."""
+    return os.environ.get("REPO_FORENSICS_HISTORY_DB") or default_db_path()
+
+
+def load_suppressions_safely(db_path: str | None = None) -> list[dict]:
+    """Read active suppression records without ever affecting the scan path.
+
+    Returns [] on any failure, and — unlike attestation reads — never creates
+    the DB: a scan on a machine with no recorded downgrades must not write to
+    disk just to discover that.
+    """
+    path = db_path or suppressions_db_path()
+    try:
+        if not os.path.isfile(path):
+            return []
+        return HistoryStore(path).list_suppressions()
+    except (OSError, sqlite3.Error, ValueError, TypeError) as exc:
+        print(f"[!] Adjudication suppressions unavailable: {exc}", file=sys.stderr)
+        return []
+
+
+def add_suppression_safely(fingerprint: str, rule_id: str, relpath: str,
+                           file_hash: str, reason: str,
+                           db_path: str | None = None) -> dict | None:
+    try:
+        HistoryStore(db_path or suppressions_db_path()).add_suppression(
+            fingerprint, rule_id, relpath, file_hash, reason
+        )
+    except (OSError, sqlite3.Error, ValueError, TypeError) as exc:
+        print(f"[!] Could not persist suppression: {exc}", file=sys.stderr)
+        return None
+    return {"fingerprint": fingerprint, "rule_id": rule_id, "relpath": relpath}

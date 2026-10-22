@@ -8,7 +8,7 @@ and requires explicit review + major version bump.
 Contract guarantees locked here:
   1. Top-level JSON keys: target, mode, scanner_count, scanners, summary, exit_code, findings
   2. Summary dict keys: critical, high, medium, low, total (all int)
-  3. Scanner count: at least the 28 base scanners in default full mode
+  3. Scanner count: at least the base scanners in default full mode
   4. Scanner entry keys: name, exit_code, parse_error, finding_count, findings
   5. Exit code matrix: clean -> 0, noisy(high/medium) -> 1, critical -> 2
   6. Additive-only policy: new top-level fields allowed; removing or renaming
@@ -92,6 +92,10 @@ EXPECTED_BASE_SCANNER_NAMES = {
     # armed .git/config exec keys, gitdir pointers, .gitmodules update-exec,
     # and the staged config-write + rename-to-.git plant.
     "git_config",
+    # 2026-10 vulnerable-runtime declarations (PHP2Shell): composer.json/lock
+    # php constraints and platform pins, Dockerfile/docker-compose php image
+    # tags, setup-php workflow pins below the patched floors.
+    "runtime_floors",
 }
 
 # Synthetic scanner entries injected by aggregate_json.py AFTER the real
@@ -99,7 +103,7 @@ EXPECTED_BASE_SCANNER_NAMES = {
 # finds a raw trifecta pattern (aggregate_json.py:178). correlation is appended
 # when run_correlation_pass produces any findings (aggregate_json.py:198). On a
 # clean target neither appears. On a dirty target both may appear. The contract
-# here is: the 28 base scanners are ALWAYS present, and any extras must be in this
+# here is: the base scanners are ALWAYS present, and any extras must be in this
 # allow-list of known synthetic entries.
 EXPECTED_SYNTHETIC_SCANNER_NAMES = {"trifecta_raw", "correlation"}
 
@@ -221,7 +225,7 @@ class TestJsonSchemaScanners:
     Note: aggregate_json.py appends synthetic 'trifecta_raw' and 'correlation'
     scanner entries AFTER the real scanner loop when those detection paths fire.
     On a clean target neither appears; on a dirty target either or both may
-    appear. The contract is: all 28 base scanners are ALWAYS present, and any
+    appear. The contract is: all base scanners are ALWAYS present, and any
     additional names must be in EXPECTED_SYNTHETIC_SCANNER_NAMES. Set equality
     against only the base set would incorrectly flag dirty-target scans as
     contract breaks.

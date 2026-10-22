@@ -198,9 +198,18 @@ def get_tracked_symlinks(repo_root, skill_root):
         resolved = os.path.realpath(full_path)
         if resolved != skill_root_real and not resolved.startswith(skill_root_real + os.sep):
             continue
-        symlinks[entry] = target
+        symlinks[entry] = _portable_link(target)
 
     return symlinks
+
+
+def _portable_link(target, sep=None):
+    """Symlink targets are recorded with '/'. Windows reads them back with
+    backslashes, which would look like a retargeted link on every Windows
+    install. A backslash is a legal filename character on POSIX, so only
+    translate where it is the path separator."""
+    sep = os.sep if sep is None else sep
+    return target.replace(sep, "/") if sep == "\\" else target
 
 
 def get_tracked_files(skill_root):
