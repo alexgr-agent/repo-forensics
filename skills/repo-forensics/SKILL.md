@@ -203,6 +203,19 @@ JSON output for automation:
 | **dead_anchors** | External-anchor **claimability**: repojackable GitHub owner/repo, phantom/removed npm & PyPI packages named in prose install commands, unregistered/expired domains (RDAP), and dangling free-tier cloud subdomains (Vercel/Railway/GitHub Pages/… via DNS + provider fingerprint). Closes the **Skilljacking** gap AIR's research says "tripped nothing at all" — the reference is dead and *claimable by an attacker* while the file content never changed. Network-touching but never-hard-fail: emits **only** on a confirmed-claimable anchor; live-and-owned and couldn't-check are silent. `--offline` degrades every anchor to silent. | skill + full |
 | **yara** | Curated YARA signature scanner for malware, webshells, cryptominers, and hacktools. 11 hand-authored rules across 4 families (`data/yara/{webshells,malware,cryptominers,hacktools}.yar`) with multi-string conjunctive conditions + filesize bounds so a match is a confirmed family indicator, not a single-token guess. Each rule carries a `meta:` block (id/severity/category/confidence/title) mirrored in `data/yara/manifest.json` with per-file sha256 integrity checks. `yara-python` is an **optional** dependency: when absent the scanner degrades to a missing-tool capability gap (one stderr line, exit-neutral, stdout `[]`), so the core product stays zero-non-stdlib-deps and offline. Webshells and reverse-shell stagers are CRITICAL/HIGH; hacktools start at MEDIUM (conservative initial severities). | skill + full |
 
+### Hook inspection limits
+
+The command gate inspects the tested ordinary scripts and executable heredocs through 512 KiB. Its stdin JSON envelope is limited to 1 MiB. Pathological syntax can stop inspection at 256 heredoc openers on one line, 4,096 levels of lexical or launcher nesting, 32 executable recursion levels, or a 1.5-second process-CPU work budget counted from interpreter start. On macOS and Linux a process-CPU timer enforces the budget as a hard stop, so one hook invocation stays under 2 CPU seconds whatever the input. On Windows the budget is checked between inspection steps. Refusals name incomplete inspection and ask you to split the command. Scheduling delays do not affect the verdict.
+
+Known limits: the PowerShell check is a bounded detector for the common download-and-run forms in issue #55 (`irm | iex`, `iex (irm ...)`, `DownloadString | iex`, `[scriptblock]::Create(...)`, `powershell -enc ...` and their tested spellings). It is not a complete shell or PowerShell parser, and new spellings of the same idea can get through. In the round-four review it refused 161 of 270 fresh ordinary and launcher-wrapped variants (released 2.14.15 refused 72) and lost none of the earlier refusals. Known gaps:
+
+- Launchers it does not recognise in front of an interpreter, such as `runuser`, `systemd-run`, `firejail`, `conda run`, `poetry run`, `cmd /c start`, `runas` or `psexec`.
+- Downloads handed to an interpreter through `<(...)`, `<<<`, a variable plus `eval`, or a saved file that a later command runs, and fetches by other programs (`lynx`, `w3m`, `php`).
+- `$SHELL`, `$(which bash)` and other computed interpreter names, and runtimes that fetch and run code themselves (`deno run URL`, `node -e` with `fetch`, Python `urllib` plus `exec`).
+- Shell escape, alias and descriptor obfuscation, COM response objects, assembly and job execution, indirect process launch, and persistence through non-PowerShell startup files, scheduler, service or registry interfaces, or generated task files.
+
+Do not assume those families are covered. The tested PowerShell profile writes are covered.
+
 ### Dead-anchor coverage and known scope (Skilljacking / repojacking)
 
 `dead_anchors` (motivated by AIR's *Skilljacking* research, plus the *Circus of

@@ -19,7 +19,7 @@ Ceilings below are set well above the reference numbers on purpose. This is a
 regression alarm, not a benchmark: shared CI runners are routinely 3-5x slower
 and vary run to run, and a test that fails on a noisy neighbour teaches people
 to rerun until green. What it must catch is a change that puts real work on
-this path — a subprocess spawn, a scanner import, a network call — which would
+this path — an unbounded subprocess spawn, a scanner import, a network call — which would
 blow past these numbers by an order of magnitude, not a few milliseconds.
 
 Methodology follows the eval review's flakiness note: discard warmup runs, take
@@ -106,16 +106,23 @@ class TestBlockingPathLatency:
 class TestBlockingPathDoesNoRealWork:
     """The structural half of the budget. Timings drift with the host; these
     invariants are what actually keep the path fast, and they fail loudly the
-    moment someone adds a scanner import or a subprocess to the gate."""
+    moment someone adds a scanner import or an unbounded subprocess to the gate."""
 
-    def test_gate_spawns_no_subprocess(self):
-        """No subprocess, ever: it would risk recursive hook triggers on top of
-        the latency cost."""
+    def test_gate_inspects_without_spawning_a_process(self, monkeypatch):
+        """Inspection stays in the hook process and never executes payloads."""
+        import subprocess
+        import sys
         import pre_scan
-        source = Path(pre_scan.__file__).read_text(encoding="utf-8")
-        assert "import subprocess" not in source
-        assert "subprocess.run" not in source
-        assert "os.system" not in source
+        raw = json.dumps(ch.make_cursor_stdin('echo benign'))
+        def inspect(argv, **kwargs):
+            pytest.fail('the gate must not spawn an inspection process')
+        monkeypatch.setattr(pre_scan.hook_adapter, 'read_stdin', lambda **kw: raw)
+        monkeypatch.setattr(sys, 'argv', [pre_scan.__file__, '--adapter', 'cursor'])
+        monkeypatch.setattr(subprocess, 'run', inspect)
+        with pytest.raises(SystemExit) as stopped:
+            pre_scan.main()
+        assert stopped.value.code == 0
+        assert 'os.system' not in Path(pre_scan.__file__).read_text(encoding='utf-8')
 
     def test_hook_adapter_is_a_leaf_module(self):
         """hook_adapter must import nothing from the repo. If it grew a

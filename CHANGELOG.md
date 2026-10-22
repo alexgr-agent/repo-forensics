@@ -26,6 +26,10 @@ All notable changes to repo-forensics. Versions follow semver.
 - `compromised_versions.json`: the laravel-lang campaign note no longer cites a detector that does not exist; it states that only the disclosed malicious tags are detected, by exact version.
 
 - `ST-PR-010`: an empty trigger map such as `workflow_dispatch: {}` no longer leaves the whole workflow ungraded, so expressions in `concurrency:`, `name:` and `runs-on:` grade low there too. Any other brace still leaves the file at high.
+### Fixed
+- Pre-execution gate: refuse the common PowerShell download-and-run forms from #55: `irm URL | iex`, `iex (irm URL)`, `(New-Object Net.WebClient).DownloadString(URL) | iex`, `[scriptblock]::Create(...)` and `powershell -enc ...`, including tested quoting, alias, launcher and host-path spellings, and downloads saved to a file and then run. Commands that only fetch, and documentation that quotes these forms, stay allowed.
+- Pre-execution gate: one hook invocation stays under 2 CPU seconds whatever the input. A command word is no longer used as a wildcard pattern (a long run of `[` cost over a minute), chained assignments and here-string checks are linear, and the 1.5-second work budget counts from interpreter start. On macOS and Linux a process-CPU timer enforces it as a hard stop; on Windows it is checked between inspection steps. A command over budget is refused with a message asking you to split it.
+- Known limits: this is a bounded detector for the forms in #55, not a complete shell or PowerShell parser. In review it refused 161 of 270 fresh ordinary and launcher-wrapped variants (2.14.15 refused 72) and lost none of the earlier refusals. Unrecognised launchers (`runuser`, `systemd-run`, `conda run`, `psexec`), downloads run through `<(...)`, `<<<`, `eval` or a saved file, computed interpreter names (`$SHELL`), and runtimes that fetch and run code themselves can still get through. The full list is in SKILL.md under "Hook inspection limits".
 
 ## [2.14.15] - 2026-10-16
 
