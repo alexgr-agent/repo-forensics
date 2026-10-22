@@ -25,6 +25,8 @@ All notable changes to repo-forensics. Versions follow semver.
 - Install gate: shell-quoted package tokens (`npm install "pkg@1.2.3"`, `composer require "vendor/pkg:1.2.3"`, `pip install "pkg==1.2.3"`) are unquoted before the IOC and compromised-version checks; before, the quotes let a pinned compromised version through.
 - `compromised_versions.json`: the laravel-lang campaign note no longer cites a detector that does not exist; it states that only the disclosed malicious tags are detected, by exact version.
 
+- `ST-PR-010`: an empty trigger map such as `workflow_dispatch: {}` no longer leaves the whole workflow ungraded, so expressions in `concurrency:`, `name:` and `runs-on:` grade low there too. Any other brace still leaves the file at high.
+
 ## [2.14.15] - 2026-10-16
 
 ### Fixed

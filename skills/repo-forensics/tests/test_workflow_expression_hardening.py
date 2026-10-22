@@ -235,3 +235,30 @@ class TestSequenceAtKeyIndent:
         wf = ("on: push\njobs:\n  b:\n  - environment: ${{ matrix.x }}\n"
               "    runs-on: ubuntu-latest\n")
         assert all(sev == "high" for _l, sev in _pr010(wf))
+
+
+class TestEmptyFlowMapValue:
+    """`workflow_dispatch: {}` is everywhere and holds no keys; it must not
+    leave the whole workflow ungraded. Non-empty flow maps still do."""
+
+    INERT = ("concurrency:\n  group: t-${{ github.ref }}\n"
+             "jobs:\n  b:\n    name: test (${{ matrix.os }})\n    runs-on: ${{ matrix.os }}\n"
+             "    steps:\n      - run: echo ok\n")
+
+    def test_empty_map_keeps_inert_fields_low(self):
+        content = "on:\n  push:\n  workflow_dispatch: {}\n" + self.INERT
+        assert _severities(content) == {"low"}
+
+    @pytest.mark.parametrize("trigger", [
+        "  workflow_dispatch: {inputs: {}}\n",
+        "  workflow_dispatch: {} {}\n",
+        "  workflow_dispatch: '{}'\n",
+    ])
+    def test_other_braces_stay_ungraded(self, trigger):
+        content = "on:\n  push:\n" + trigger + self.INERT
+        assert _severities(content) == {"high"}
+
+    def test_untrusted_value_in_inert_field_stays_high(self):
+        content = ("on:\n  workflow_dispatch: {}\njobs:\n  b:\n"
+                   "    name: ${{ github.event.issue.title }}\n    runs-on: x\n")
+        assert _severities(content) == {"high"}

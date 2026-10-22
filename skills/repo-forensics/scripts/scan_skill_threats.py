@@ -933,6 +933,9 @@ def _workflow_line_is_inert(path, key_indent, stack):
     return False
 
 
+_WORKFLOW_EMPTY_MAP_VALUE = re.compile(r':[ ]+\{[ ]*\}[ ]*$')
+
+
 def _workflow_inert_expression_lines(lines):
     """Return expression lines positively identified as inert workflow fields.
 
@@ -969,8 +972,11 @@ def _workflow_inert_expression_lines(lines):
             continue
 
         structure = _workflow_strip_expressions(body)
+        # An empty flow map as a whole value (`workflow_dispatch: {}`) holds no
+        # keys, so it cannot hide a field; any other brace stays ambiguous.
+        braces = _WORKFLOW_EMPTY_MAP_VALUE.sub(':', structure)
         if (_WORKFLOW_QUOTED_KEY.match(structure)
-                or any(token in structure for token in '{}')
+                or any(token in braces for token in '{}')
                 or _WORKFLOW_ANCHOR_ALIAS.search(structure)):
             ambiguous = True
 
