@@ -250,6 +250,9 @@ _TRUSTED_TRIGGERS = frozenset({
     "registry_package", "page_build",
 })
 _ON_KEY_RE = re.compile(r'^["\']?on["\']?\s*:(.*)$')
+# Line breaks YAML parsers may honour that this reader does not split on (NEL,
+# U+2028/2029, VT, FF, a bare CR): one could hide a trigger, so fail closed.
+_ODD_LINE_BREAK = re.compile('[\x0b\x0c\x1c\x1d\x1e\x85\u2028\u2029\r]')
 _TRIGGER_NAME_RE = re.compile(r'^[A-Za-z_][\w-]*$')
 
 
@@ -262,6 +265,8 @@ def _workflow_triggers(lines):
     in_on = False
     for raw in lines:
         line = raw.rstrip('\r\n')
+        if _ODD_LINE_BREAK.search(line):
+            return None                           # a break other parsers honour
         body = line.split(' #', 1)[0].rstrip() if not line.lstrip().startswith('#') else ''
         if not body.strip():
             continue
