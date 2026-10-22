@@ -44,7 +44,6 @@ Audit untrusted repos before they touch your agent. Fully local, self-updating d
 <p align="center">
   <a href="https://github.com/alexgreensh/repo-forensics/actions/workflows/tests.yml"><img src="https://github.com/alexgreensh/repo-forensics/actions/workflows/tests.yml/badge.svg?branch=main" alt="Tests"></a>
   <a href="https://github.com/alexgreensh/repo-forensics/actions/workflows/verify-checksums.yml"><img src="https://github.com/alexgreensh/repo-forensics/actions/workflows/verify-checksums.yml/badge.svg?branch=main" alt="Signed release manifest"></a>
-  <a href="https://scorecard.dev/viewer/?uri=github.com/alexgreensh/repo-forensics"><img src="https://api.scorecard.dev/projects/github.com/alexgreensh/repo-forensics/badge" alt="OpenSSF Scorecard"></a>
 </p>
 
 ---
