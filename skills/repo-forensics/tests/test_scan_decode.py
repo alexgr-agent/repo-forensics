@@ -605,3 +605,17 @@ class TestSharedBudgetThreading:
         scanner.feed_blobs(blobs, "exp.txt", seen, findings, budget)
         # Over-deadline budget => no payload work, at most a single incomplete note.
         assert not _has_payload(findings)
+
+
+class TestParseWarningsStayQuiet:
+    def test_ast_parse_of_decoded_text_emits_no_warnings(self):
+        """A decoded blob with an invalid escape makes ast.parse warn
+        (SyntaxWarning on 3.12+, DeprecationWarning before). Those must not
+        leak to the user's stderr."""
+        import warnings
+        text = 'x = "\\d"\ny = 1\n'
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            assert scanner._looks_code_like(text) is True
+            scanner._ast_has_dangerous_call(text)
+        assert caught == []
