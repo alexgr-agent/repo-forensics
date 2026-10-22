@@ -4,7 +4,7 @@
   "file_count": 86,
   "files": {
     ".gitignore": "8b2598a3359a556874b8069d42dea2686f07d46c3ca1b540c4025788b258180a",
-    "SKILL.md": "015c6054089e8bd89619e06e62a7e43c1a15ceac832a8589b2af94fc1e06c9e6",
+    "SKILL.md": "983e9042cef9f1939695659ca0bbfd77d5fdbb1bd3c82a99291d5d524f40e2ec",
     "data/README.md": "3980ad873dbef332e0db2d209cd22287d8a0d146930b40bafc8ab774166a8bc4",
     "data/compromised_versions.json": "999ad79601489f8a79950257545d4e37a418bf8c735ca7f35556e25f84c754f3",
     "data/rule_ids.csv": "4da56b33f17d5dda4c3559e4bccad2b003c3b411b6d0e006e64f859ef9b0ab19",
@@ -34,7 +34,7 @@
     "scripts/adjudication.py": "a5d48093491b1cd8896c5a79a486bc40e1bd93a688fa7d589bfad752b0915b43",
     "scripts/adjudication_bridge.py": "fc4e2f0c9ceaf1485fe791efb960634aa8ab2d8b51efb1279711cd285cbfd9a1",
     "scripts/aggregate_json.py": "546e8124e1092956d591affe857407ee9b5542040ab8620794f2c4c031e04c82",
-    "scripts/auto_scan.py": "81bdbbefdc380a7e7d963509097197f34a26d51132e676c4c899ae3cc90ebbee",
+    "scripts/auto_scan.py": "6f10d8d9567f395a4bac8e1a76efacad680937788e628525a917c8a2d0cbb4d0",
     "scripts/corpus_sync.py": "7feb0e2de6ede9ac909da8b5f8335cfd9e0181f97dc2b4b355b751e8ddb3234e",
     "scripts/cursor_pre_scan.py": "57c93659ad396faf7703f0fb965c28c4c12ac7cded68d16c5949103d06c28010",
     "scripts/dast_sandbox.sb": "2aea0d4d351ef719980461460b527d7dd39d52690ce6994da247d9cd2452e9a7",
@@ -45,7 +45,7 @@
     "scripts/hook_adapter.py": "2953e5e266616a3c35e535af2ae261197907c002b90c62e3042a4b90f8b46989",
     "scripts/ioc_manager.py": "8a9bf405de7bd08f728c84d0bcc476834369a637f4ea143e11f21e7192b28446",
     "scripts/parse_pnpm_lock.py": "720f084e11cd759ab453bdfa161950111a49455ff2c6ba55ef5a9c3e32161f0c",
-    "scripts/pre_scan.py": "013f7c1e1ae08f44c57b3daaea21f26f4ae383856174d597280a57aeedc52e5b",
+    "scripts/pre_scan.py": "6b615ff0151500ac4db97cf8f01cd961b2c7825de165323b6daa77bc3d3b148b",
     "scripts/pypi_pins.py": "a98ed49002aa4cf0df579989294d253f637b4148a6e0fa4cddbdd60b0f762df8",
     "scripts/refresh_controller.py": "e70f4b6e4e15c98161141f4483c80472b322f5ebbd1f1e65be6bd77adc86c30f",
     "scripts/refresh_threat_dbs.py": "d1463cc053bbace6f0a548e0352a7e1dc077c901f9d1fb6002b879ad5124985b",
@@ -81,7 +81,7 @@
     "scripts/scan_runtime_floors.py": "b3c37dfb62f8c37bdf2bf96cce1cb5367998feb3390d7f846fdd652b2a8b7707",
     "scripts/scan_sast.py": "e8e82b85f711aa779fa9476f08edae373449af57a00a1037188bb1a4ce80853e",
     "scripts/scan_secrets.py": "af6c7386766a1530a656eea50c4fba8e23c2a685bfe5629a9e7fdb15ff7a5790",
-    "scripts/scan_skill_threats.py": "62330976d193d3a64b24d67cfee5ff9da3815fbd561d16b07111a019c725356e",
+    "scripts/scan_skill_threats.py": "5c0fd8175242514b8070936f3afac3938e78bba4df41844598760da41c0d98a3",
     "scripts/scan_splitstream.py": "283f0d44ae20c0c4fa46ce68a4fcdf010011aa8650a195becbd5907cf22e6536",
     "scripts/scan_yara.py": "0272b4de75c8af5c461bfda86287254f1be9dfd31cfa20e2ebe91a55a8a35256",
     "scripts/session_scan.py": "d5d1ee3941b11d20ae94e8b5b2862898157510e08a61e536757dd81089221fc4",
@@ -111,12 +111,12 @@
   },
   "hook_count": 13,
   "repo_manifests": {
-    ".claude-plugin/marketplace.json": "79a052be7ff2f7f53d2ed187e473038fba7a277d0d6b076d133b288fb8391a2b",
-    ".claude-plugin/plugin.json": "9ce7579c7eb5470d544673b0387d2a94fd8a1902d3c7b9de9a2e94ffb193a617",
-    ".codex-plugin/plugin.json": "e51034741258f92a86d9bcf47e08912c5d6c56ccb7bb6fe3e3aa00d3c3082739",
+    ".claude-plugin/marketplace.json": "b94583b0abe877c2237f348c6ffb92349a7380a4fe589be73456ddb0bfdf5887",
+    ".claude-plugin/plugin.json": "b5ab9685f135ea35672c3376b22aae5a0210b27f240a6d799e295944d642c14b",
+    ".codex-plugin/plugin.json": "46806b0ad0b315f3f79de8760dfb74ec11d79d23ad6a8105760199db06d69e02",
     ".cursor-plugin/hooks.json": "77dcb9cd64b52604cbc607a867b1069187ad6ab2ba6e0e77bbab58206bc1707f",
-    ".cursor-plugin/plugin.json": "4c8abdd8a73c3585580e117e26f20fae948e12cf95412d4c837085710b95c71d",
-    ".kimi-plugin/plugin.json": "7f75a317b57a4fb6cbed8f4dac833fc271b6b72da1b6646b67938314829e4adb"
+    ".cursor-plugin/plugin.json": "c562b2313a84e5775d2a2db727f1e00a47351f4434a4b63b2a5f4292b99f3c48",
+    ".kimi-plugin/plugin.json": "eee04eb630bb6aa42775b42b4c5cdf279ab6c558329ffcc0211ff8617969af70"
   },
   "manifest_count": 6,
   "repo_source_manifests": {
