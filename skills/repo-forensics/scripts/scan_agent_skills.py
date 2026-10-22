@@ -523,9 +523,17 @@ _NETWORK_ACCESS_SIGNALS = [
     re.compile(r'(?i)\b(?:mcp__.*fetch|mcp__.*search|mcp__.*web)\b'),
 ]
 
-# In code and config a bare URL is metadata (homepage, author link); only a
-# call-shaped signal counts as network access there.
-_CODE_NETWORK_SIGNALS = [p for p in _NETWORK_ACCESS_SIGNALS if 'https?://' not in p.pattern]
+# In code and config a bare URL or the word "fetch" is metadata (an author
+# link, `fetch-depth: 0`); only a call-shaped signal counts as network access.
+_CODE_NETWORK_SIGNALS = [
+    re.compile(r'\b(?:fetch|got|axios(?:\.\w+)?|requests\.\w+|httpx\.\w+|aiohttp\.\w+'
+               r'|urlopen|https?\.(?:get|request)|http\.client\.\w+)\s*\('),
+    re.compile(r'\b(?:urllib\.request|urllib3|node-fetch|socket\.(?:connect|create_connection))\b'),
+    re.compile(r'(?:^|[\s;|&(`"\'])(?:curl|wget)\s+\S'),
+    re.compile(r'\b(?:web_fetch|web_search|WebFetch|WebSearch)\b'),
+    re.compile(r'\bmcp__\w*(?:fetch|search|web)\w*'),
+    re.compile(r'(?i)\b(?:api\.openai\.com|api\.anthropic\.com|openrouter\.ai)\b'),
+]
 
 _COOCCURRENCE_SCAN_EXTS = {'.md', '.txt', '.py', '.js', '.ts', '.json', '.yml', '.yaml', '.sh', '.bash', '.toml'}
 # Agent instructions (SKILL.md, CLAUDE.md, markdown under skills/ or commands/)
