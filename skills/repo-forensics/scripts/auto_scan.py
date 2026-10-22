@@ -413,8 +413,9 @@ def _normalize_composer_tokens(names, create_project=False):
 
     require mirrors Composer's own pairing rule (a bare vendor/pkg followed by
     a token with no '/' takes that token as its constraint), limited to
-    version-shaped tokens so a trailing `&& next-command` is never read as one. create-project is
-    positional (`vendor/pkg [directory] [version]`); flag values and the
+    version-shaped tokens so a trailing `&& next-command` is never read as
+    one. create-project is positional (`vendor/pkg [directory] [version]`);
+    flag values and the
     directory cannot be told apart reliably offline, so every later
     version-shaped token is checked against the package (an over-check can
     only deny on a real IOC hit)."""
