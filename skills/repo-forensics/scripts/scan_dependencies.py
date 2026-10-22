@@ -977,8 +977,11 @@ def _python_manifest_requirements(basename, content):
     for n, line in enumerate(lines, 1):
         m = table_entry.match(line)
         if m:
-            reqs.append((pypi_pins.normalize_name(m.group(1)),
-                         (m.group(2) if m.group(2) is not None else m.group(3)) or '', n))
+            spec = (m.group(2) if m.group(2) is not None else m.group(3)) or ''
+            # Poetry reads a bare version ("1.107.0") and "=1.107.0" as exact pins.
+            if re.match(r'^\s*=?\s*v?\d[\d.]*(?:\.\*)?\s*$', spec):
+                spec = '==' + spec.strip().lstrip('=').strip()
+            reqs.append((pypi_pins.normalize_name(m.group(1)), spec, n))
         if basename == 'pyproject.toml':
             for q in re.finditer(r'"([^"\n]+)"|\'([^\'\n]+)\'', line):
                 req = pypi_pins.parse_requirement(q.group(1) or q.group(2))

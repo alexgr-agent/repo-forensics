@@ -117,7 +117,7 @@ HARDCODED_MALICIOUS_DOMAINS = [
     "sfrclak.com",  # Axios supply chain RAT C2 domain (March 2026)
     "checkmarx.zone",          # TeamPCP Wave 1-2 C2 domain (March 2026)
     "models.litellm.cloud",    # LiteLLM supply chain compromise (March 2026)
-    "www.litellm.dev",         # LiteLLM 1.107.0 credential-stealer exfil, lookalike of litellm.ai (October 2026)
+    "litellm.dev",             # LiteLLM 1.107.0 credential-stealer exfil (www.litellm.dev), lookalike of litellm.ai (October 2026); apex covers every subdomain
     "checkmarx.cx",            # TeamPCP Wave 3 C2 domain (April 2026)
     "audit.checkmarx.cx",      # TeamPCP Wave 3 exfil endpoint (April 2026)
     "scan.aquasecurity.org",   # Trivy compromise exfil domain (March 2026)

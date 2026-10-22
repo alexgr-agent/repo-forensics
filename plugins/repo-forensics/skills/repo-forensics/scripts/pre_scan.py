@@ -448,6 +448,14 @@ def check_ioc_pinned_versions(pattern_type, package_names, iocs=None):
 PYPI_INSTALLS = ('pip_install', 'uv_install')
 
 
+def _install_tail(match):
+    """Install arguments to the END of the command, not just the matched line:
+    `(.+)` stops at a newline, so a backslash-continued pin or a second
+    install on the next line was never read."""
+    tail = match.string[match.start(1):]
+    return re.sub(r'\\\r?\n', ' ', tail).replace('\r', ' ').replace('\n', ' ; ')
+
+
 def check_pypi_pinned_versions(pattern_type, match, iocs=None):
     """Block `pip`/`uv` installs that pin a compromised PyPI release.
 
@@ -469,7 +477,7 @@ def check_pypi_pinned_versions(pattern_type, match, iocs=None):
         versions = iocs.get('compromised_versions_pypi', {})
         if not versions:
             return []
-        return pypi_pins.blocked_by(pypi_pins.parse_install_args(match.group(1)), versions)
+        return pypi_pins.blocked_by(pypi_pins.parse_install_args(_install_tail(match)), versions)
     except Exception:
         return []
 

@@ -25,6 +25,7 @@ import re
 _NAME_RE = re.compile(r'^([A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?)\s*(?:\[[^\]]*\])?\s*(.*)$', re.S)
 _SHELL_OPS = {'&&', '||', ';', '|', '&', ';;', '|&', '>', '>>', '<', '<<', '2>', '2>>'}
 _OPERATOR_CHARS = '=<>!~'
+_WORD_RE = re.compile(r'(?:"[^"]*"|\'[^\']*\'|[^\s"\'&|;<>()])+|[&|;<>()]+')
 # Matched with .match() and no `$`, then the remainder is checked by hand:
 # a tail class overlapping the digit groups made the single-regex form
 # quadratic on long digit/dot strings.
@@ -144,15 +145,13 @@ def parse_install_args(raw):
     ignored. Returns a
     list of (normalised_name, spec).
     """
-    import shlex
     if not isinstance(raw, str):
         return []
-    try:
-        lex = shlex.shlex(raw, posix=False, punctuation_chars=True)
-        lex.whitespace_split = True
-        words = list(lex)
-    except ValueError:
-        words = raw.split()
+    # Linear-time word split (shlex.read_token grows each token by string
+    # concatenation and goes quadratic on one long word: 400 KB took 14 s,
+    # past the 10 s PreToolUse timeout, which Claude Code treats as allow).
+    # A quoted run stays inside its word; an unmatched quote is dropped.
+    words = _WORD_RE.findall(raw)
     # Shell operators only separate words. Parsing continues past them so a
     # pin in a chained command (`pip install a && pip install litellm==X`)
     # is still seen: the install patterns match the FIRST install only.

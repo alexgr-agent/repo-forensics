@@ -56,7 +56,7 @@ def test_pypi_map_names_are_pep503_normalised(tmp_path):
 
 
 def test_exfil_domain_is_in_hardcoded_iocs(iocs):
-    assert 'www.litellm.dev' in iocs['malicious_domains']
+    assert 'litellm.dev' in iocs['malicious_domains']
     assert 'cook.pth' in iocs['malicious_pth_files']
 
 
@@ -446,3 +446,35 @@ def test_malformed_pypi_map_in_iocs_fails_open_in_the_gate(monkeypatch):
         monkeypatch.setattr(ioc_manager, 'get_iocs',
                             lambda *a, _b=bad, **k: {**real, 'compromised_versions_pypi': _b})
         pre_scan.decide('pip install litellm==1.107.0')  # must not raise
+
+
+@pytest.mark.parametrize('cmd', [
+    'pip install requests \\\nlitellm==1.107.0',
+    'pip install requests\npip install litellm==1.107.0',
+    'pip install requests \\\r\n  litellm==1.107.0',
+])
+def test_multiline_install_pins_are_checked(cmd):
+    assert pre_scan.decide(cmd)[0] == hook_adapter.DENY
+
+
+def test_long_word_does_not_slow_the_gate():
+    # shlex went quadratic on one long word (400 KB took ~14 s, past the
+    # 10 s hook timeout, which the host treats as allow).
+    import time
+    cmd = 'pip install ' + 'a' * 400_000 + ' litellm==1.107.0'
+    start = time.process_time()
+    perm, _ = pre_scan.decide(cmd)
+    assert time.process_time() - start < 2.0
+    assert perm == hook_adapter.DENY
+
+
+@pytest.mark.parametrize('line', [
+    'litellm = "1.107.0"',
+    'litellm = "=1.107.0"',
+    'litellm = {version = "1.107.0"}',
+])
+def test_poetry_bare_version_pins_are_exact(tmp_path, line):
+    path = tmp_path / 'pyproject.toml'
+    path.write_text('[tool.poetry.dependencies]\npython = "^3.10"\n' + line + '\n')
+    findings = scanner.scan_python_deps(str(path), 'pyproject.toml')
+    assert any('litellm' in (str(f.title) + str(f.description)).lower() for f in findings)
