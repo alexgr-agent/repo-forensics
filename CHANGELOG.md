@@ -40,6 +40,7 @@ All notable changes to repo-forensics. Versions follow semver.
 - Decoding an embedded blob no longer prints Python `SyntaxWarning` lines to the terminal.
 - The "Accessing credential stores" rule no longer fires on ordinary text such as a comment saying "pass show_caches=True"; `pass show <entry>`, `git-credential` and `credential-store` are still flagged.
 - The "Output suppression directive" rule no longer fires on a plain code comment such as "loaders we should silence warnings about". Comments addressed to an AI agent, code lines and agent instruction files are still flagged.
+- CI now runs the full test suite on Python 3.8, the oldest version the README supports, alongside 3.12.
 
 ## [2.14.15] - 2026-10-16
 
