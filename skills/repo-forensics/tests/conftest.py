@@ -401,3 +401,20 @@ def clean_repo(tmp_path):
         "    hello()\n"
     )
     return tmp_path
+
+
+_MAX_ID = 80
+
+
+def pytest_make_parametrize_id(config, val, argname):
+    """Keep long string parameters out of test ids.
+
+    pytest exports each running test id in PYTEST_CURRENT_TEST, and Windows
+    refuses environment values over 32,767 characters, so a 200 KB attack
+    string used as an id errors before the test runs.
+    """
+    if isinstance(val, (str, bytes)) and len(val) > _MAX_ID:
+        import hashlib
+        raw = val if isinstance(val, bytes) else val.encode('utf-8', 'surrogatepass')
+        return f'{val[:40]!r}...len{len(val)}-{hashlib.sha1(raw).hexdigest()[:8]}'
+    return None

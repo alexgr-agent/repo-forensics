@@ -11,11 +11,11 @@ import session_scan  # noqa: E402
 
 def _ps_output(own_dir):
     return "\n".join([
-        f"  101     1    05:00 /usr/bin/python3 {own_dir}/scan_sast.py /repo",       # orphan, old: stop
-        f"  102  4242    05:00 /usr/bin/python3 {own_dir}/scan_sast.py /repo",       # live parent: keep
+        f"  101     1    05:00 /usr/bin/python3 {os.path.join(own_dir, 'scan_sast.py')} /repo",       # orphan, old: stop
+        f"  102  4242    05:00 /usr/bin/python3 {os.path.join(own_dir, 'scan_sast.py')} /repo",       # live parent: keep
         "  103     1    05:00 /usr/bin/python3 /other/repo-forensics/scripts/scan_sast.py /r",  # other install
-        f"  104     1    00:30 /usr/bin/python3 {own_dir}/scan_dast.py /repo",       # orphan, young: keep
-        f"  105     1 1-02:00:00 /usr/bin/python3 {own_dir}/scan_secrets.py /repo",  # orphan, days old: stop
+        f"  104     1    00:30 /usr/bin/python3 {os.path.join(own_dir, 'scan_dast.py')} /repo",       # orphan, young: keep
+        f"  105     1 1-02:00:00 /usr/bin/python3 {os.path.join(own_dir, 'scan_secrets.py')} /repo",  # orphan, days old: stop
         "  106     1    09:00 vim /tmp/notes-about-repo-forensics/scan_x.py",        # editor: keep
     ]) + "\n"
 
