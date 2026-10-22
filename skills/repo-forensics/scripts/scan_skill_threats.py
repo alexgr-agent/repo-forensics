@@ -1093,6 +1093,29 @@ def _drop_plain_comment_suppression(findings, content):
     return kept
 
 
+_LINE_COMMENT_START = re.compile(r'^\s*(?:#(?!!)|//)')
+_PATH_TOKEN = re.compile(r'\S*[/~]\S*')
+
+
+def _drop_comment_path_mentions(findings, content):
+    """A scope-escalation path (/etc/passwd, ~/.claude/skills) named in a
+    whole-line # or // comment documents the code; it is not an access. A
+    comment that speaks to an AI agent is kept, judged with the path tokens
+    removed so `~/.claude/` alone does not count as addressing Claude."""
+    if not any(f.rule_id.startswith('ST-SP-') for f in findings):
+        return findings
+    lines = content.split('\n')
+    kept = []
+    for f in findings:
+        if f.rule_id.startswith('ST-SP-') and 1 <= f.line <= len(lines):
+            line = lines[f.line - 1]
+            if (_LINE_COMMENT_START.match(line)
+                    and not _AI_ADDRESSED.search(_PATH_TOKEN.sub(' ', line))):
+                continue
+        kept.append(f)
+    return kept
+
+
 def _grade_quoted_defensive_examples(findings, content, rel_path):
     if not findings:
         return findings
@@ -1482,7 +1505,10 @@ def scan_content(content, rel_path, budget=None, decode_cache=None, odd_breaks=F
         # Cat 5: Persistence
         findings.extend(scan_rules(content, rel_path, PERSISTENCE_RULES, "persistence", "high"))
         # Cat 6: Scope escalation
-        findings.extend(scan_rules(content, rel_path, SCOPE_RULES, "scope-escalation", "high"))
+        scope = scan_rules(content, rel_path, SCOPE_RULES, "scope-escalation", "high")
+        if ext in code_exts and not is_agent_instruction_file:
+            scope = _drop_comment_path_mentions(scope, content)
+        findings.extend(scope)
         # Cat 7: Stealth
         stealth = scan_rules(content, rel_path, STEALTH_RULES, "stealth", "high")
         if ext in code_exts and not is_agent_instruction_file:
