@@ -50,6 +50,38 @@ def _is_pinned_digest(line, match):
             and _PINNED_DIGEST_PREFIX.search(line, 0, match.start()) is not None)
 
 
+_DIGEST_SIZES = (64, 128)      # sha256 / Ed25519 key, sha512 / Ed25519 signature
+_DIGEST_NAME = re.compile(
+    r'(?i)(?<![a-z])(?:sha(?:1|224|256|384|512)?|digests?|hash(?:es)?|checksums?'
+    r'|fingerprints?|pub(?:lic)?[_-]?keys?|verify(?:ing)?[_-]?keys?|signatures?'
+    r'|integrity|pinned)(?![a-z])')
+
+
+def _is_named_digest(lines, index, stripped, match):
+    """True when the hex run is exactly one digest or public-key sized quoted
+    string, and the assignment it belongs to names it as a hash or public key
+    (EXPECTED_PUBLIC_KEY = "<64 hex>", sha256: '<64 hex>'). The name is read
+    from the text before the string, or from the previous line when the string
+    sits alone inside a parenthesised assignment. A secret key or an unnamed
+    blob of the same size is still reported."""
+    text = match.group(0)
+    start, end = match.start(), match.end()
+    if len(text) not in _DIGEST_SIZES or start == 0 or end >= len(stripped):
+        return False
+    quote = stripped[start - 1]
+    if quote not in '"\'' or stripped[end] != quote:
+        return False
+    before = stripped[:start - 1]
+    if not before.strip(' \t([{,'):
+        prev = index - 1
+        while prev >= 0 and not lines[prev].strip():
+            prev -= 1
+        if prev < 0 or index - prev > 2:
+            return False
+        before = lines[prev].strip()[-200:]
+    return _DIGEST_NAME.search(before[-200:]) is not None
+
+
 def shannon_entropy(data):
     if not data:
         return 0
@@ -159,7 +191,8 @@ def scan_file(file_path, rel_path, threshold=5.8, budget=None):
             # once-per-file detect_encoded_blobs pass above).
             for m in HEX_PATTERN.finditer(stripped):
                 if (_is_sha256_manifest_hash(rel_path, stripped, m)
-                        or _is_pinned_digest(stripped, m)):
+                        or _is_pinned_digest(stripped, m)
+                        or _is_named_digest(lines, i, stripped, m)):
                     continue
                 matched = m.group(0)
                 findings.append(core.Finding(

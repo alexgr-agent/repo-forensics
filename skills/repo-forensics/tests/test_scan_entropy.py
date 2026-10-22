@@ -264,3 +264,32 @@ def test_modern_lockfile_integrity_hashes_are_not_encoded_blobs(tmp_path):
     other.write_text(f'blob = "{digest}{digest}"\n')
     assert [f for f in scanner.scan_file(str(other), other.name)
             if f.title == "Long Hex String"]
+
+
+def test_named_public_keys_and_digests_are_not_long_hex_warnings(tmp_path):
+    key = "c86f717c5f3293da397435cde3d8ab49cddba2165eddbd47c6fb62aad3e9526a"
+    benign = tmp_path / "pins.py"
+    benign.write_text(
+        f'EXPECTED_PUBLIC_KEY = "{key}"\n'
+        f"CHECKSUMS_PUBKEY_HEX = '{key}'\n"
+        f'FEED_PUBKEY_HEX = (\n    "{key}"\n)\n'
+        f'KNOWN = {{"sha256": "{key}", "sha512_digest": "{key}{key}"}}\n'
+        f'ARCHIVE_CHECKSUMS = ["{key}"]\n')
+    assert not [f for f in scanner.scan_file(str(benign), benign.name)
+                if f.title == "Long Hex String"]
+
+
+def test_unnamed_or_secret_hex_of_digest_size_still_reported(tmp_path):
+    key = "c86f717c5f3293da397435cde3d8ab49cddba2165eddbd47c6fb62aad3e9526a"
+    other = tmp_path / "blob.py"
+    other.write_text(
+        f'blob = "{key}"\n'                        # no digest/key name
+        f'API_SECRET_KEY = "{key}"\n'              # a secret, not a public key
+        f'SHAPE = "{key}"\n'                       # "sha" inside a word
+        f'HASH = "{key}{key}{key}"\n'              # not digest sized
+        f'PUBLIC_KEY = "{key}" + "{key}"\n'         # both quoted halves are named
+        f'payload_sha = 0x{key}\n'                 # not a quoted string
+        f'x = (\n    "{key}"\n)\n')                 # parenthesised, unnamed
+    hits = [f.line for f in scanner.scan_file(str(other), other.name)
+            if f.title == "Long Hex String"]
+    assert hits == [1, 2, 3, 4, 6, 8]
