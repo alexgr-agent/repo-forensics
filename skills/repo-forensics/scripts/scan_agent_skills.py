@@ -523,6 +523,10 @@ _NETWORK_ACCESS_SIGNALS = [
     re.compile(r'(?i)\b(?:mcp__.*fetch|mcp__.*search|mcp__.*web)\b'),
 ]
 
+# In code and config a bare URL is metadata (homepage, author link); only a
+# call-shaped signal counts as network access there.
+_CODE_NETWORK_SIGNALS = [p for p in _NETWORK_ACCESS_SIGNALS if 'https?://' not in p.pattern]
+
 _COOCCURRENCE_SCAN_EXTS = {'.md', '.txt', '.py', '.js', '.ts', '.json', '.yml', '.yaml', '.sh', '.bash', '.toml'}
 # Agent instructions (SKILL.md, CLAUDE.md, markdown under skills/ or commands/)
 # are read with every signal: there the words are the payload. Everywhere else
@@ -632,7 +636,7 @@ def scan_memory_exfil_cooccurrence(repo_path):
                     break
             if prose and not instructions:
                 continue            # a link in a README or notes file is not a network call
-            for pat in _NETWORK_ACCESS_SIGNALS:
+            for pat in (_NETWORK_ACCESS_SIGNALS if instructions else _CODE_NETWORK_SIGNALS):
                 m = pat.search(line)
                 if m:
                     network_hits.append((rel, i + 1, m.group(0)))
