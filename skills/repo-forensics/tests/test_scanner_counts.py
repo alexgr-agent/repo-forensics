@@ -93,3 +93,26 @@ def test_full_mode_banner_counts_what_launches(tmp_path):
     usage_n = re.search(r"Full audit - all (\d+) scanners", usage)
     assert banner and usage_n
     assert int(banner.group(1)) == int(usage_n.group(1)) == len(launched)
+
+
+@pytest.mark.parametrize("returncode,stdout", [
+    (1, ""),                                   # pytest not importable
+    (2, "3 tests collected, 1 error\n"),       # collection error: partial count
+    (0, "no tests ran\n"),                     # nothing collected
+])
+def test_sync_badges_refuses_to_write_a_zero_or_missing_test_count(
+        tmp_path, monkeypatch, capsys, returncode, stdout):
+    sb = _sync_badges()
+    metrics = tmp_path / "metrics.json"
+    # Point every write at tmp_path so a regression can never touch the repo.
+    monkeypatch.setattr(sb, "METRICS", str(metrics))
+    monkeypatch.setattr(sb, "ROOT", str(tmp_path))
+    monkeypatch.setattr(sb, "read_version", lambda: "9.9.9")
+    monkeypatch.setattr(sb.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(
+        args=a, returncode=returncode, stdout=stdout, stderr="No module named pytest"))
+    monkeypatch.setattr(sb.sys, "argv", ["sync_badges.py"])
+    with pytest.raises(SystemExit) as exc:
+        sb.main()
+    assert exc.value.code != 0
+    assert "refusing to write" in capsys.readouterr().err
+    assert not metrics.exists()

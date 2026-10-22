@@ -121,15 +121,20 @@ def update_text_surfaces(scanners, targeted, write=True):
 
 
 def count_tests():
-    out = subprocess.run(
+    """pytest collected-test count, or None when collection did not succeed
+    (pytest missing, a collection error, or no count in the output). A partial
+    or failed collection must never become the published number."""
+    res = subprocess.run(
         [sys.executable, "-m", "pytest", "tests/", "--collect-only", "-q"],
         cwd=SKILL, capture_output=True, text=True,
-    ).stdout
-    m = re.search(r"(\d+)\s+tests? collected", out)
+    )
+    if res.returncode != 0:
+        return None
+    m = re.search(r"(\d+)\s+tests? collected", res.stdout)
     if m:
         return int(m.group(1))
     # Fallback: count "::" test-node lines.
-    return sum(1 for line in out.splitlines() if "::" in line)
+    return sum(1 for line in res.stdout.splitlines() if "::" in line) or None
 
 
 def read_version():
@@ -195,6 +200,14 @@ def main():
     check = "--check" in sys.argv
     scanners, tests, version = count_scanners(), count_tests(), read_version()
     targeted = count_targeted()
+    missing = [name for name, value in (("scanners", scanners), ("targeted", targeted),
+                                        ("tests", tests)) if not value]
+    if missing:
+        print(f"ERROR: could not compute {', '.join(missing)} (got zero or nothing); "
+              f"refusing to write badge counts. For tests, check that pytest is "
+              f"installed and `python -m pytest tests/ --collect-only -q` succeeds "
+              f"in skills/repo-forensics.", file=sys.stderr)
+        sys.exit(2)
     launched = full_launch_list()
     if len(launched) != scanners or len(set(launched)) != len(launched):
         print(f"ERROR: run_forensics.sh FULL_SCANNERS launches {len(launched)} scanners "
