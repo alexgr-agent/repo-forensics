@@ -1072,6 +1072,27 @@ def _workflow_inert_expression_lines(lines):
                       if _workflow_line_is_env_value(*context)))
 
 
+_CODE_COMMENT_START = re.compile(r'^\s*(?:#|//|/\*|\*|--|;|rem\b|::)', re.IGNORECASE)
+_AI_ADDRESSED = re.compile(
+    r'\b(?:ai|agents?|assistants?|claude|llms?|models?|gpt|copilot|you|your)\b',
+    re.IGNORECASE)
+
+
+def _drop_plain_comment_suppression(findings, content):
+    """ST-ST-002 on a whole-line code comment that addresses no AI ("loaders
+    we should silence warnings about") describes the program's own behavior,
+    not a directive. A comment aimed at an agent or the reader stays flagged."""
+    lines = content.split('\n')
+    kept = []
+    for f in findings:
+        if f.rule_id == 'ST-ST-002' and 1 <= f.line <= len(lines):
+            line = lines[f.line - 1]
+            if _CODE_COMMENT_START.match(line) and not _AI_ADDRESSED.search(line):
+                continue
+        kept.append(f)
+    return kept
+
+
 def _grade_quoted_defensive_examples(findings, content, rel_path):
     if not findings:
         return findings
@@ -1448,7 +1469,10 @@ def scan_content(content, rel_path, budget=None, decode_cache=None, odd_breaks=F
         # Cat 6: Scope escalation
         findings.extend(scan_rules(content, rel_path, SCOPE_RULES, "scope-escalation", "high"))
         # Cat 7: Stealth
-        findings.extend(scan_rules(content, rel_path, STEALTH_RULES, "stealth", "high"))
+        stealth = scan_rules(content, rel_path, STEALTH_RULES, "stealth", "high")
+        if ext in code_exts and not is_agent_instruction_file:
+            stealth = _drop_plain_comment_suppression(stealth, content)
+        findings.extend(stealth)
 
     # Cat 4b: Credential-path directives (agent instruction files + text files)
     if is_agent_instruction_file or ext in text_exts:
