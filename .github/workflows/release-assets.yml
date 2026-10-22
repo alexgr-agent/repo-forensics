@@ -1,0 +1,112 @@
+name: Release assets
+
+# Attaches verifiable files to every GitHub release:
+#   repo-forensics-<tag>.tar.gz          source of the tagged release
+#   checksums.json + checksums.json.sig  the Ed25519-signed hash list from the tag
+#   *.intoto.jsonl / *.sigstore.json     SLSA build provenance from GitHub
+#
+# Verify a download with:
+#   gh attestation verify repo-forensics-<tag>.tar.gz -R alexgreensh/repo-forensics
+#
+# Runs on each published release. Run it by hand (workflow_dispatch) with a tag
+# to add the same files to an older release. The tag is read from the event
+# file in the shell, never interpolated into a script.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag, e.g. v2.14.15"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  assets:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Resolve and check out the tag
+        run: |
+          tag=$(jq -r '.release.tag_name // .inputs.tag // empty' "$GITHUB_EVENT_PATH")
+          case "$tag" in
+            v[0-9]*.[0-9]*.[0-9]*) ;;
+            *) echo "::error::not a release tag: '$tag'"; exit 1 ;;
+          esac
+          git rev-parse --verify --quiet "refs/tags/$tag" >/dev/null || { echo "::error::tag $tag not found"; exit 1; }
+          git checkout --quiet "refs/tags/$tag"
+          echo "TAG=$tag" >> "$GITHUB_ENV"
+
+      - name: Refuse to publish files that fail our own signature check
+        run: |
+          cd skills/repo-forensics
+          python3 scripts/verify_install.py --verify-signature
+          python3 scripts/verify_install.py --verify
+
+      - name: Build the release files
+        run: |
+          mkdir dist
+          git archive --format=tar.gz --prefix="repo-forensics-$TAG/" \
+            -o "dist/repo-forensics-$TAG.tar.gz" "refs/tags/$TAG"
+          cp skills/repo-forensics/checksums.json dist/checksums.json
+          cp skills/repo-forensics/checksums.json.sig dist/checksums.json.sig
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            dist/repo-forensics-*.tar.gz
+            dist/checksums.json
+
+      # github-script uses the workflow token by default, so no token or other
+      # expression is ever interpolated into this file.
+      - name: Attach provenance and upload to the release
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const fs = require("fs");
+            const path = require("path");
+            const crypto = require("crypto");
+            const tag = process.env.TAG;
+            const { owner, repo } = context.repo;
+            const dist = "dist";
+
+            // The attestation GitHub just stored for the tarball, as a Sigstore bundle.
+            const tarName = `repo-forensics-${tag}.tar.gz`;
+            const digest = crypto.createHash("sha256")
+              .update(fs.readFileSync(path.join(dist, tarName))).digest("hex");
+            const att = await github.request(
+              "GET /repos/{owner}/{repo}/attestations/{subject_digest}",
+              { owner, repo, subject_digest: `sha256:${digest}` });
+            const bundle = att.data.attestations[0].bundle;
+            fs.writeFileSync(path.join(dist, `repo-forensics-${tag}.provenance.sigstore.json`),
+              JSON.stringify(bundle));
+            // The DSSE envelope is the signed in-toto statement; .intoto.jsonl is
+            // the standard file name for it.
+            fs.writeFileSync(path.join(dist, `repo-forensics-${tag}.intoto.jsonl`),
+              JSON.stringify(bundle.dsseEnvelope) + "\n");
+
+            const release = (await github.rest.repos.getReleaseByTag({ owner, repo, tag })).data;
+            for (const name of fs.readdirSync(dist).sort()) {
+              for (const old of release.assets.filter(a => a.name === name)) {
+                await github.rest.repos.deleteReleaseAsset({ owner, repo, asset_id: old.id });
+              }
+              await github.rest.repos.uploadReleaseAsset({
+                owner, repo, release_id: release.id, name,
+                data: fs.readFileSync(path.join(dist, name)),
+              });
+              core.info(`uploaded ${name}`);
+            }

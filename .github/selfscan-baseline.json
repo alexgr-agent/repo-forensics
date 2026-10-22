@@ -11,6 +11,8 @@
     "entropy|Long Hex String|scripts/sign_release_manifest.py|high": 1,
     "entropy|Long Hex String|skills/repo-forensics/scripts/refresh_controller.py|high": 1,
     "entropy|Long Hex String|skills/repo-forensics/scripts/rulepack_feed.py|high": 1,
+    "infra|GHA: contents: write Permission|.github/workflows/release-assets.yml|medium": 1,
+    "infra|GHA: id-token: write Permission|.github/workflows/release-assets.yml|medium": 1,
     "infra|GHA: id-token: write Permission|.github/workflows/scorecard.yml|medium": 1,
     "runtime_dynamism|RD-DYN-004|skills/repo-forensics/scripts/sarif_export.py|high": 1,
     "runtime_dynamism|RD-SMOD-003|scripts/sign_release_manifest.py|high": 1,

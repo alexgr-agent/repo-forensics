@@ -1,0 +1,7 @@
+# Atheris (Google's coverage-guided Python fuzzer) for fuzz/fuzz_parsers.py.
+# CI only, Linux, Python 3.12. Vetted with repo-forensics on 2026-10-22: the
+# critical findings are its bytecode instrumentation (types.CodeType, a custom
+# SourcelessFileLoader), which is how a coverage-guided fuzzer works.
+# No dependencies. Install with: pip install --require-hashes --only-binary=:all: -r
+atheris==3.1.0 \
+    --hash=sha256:ec5e11f21a4c197fe91f7aea2b2de88e623c73a21fc07b105ac6329a1588457b

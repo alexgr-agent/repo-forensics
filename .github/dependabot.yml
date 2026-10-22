@@ -1,0 +1,22 @@
+# repo-forensics has no runtime dependencies. This keeps the pinned CI actions
+# and the hash-locked CI tool files current. Monthly and grouped, so it opens
+# at most one pull request per ecosystem.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      actions:
+        patterns: ["*"]
+    open-pull-requests-limit: 1
+
+  - package-ecosystem: pip
+    directory: /.github/requirements
+    schedule:
+      interval: monthly
+    groups:
+      ci-tools:
+        patterns: ["*"]
+    open-pull-requests-limit: 1
