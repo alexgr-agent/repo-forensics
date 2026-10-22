@@ -2,12 +2,14 @@
 
 All notable changes to repo-forensics. Versions follow semver.
 
-## [Unreleased]
+## [2.14.17] - 2026-10-22
 
 ### Added
 - `bun.lock` and `deno.lock` are now checked like other lockfiles for packages resolved over plain HTTP, from git, or from a non-standard registry. `deno.land` and `jsr.io` count as standard registries.
 
 ### Fixed
+- The command hook no longer blocks text that is only being written or read as data: notes and docs written with `cat > file <<'EOF'` after `cd` or `mkdir`, Python fed a script on stdin (including a virtualenv Python), and `python -c` programs whose strings quote an attack command. Anything that can still reach a shell stays blocked: writing a file and running it in the same command, heredocs fed to a shell, unquoted heredocs that expand, Python that calls a shell, and output or downloads piped onward. Python on stdin that calls `subprocess` with a shell is now caught as well.
+- Framework build output is skipped when `.gitignore` excludes it: `.next`, `.nuxt`, `.svelte-kit`, `.turbo`, `.vercel`, `.output` and similar folders, plus `*.tsbuildinfo`. A local Next.js dev build no longer floods a scan with findings in generated files. Build folders committed to the repository are still scanned.
 - Far fewer false alarms on ordinary repositories. On three popular open-source projects, high and critical findings dropped from 2,562 to 127. Evasions built against each change are still caught.
 - `uv.lock`, `pdm.lock`, `bun.lock` and `deno.lock`: integrity hashes and registry download links are no longer reported as "Long Hex String" or "Base64 Encoded Block". Any other encoded value in these files is still reported.
 - Shell scripts: `"$(cd "$(dirname "$0")" && pwd)"`, arithmetic such as `$(( $(date +%s) - start ))`, and other path or time lookups no longer count as nested command substitution. Nesting around any other command is still reported, including host lookups such as `$(hostname)`.

@@ -1,9 +1,9 @@
 {
-  "bundle_version": 8,
+  "bundle_version": 9,
   "generated": "2026-10-22",
   "packs": {
     "dead_anchors": {
-      "pack_version": 8,
+      "pack_version": 9,
       "rules": [
         {
           "category": "dead-anchor-extract",
@@ -279,7 +279,7 @@
       "schema_version": "1.0"
     },
     "mcp_security": {
-      "pack_version": 8,
+      "pack_version": 9,
       "rules": [
         {
           "category": "sql-injection",
@@ -1280,7 +1280,7 @@
       "schema_version": "1.0"
     },
     "runtime_dynamism": {
-      "pack_version": 8,
+      "pack_version": 9,
       "rules": [
         {
           "asset": "loaded code",
@@ -2778,7 +2778,7 @@
       "schema_version": "1.0"
     },
     "sast": {
-      "pack_version": 8,
+      "pack_version": 9,
       "rules": [
         {
           "asset": "server runtime",
@@ -5558,7 +5558,7 @@
           "examples": {
             "match": [
               "$(echo $(whoami))",
-              "x=$(ls $(pwd))",
+              "x=$(ls $(cat dirs.txt))",
               "$( cat $(find) )"
             ],
             "no_match": [
@@ -6515,7 +6515,7 @@
       "schema_version": "1.0"
     },
     "secrets": {
-      "pack_version": 8,
+      "pack_version": 9,
       "rules": [
         {
           "asset": "asymmetric private key",
@@ -7531,7 +7531,7 @@
       "schema_version": "1.0"
     },
     "shared": {
-      "pack_version": 8,
+      "pack_version": 9,
       "rules": [
         {
           "category": "shared-verb-list",
@@ -7727,7 +7727,7 @@
       "schema_version": "1.0"
     },
     "skill_threats": {
-      "pack_version": 10,
+      "pack_version": 11,
       "rules": [
         {
           "asset": "agent behavior",
@@ -8986,12 +8986,15 @@
             ],
             "no_match": [
               "echo 2 plus 2",
-              "2>/dev/null without background"
+              "2>/dev/null without background",
+              "DIR=\"$(cd \"$d\" 2>/dev/null && pwd)\"",
+              "kill \"$pid\" 2>/dev/null; exec 3>&-",
+              "cmd 2>/dev/null || true"
             ]
           },
           "explanation": "Stderr suppression with background exec.",
           "id": "ST-ST-003",
-          "pattern": "(?i)2>\\s*/dev/null.*&",
+          "pattern": "(?i)2>\\s*/dev/null.*(?<![&>|])&(?!&)",
           "severity": "high",
           "title": "Stderr suppression with background exec",
           "type": "regex"
@@ -9007,12 +9010,14 @@
             ],
             "no_match": [
               "redirect to a file",
-              "2>&1 without background here"
+              "2>&1 without background here",
+              "command -v jq >/dev/null 2>&1 && echo ok",
+              "if cmd >/dev/null 2>&1; then :; fi"
             ]
           },
           "explanation": "Full output suppression with background.",
           "id": "ST-ST-004",
-          "pattern": "(?i)(>\\s*/dev/null\\s+2>&1|&>\\s*/dev/null)\\s*&",
+          "pattern": "(?i)(>\\s*/dev/null\\s+2>&1|&>\\s*/dev/null)\\s*&(?!&)",
           "severity": "high",
           "title": "Full output suppression with background",
           "type": "regex"

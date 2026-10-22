@@ -404,6 +404,75 @@ def resolve_scan_ext(path, supported):
     return ""
 
 
+# Top-level modules whose import grants no capability: pure computation and
+# data formats from the standard library. `__import__("json")` reaches nothing
+# an attacker wants; anything outside this list (os, timeit, pydoc, site,
+# socketserver, a PyPI package, ...) keeps a literal __import__ high unless it
+# is the repository's own module.
+INERT_IMPORT_MODULES = frozenset({
+    "json", "re", "math", "cmath", "string", "collections", "itertools",
+    "functools", "operator", "datetime", "decimal", "fractions", "statistics",
+    "numbers", "enum", "dataclasses", "typing", "textwrap", "difflib", "pprint",
+    "copy", "heapq", "bisect", "array", "struct", "hashlib", "hmac", "uuid",
+    "unicodedata", "calendar", "abc", "contextlib", "warnings", "keyword",
+    "colorsys", "graphlib", "zoneinfo", "random", "secrets", "html",
+})
+_LITERAL_IMPORT = re.compile(r'__import__\s*\(\s*(["\'])([A-Za-z_][\w.]{0,200})\1\s*[,)]')
+_ANY_IMPORT_CALL = re.compile(r'__import__\s*\(')
+_STDLIB_NAMES = frozenset(getattr(sys, "stdlib_module_names", ()))
+
+
+def _first_party_module(top, file_path, rel_path):
+    """True when `top` is a package or module shipped in the scanned repository
+    (next to the file or at the repository root) and does not shadow a
+    standard-library name. Its code is scanned like any other file."""
+    if not file_path or top in _STDLIB_NAMES:
+        return False
+    here = os.path.dirname(os.path.abspath(file_path))
+    bases = [here]
+    parts = [p for p in (rel_path or "").replace("\\", "/").split("/") if p]
+    root = os.path.abspath(file_path)
+    if parts:
+        for _ in parts:
+            root = os.path.dirname(root)
+        if os.path.join(root, *parts) == os.path.abspath(file_path):
+            bases.append(root)
+    for base in bases:
+        if (os.path.isfile(os.path.join(base, top + ".py"))
+                or os.path.isfile(os.path.join(base, top, "__init__.py"))
+                or os.path.isdir(os.path.join(base, top))):
+            return True
+    return False
+
+
+def literal_import_is_inert(line, file_path=None, rel_path=None):
+    """True when every __import__(...) call on the line names a literal module
+    that is on the inert allowlist or is the repository's own module. A
+    computed name, any other module, or a getattr() on the line keeps it
+    suspicious."""
+    calls = len(_ANY_IMPORT_CALL.findall(line))
+    if not calls or 'getattr' in line:
+        return False                    # getattr(__import__("m"), name) evasion
+    literals = [m.group(2).split('.', 1)[0] for m in _LITERAL_IMPORT.finditer(line)]
+    return (len(literals) == calls
+            and all(name in INERT_IMPORT_MODULES
+                    or _first_party_module(name, file_path, rel_path)
+                    for name in literals))
+
+
+def downgrade_inert_literal_imports(findings, text, rule_ids, file_path=None, rel_path=None):
+    """Grade a dynamic-import finding low when its line only imports inert or
+    first-party modules by literal name (lazy imports, `__import__("json")`)."""
+    if not any(f.rule_id in rule_ids for f in findings):
+        return findings
+    lines = text.split('\n')
+    for f in findings:
+        if (f.rule_id in rule_ids and 1 <= f.line <= len(lines)
+                and literal_import_is_inert(clip_line(lines[f.line - 1]), file_path, rel_path)):
+            f.severity = "low"
+    return findings
+
+
 def clip_line(line):
     """Truncate an over-long line to MAX_LINE_LENGTH (the ReDoS bound) while
     preserving a trailing newline so line numbering is unaffected.
@@ -1560,6 +1629,83 @@ def _effective_skip_dirs(repo_path, skip_dirs):
             refined.discard(payload_dir)
     return refined
 
+# Framework build output (Next.js, Nuxt, SvelteKit, Turborepo, ...). Skipped
+# only when a .gitignore at or above it lists it: a dev build sitting in a
+# checkout is generated noise, but the same folder committed to the repo is
+# content an attacker chose to ship, so it stays in scope. .gitignore is read
+# as text; git itself is never run inside the repo under audit.
+GENERATED_BUILD_DIRS = frozenset({
+    '.next', '.nuxt', '.svelte-kit', '.turbo', '.vercel', '.output', '.parcel-cache',
+    '.angular', '.docusaurus', '.astro', '.expo', '.vite', '.webpack', '.serverless',
+})
+_GITIGNORE_CACHE_LIMIT = 4096
+
+
+def _gitignore_patterns(directory, cache):
+    """Plain patterns from directory/.gitignore (comments and blanks dropped)."""
+    if directory in cache:
+        return cache[directory]
+    patterns = ()
+    path = os.path.join(directory, '.gitignore')
+    try:
+        if os.path.isfile(path) and not os.path.islink(path) and os.path.getsize(path) <= 256 * 1024:
+            with open(path, encoding='utf-8', errors='replace') as fh:
+                patterns = tuple(line.strip() for line in fh
+                                 if line.strip() and not line.lstrip().startswith('#'))
+    except OSError:
+        patterns = ()
+    if len(cache) < _GITIGNORE_CACHE_LIMIT:
+        cache[directory] = patterns
+    return patterns
+
+
+# Generated build files with the same rule (TypeScript's incremental cache is
+# a file of content hashes that reads as high-entropy noise).
+GENERATED_BUILD_FILE_SUFFIXES = ('.tsbuildinfo',)
+
+
+def is_ignored_build_output(repo_path, root, name, cache):
+    """True when `root/name` is framework build output that .gitignore excludes."""
+    if name not in GENERATED_BUILD_DIRS:
+        return False
+    return _gitignore_lists(repo_path, root, name, cache)
+
+
+def is_ignored_build_file(repo_path, root, name, cache):
+    """True when `root/name` is a generated build file that .gitignore excludes."""
+    if not name.endswith(GENERATED_BUILD_FILE_SUFFIXES):
+        return False
+    return _gitignore_lists(repo_path, root, name, cache)
+
+
+def _gitignore_lists(repo_path, root, name, cache):
+    target = os.path.join(root, name)
+    repo_abs = os.path.abspath(repo_path)
+    directory = os.path.abspath(root)
+    listed = False
+    while True:
+        rel = os.path.relpath(target, directory).replace(os.sep, '/')
+        for raw in _gitignore_patterns(directory, cache):
+            negated = raw.startswith('!')
+            pattern = raw[1:] if negated else raw
+            pattern = pattern.rstrip('/')
+            if pattern.startswith('**/'):
+                pattern = pattern[3:]
+            anchored = pattern.startswith('/') or '/' in pattern
+            hit = fnmatch.fnmatchcase(rel, pattern.lstrip('/')) if anchored else fnmatch.fnmatchcase(name, pattern)
+            if hit:
+                if negated:
+                    return False  # Re-included on purpose: scan it.
+                listed = True
+        if directory == repo_abs or not directory.startswith(repo_abs):
+            break
+        parent = os.path.dirname(directory)
+        if parent == directory:
+            break
+        directory = parent
+    return listed
+
+
 def walk_repo(repo_path, ignore_patterns=None, skip_dirs=None, skip_lockfiles=True, skip_binary=True):
     """Generator that walks a repo respecting ignore rules.
     Yields (file_path, rel_path) tuples."""
@@ -1568,11 +1714,15 @@ def walk_repo(repo_path, ignore_patterns=None, skip_dirs=None, skip_lockfiles=Tr
     if ignore_patterns is None:
         ignore_patterns = load_ignore_patterns(repo_path)
 
+    gitignores = {}
     for root, dirs, files in os.walk(repo_path, followlinks=False):
-        dirs[:] = [d for d in dirs if d not in skip_dirs]
+        dirs[:] = [d for d in dirs if d not in skip_dirs
+                   and not is_ignored_build_output(repo_path, root, d, gitignores)]
 
         for filename in files:
             if skip_lockfiles and filename in LOCKFILES:
+                continue
+            if is_ignored_build_file(repo_path, root, filename, gitignores):
                 continue
 
             file_path = os.path.join(root, filename)
@@ -1626,15 +1776,19 @@ def walk_aux(repo_path, ignore_patterns=None, skip_dirs=None, *,
     if ignore_patterns is None:
         ignore_patterns = load_ignore_patterns(repo_path)
 
+    gitignores = {}
     for root, dirs, files in os.walk(repo_path, followlinks=False):
         # Deterministic order: os.walk yields readdir order (filesystem-dependent),
         # and these scanners enforce global budgets over the walk — which file a
         # fan-out decoy starves must not depend on inode layout, or the fail-loud
         # "budget exhausted" naming becomes nondeterministic.
-        dirs[:] = sorted(d for d in dirs if d not in skip_dirs)
+        dirs[:] = sorted(d for d in dirs if d not in skip_dirs
+                         and not is_ignored_build_output(repo_path, root, d, gitignores))
 
         for filename in sorted(files):
             if skip_lockfiles and filename in LOCKFILES:
+                continue
+            if is_ignored_build_file(repo_path, root, filename, gitignores):
                 continue
 
             file_path = os.path.join(root, filename)
@@ -2799,7 +2953,17 @@ def correlate(findings, repo_path=None):
             return ids
 
         exec_ids = _primitive_finding_ids(trifecta_exec_keywords)
-        network_ids = _primitive_finding_ids(trifecta_network_keywords)
+        # skill_threats' `credential-exfiltration` category holds environment
+        # READS (ST-EX-005..008: os.environ.items(), dict(os.environ)); the word
+        # "exfiltration" in that category name is not an outbound call. Only its
+        # typed egress rule (ST-EX-001) may stand for the network side, the
+        # same split _exfil_capabilities makes for Rule 1.
+        network_ids = {
+            i for i in _primitive_finding_ids(trifecta_network_keywords)
+            if not (file_findings[i].scanner == "skill_threats"
+                    and (file_findings[i].category or "").lower() == "credential-exfiltration"
+                    and "network" not in _exfil_capabilities(file_findings[i]))
+        }
         credential_ids = _primitive_finding_ids(trifecta_credential_keywords)
 
         # All three primitives must be present AND at least 2 must come from

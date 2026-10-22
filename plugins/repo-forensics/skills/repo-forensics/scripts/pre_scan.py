@@ -1305,6 +1305,102 @@ def _ps_shell_quote_state(line, quote=None):
         i += 1
     return quote
 
+def _ps_heredoc_segment(line, position):
+    """The pipeline step of *line* that owns the heredoc at *position*.
+
+    Returns (step_text, separator_before, separator_after). Separators are
+    ';', '&&', '||', '|', '&' or '' at the line edge; redirections such as
+    2>&1 or &> are not separators.
+    """
+    quote, start, before, i = None, 0, '', 0
+    while i < len(line):
+        c = line[i]
+        if quote:
+            if c == quote:
+                quote = None
+            elif c == '\\' and quote == '"':
+                i += 1
+        elif c == '\\':
+            i += 2
+            continue
+        elif c in '\'"':
+            quote = c
+        elif c == '#' and (i == 0 or line[i - 1].isspace()):
+            break
+        elif c in ';&|':
+            pair = line[i:i + 2]
+            if c == '&' and (line[i - 1:i] in ('>', '<') or pair == '&>'):
+                i += 1
+                continue
+            if pair == '|&':
+                op, width = '|', 2
+            else:
+                op = pair if pair in ('&&', '||', ';;') else c
+                width = len(op)
+            if i < position:
+                start, before = i + width, op
+            else:
+                return line[start:i], before, op
+            i += width
+            continue
+        i += 1
+    return line[start:], before, ''
+
+
+# Python stdin bodies stay executable evidence when they can start a shell.
+_PS_PY_SHELL_CALL = re.compile(
+    r'shell\s*=\s*True|\bos\s*\.\s*(?:popen|exec\w*|spawn\w*|posix_spawn\w*)\s*\('
+    r'|\bpty\s*\.\s*spawn\b|\bcommands\s*\.\s*getoutput'
+    r'|\[\s*r?[\'"](?:[^\'"\s]*/)?(?:ba|z|da|k|c|tc|fi|a)?sh(?:\.exe)?[\'"]'
+    r'|[\'"](?:[^\'"\s]*[/\\])?(?:pwsh|powershell)(?:\.exe)?[\'"]', re.I)
+
+_PS_PY_INLINE = re.compile(
+    r'(?:^|(?<=[\s;&|(]))(?:[^\s\'"<>|;&()]*/)?python(?:3(?:\.\d+)?)?(?:\s+-[A-Za-z]+)*\s+-c\s+(?=[\'"])')
+
+
+def _ps_without_python_programs(command):
+    """Blank `python -c` program text that cannot reach a shell.
+
+    The program is data to the shell lexer unless it calls a shell, expands
+    in the shell first (unescaped $ or backtick inside double quotes), or its
+    output feeds a pipe.
+    """
+    if '-c' not in command or 'python' not in command:
+        return command
+    out, last = [], 0
+    for match in _PS_PY_INLINE.finditer(command):
+        start = match.end()
+        if start < last:
+            continue
+        # Python fed by a pipe can run what it reads (exec of stdin), so its
+        # program text stays evidence.
+        lead = command[:match.start()].rstrip(' \t')
+        if lead.endswith(('|', '|&')) and not lead.endswith('||'):
+            continue
+        quote, i, live = command[start], start + 1, False
+        while i < len(command) and command[i] != quote:
+            if quote == '"' and command[i] == '\\':
+                i += 2
+                continue
+            if quote == '"' and command[i] in '$`':
+                live = True
+            i += 1
+        if i >= len(command):
+            break  # Unterminated: leave the rest untouched.
+        program = command[start + 1:i]
+        rest = command[i + 1:].lstrip(' \t')
+        if (live or rest.startswith('|') and not rest.startswith('||')
+                or _PS_PY_SHELL_CALL.search(program)
+                or re.search(r'\bos\s*\.\s*system\b|\bsubprocess\b', program)):
+            continue
+        out.append(command[last:start])
+        out.append(quote + ' ' * (i - start - 1) + quote)
+        last = i + 1
+    if not out:
+        return command
+    out.append(command[last:])
+    return ''.join(out)
+
 
 def _ps_without_literal_heredocs(command):
     """Hide document input, retaining expansions and bodies read back as code."""
@@ -1352,12 +1448,22 @@ def _ps_without_literal_heredocs(command):
             continue
         header = _ps_remove_heredoc_operators(line, directives)
         consumer = bool(re.match(r'^\s*(?:cat|tee)\b', header) and not re.search(r'[;&]', header))
+        # A heredoc owned by one step of a chain (cd x; cat > f <<'E') is
+        # judged by that step alone, never when it is fed by or feeds a pipe.
+        step_header = None
+        if len(directives) == 1:
+            step, step_before, step_after = _ps_heredoc_segment(line, directives[0][2])
+            if step_before in ('', ';', '&&', '||', '&') and step_after in ('', ';', '&&', '||', '&'):
+                step_header = _ps_remove_heredoc_operators(step, _ps_heredoc_directives(step))
+                if re.match(r'^\s*(?:cat|tee)\b', step_header) and not re.search(r'[;&|]', step_header):
+                    consumer = True
         if '|' in header:
             consumer = consumer and bool(re.search(r'\|\s*(?:gh\s+[^\n]*(?:--body-file|-F)\s+-|git\s+[^\n]*-F\s+-)\s*$', header))
         consumer = consumer or bool(re.match(r'^\s*(?:gh|git)\s+[^\n]*(?:--body-file|-F)\s+-\s*$', header))
         consumer = consumer or bool(re.match(r'^\s*(?:curl|http|xh)\b', header) and re.search(r'(?:-d|--data(?:-binary|-raw)?|--json|-T|--upload-file)\s*@-', header))
         # A later read of a written target makes the document exemption unsafe.
-        target = re.search(r'(?:>\s*|\btee\s+(?:-a\s+)?)([^\s<>]+)', header)
+        target = re.search(r'(?:>\s*|\btee\s+(?:-a\s+)?)([^\s<>]+)',
+                           step_header if consumer and step_header else header)
         header_index = len(output) - 1
         for delimiter, strip_tabs, _, _, quoted in directives:
             body = []
@@ -1379,7 +1485,11 @@ def _ps_without_literal_heredocs(command):
             # Python source is data to the shell lexer. Only literal shell
             # strings passed to a top-level Python shell call execute as shell.
             python_body = bool(re.match(r'^\s*python(?:3(?:\.\d+)?)?\s+-\s*$', header.strip()) or
+                               (step_header is not None and re.match(
+                                   r'^\s*(?:[^\s\'"]*/)?python(?:3(?:\.\d+)?)?(?:\s+-[A-Za-z]+)*\s+-\s*$', step_header)) or
                                (target and reused and target.group(1).strip("'\"").endswith('.py') and max(basenames.get('python', -1), basenames.get('python3', -1)) > offsets[i]))
+            if python_body and closed and _PS_PY_SHELL_CALL.search(text):
+                python_body = False  # A shell is reachable; keep the body as evidence.
             if python_body and closed and not re.search(r'\bos\s*\.\s*system\s*\(', text):
                 # No supported shell call exists, so parsing the entire Python
                 # test program cannot add executable-shell evidence.
@@ -2321,17 +2431,25 @@ def _detect_install_command(command):
     Returns (pattern_type, match_obj) or (None, None)."""
     if not command:
         return None, None
-    # Preserve every legacy block before any PowerShell-specific suppression.
-    if has_pipe_to_shell(command) and not is_inert_quote_carrier(command):
+    try:
+        # Document bodies written to files (and Python stdin without a shell
+        # call) are data, not commands. Legacy signals are checked against the
+        # same view, so a mention of an attack inside a note is not a block.
+        executable = _ps_without_python_programs(_ps_without_literal_heredocs(command))
+    except _PsInspectionLimit as limit:
+        if has_pipe_to_shell(command) and not is_inert_quote_carrier(command):
+            return 'pipe_to_shell', None
+        return 'inspection_limit', str(limit)
+    if (has_pipe_to_shell(command) and has_pipe_to_shell(executable)
+            and not is_inert_quote_carrier(executable)):
         return 'pipe_to_shell', None
     try:
-        executable = _ps_without_literal_heredocs(command)
         if detects_powershell_execution(executable, heredocs_masked=True):
             return 'pipe_to_shell', None
     except _PsInspectionLimit as limit:
         return 'inspection_limit', str(limit)
     for pattern, ptype in INSTALL_PATTERNS:
-        m = pattern.search(command)
+        m = pattern.search(executable)
         if m:
             return ptype, m
     return None, None

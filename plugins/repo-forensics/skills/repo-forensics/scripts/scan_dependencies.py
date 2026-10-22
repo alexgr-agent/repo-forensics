@@ -140,6 +140,7 @@ TRUSTED_REGISTRIES = [
     "github.com", "cdn.jsdelivr.net", "pnpm.io",
     "pypi.org", "files.pythonhosted.org",
     "proxy.golang.org", "sum.golang.org",
+    "deno.land", "jsr.io",
 ]
 
 # Funding/sponsorship domains that appear in lockfile metadata (not registries)
@@ -2739,6 +2740,10 @@ def main():
             all_findings.extend(scan_lockfile(file_path, rel_path))
             all_findings.extend(parse_pnpm_lock_file(file_path, rel_path))
             all_findings.extend(scan_lockfile_injection(file_path, rel_path))
+        elif basename in ('bun.lock', 'deno.lock'):
+            # Text lockfiles without a dedicated parser: every resolved URL
+            # still goes through the registry, git and plain-HTTP checks.
+            all_findings.extend(scan_lockfile(file_path, rel_path))
         elif basename in ('poetry.lock', 'uv.lock', 'pdm.lock'):
             # uv.lock and pdm.lock use the same [[package]] name/version layout
             all_findings.extend(parse_poetry_lock(file_path, rel_path))

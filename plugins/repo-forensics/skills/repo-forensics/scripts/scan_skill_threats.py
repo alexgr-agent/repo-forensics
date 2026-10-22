@@ -757,7 +757,10 @@ def _action_env_line(content, line_number):
 _WORKFLOW_PLAIN_KEY = re.compile(r'^([A-Za-z_][\w-]*)[ \t]*:(?:[ \t]+(.*))?$')
 _WORKFLOW_QUOTED_KEY = re.compile(r'''^(?:-\s*)?["'][^"']+["']\s*:''')
 _WORKFLOW_BLOCK_SCALAR = re.compile(r'^[|>](?:[+-][1-9]?|[1-9][+-]?|[+-]?[1-9])?$')
-_WORKFLOW_ANCHOR_ALIAS = re.compile(r'(?<![\w])(?:&|\*)[^\s\[\]{},]+')
+# An anchor or alias is a node property: it can only open a node, i.e. sit at
+# the start of the line, after `key: ` or `- `, or after a flow [ { or ,.
+# The && or * inside a plain scalar (`run: make && make test`) is text.
+_WORKFLOW_ANCHOR_ALIAS = re.compile(r'(?:^|[:\-]\s+|[\[{,]\s*)(?:&|\*)[^\s\[\]{},]+')
 # Fail-closed limits. Lines longer than this are never reasoned about, and the
 # per-file budget bounds the regex work spent grading downgrades.
 _WORKFLOW_MAX_LINE = 4096
@@ -928,7 +931,12 @@ def _workflow_line_is_inert(path, key_indent, stack):
             return True
         if (len(path) == 5 and path[2] == 'steps' and path[3] == '*'
                 and valid_nested_prefix(path[:4]) and key_indent > stack[3][0]
-                and path[4] in {'if', 'name', 'timeout-minutes'}):
+                and path[4] in {'if', 'name', 'timeout-minutes', 'working-directory'}):
+            # working-directory becomes the step's cwd; no shell parses it.
+            return True
+        if (len(path) == 5 and path[2:4] == ('defaults', 'run')
+                and valid_nested_prefix(path[:4]) and key_indent > stack[3][0]
+                and path[4] == 'working-directory'):
             return True
     return False
 
@@ -952,18 +960,50 @@ def _workflow_line_is_env_value(path, key_indent, stack):
 
 
 _WORKFLOW_ENV_KEY = re.compile(r'^\s*(?:-\s+)?([A-Za-z_][\w-]*)\s*:')
-_WORKFLOW_EVAL_TAIL = re.compile(r'\b(?:eval|(?:ba|z|da)?sh\s+-c)\b(.*)')
+# A variable is "evaluated" when its value can become code or environment for
+# a later step: passed to eval/source/exec or to any interpreter on the same
+# line (sh -c, bash -ec, python3 -c, node -e, ...), run as a bare command
+# word ($CMD, $($CMD)), or written to $GITHUB_ENV / $GITHUB_PATH, where a
+# newline in the value plants arbitrary variables (LD_PRELOAD, NODE_OPTIONS).
+_WORKFLOW_EVAL_TAIL = re.compile(
+    r'(?<![\w./-])(?:eval|source|exec|(?:ba|z|da|k|mk|c|tc|fi)?sh|python[\d.]*|pypy[\d.]*'
+    r'|node(?:js)?|perl|ruby|php|deno|bun|lua|Rscript|pwsh|powershell|osascript)\b(.*)')
+_WORKFLOW_COMMAND_VAR = re.compile(
+    r'(?:^|[;&|(`{]|\$\(|\b(?:then|do|else|exec|sudo|nohup|time|xargs|env|command|builtin)\s)'
+    r'\s*"?\$\{?([A-Za-z_]\w*)')
+_WORKFLOW_ENV_SINK = re.compile(r'\bGITHUB_(?:ENV|PATH)\b')
+_WORKFLOW_HEREDOC = re.compile(r'<<-?\s*["\']?([A-Za-z_]\w*)')
 _WORKFLOW_SHELL_VAR = re.compile(r'\$\{?([A-Za-z_]\w*)')
+_WORKFLOW_HEREDOC_MAX_LINES = 500
 
 
 def _workflow_evaluated_vars(lines):
-    """Names of shell variables the workflow re-evaluates as code (`eval "$X"`,
-    `sh -c "$X"`). An env value that reaches one of these is still injection."""
+    """Names of shell variables whose value the workflow (or action) runs as
+    code or exports to later steps. An env value that reaches one of these is
+    still injection, so it keeps its grade."""
     names = set()
+    heredoc_end = None
+    heredoc_left = 0
     for line in lines:
+        if heredoc_end is not None:
+            if line.strip() == heredoc_end or heredoc_left <= 0:
+                heredoc_end = None
+            else:
+                heredoc_left -= 1
+                names.update(_WORKFLOW_SHELL_VAR.findall(line))
+                continue
         m = _WORKFLOW_EVAL_TAIL.search(line)
         if m:
             names.update(_WORKFLOW_SHELL_VAR.findall(m.group(1)))
+        names.update(_WORKFLOW_COMMAND_VAR.findall(line))
+        if _WORKFLOW_ENV_SINK.search(line):
+            names.update(_WORKFLOW_SHELL_VAR.findall(line))
+            doc = _WORKFLOW_HEREDOC.search(line)
+            if doc:
+                heredoc_end = doc.group(1)
+                heredoc_left = _WORKFLOW_HEREDOC_MAX_LINES
+    names.discard('GITHUB_ENV')
+    names.discard('GITHUB_PATH')
     return names
 
 
@@ -1088,6 +1128,78 @@ def _drop_plain_comment_suppression(findings, content):
         if f.rule_id == 'ST-ST-002' and 1 <= f.line <= len(lines):
             line = lines[f.line - 1]
             if _CODE_COMMENT_START.match(line) and not _AI_ADDRESSED.search(line):
+                continue
+        kept.append(f)
+    return kept
+
+
+# In bash, zsh and ksh `&>file` is a redirect; in POSIX sh (dash) it is a
+# background `&` followed by `>file`. The stealth rules count it as background
+# unless the script declares a bash-family shell.
+_BASH_FAMILY_SHEBANG = re.compile(r'^#![^\n]*\b(?:bash|zsh|ksh|mksh)\b')
+_STRICT_BACKGROUND = {
+    'ST-ST-003': re.compile(r'(?i)2>\s*/dev/null.*(?<![&>|])&(?![&>])'),
+    'ST-ST-004': re.compile(r'(?i)(>\s*/dev/null\s+2>&1|&>\s*/dev/null)\s*&(?![&>])'),
+}
+
+
+def _drop_bash_redirect_ampersand(findings, content, ext):
+    if not any(f.rule_id in _STRICT_BACKGROUND for f in findings):
+        return findings
+    bash_family = (ext in ('.bash', '.zsh', '.ksh')
+                   or _BASH_FAMILY_SHEBANG.match(content[:256]) is not None)
+    if not bash_family:
+        return findings
+    lines = content.split('\n')
+    kept = []
+    for f in findings:
+        strict = _STRICT_BACKGROUND.get(f.rule_id)
+        if (strict is not None and 1 <= f.line <= len(lines)
+                and not strict.search(core.clip_line(lines[f.line - 1]))):
+            continue
+        kept.append(f)
+    return kept
+
+
+# Whole-line comment syntax per language. `#` starts a comment only where the
+# language says so (not a JS #private field, a C #include/#embed, or a Rust
+# #[path] attribute); `//` is a comment only in C-family languages, and in Go
+# `//go:generate`-style directives (no space after //) are code.
+_HASH_COMMENT_EXTS = frozenset({
+    '.py', '.pyw', '.sh', '.bash', '.zsh', '.ksh', '.fish', '.rb', '.pl', '.pm',
+    '.r', '.ps1', '.psm1', '.ex', '.exs', '.jl', '.coffee', '.tcl', '.php',
+})
+_SLASH_COMMENT_EXTS = frozenset({
+    '.js', '.mjs', '.cjs', '.jsx', '.ts', '.tsx', '.mts', '.cts', '.java', '.kt',
+    '.kts', '.scala', '.groovy', '.swift', '.c', '.h', '.cc', '.cpp', '.cxx', '.hpp',
+    '.hh', '.m', '.mm', '.cs', '.go', '.rs', '.dart', '.php',
+})
+_PATH_TOKEN = re.compile(r'\S*[/~]\S*')
+
+
+def _is_code_comment_line(line, ext):
+    body = line.lstrip()
+    if body.startswith('#') and ext in _HASH_COMMENT_EXTS:
+        return not body.startswith('#!') and not (ext == '.php' and body.startswith('#['))
+    if body.startswith('//') and ext in _SLASH_COMMENT_EXTS:
+        return ext != '.go' or body[2:3] in ('', ' ', '\t', '/')
+    return False
+
+
+def _drop_comment_path_mentions(findings, content, ext):
+    """A scope-escalation path (/etc/passwd, ~/.claude/skills) named in a
+    whole-line # or // comment documents the code; it is not an access. A
+    comment that speaks to an AI agent is kept, judged with the path tokens
+    removed so `~/.claude/` alone does not count as addressing Claude."""
+    if not any(f.rule_id.startswith('ST-SP-') for f in findings):
+        return findings
+    lines = content.split('\n')
+    kept = []
+    for f in findings:
+        if f.rule_id.startswith('ST-SP-') and 1 <= f.line <= len(lines):
+            line = lines[f.line - 1]
+            if (_is_code_comment_line(line, ext)
+                    and not _AI_ADDRESSED.search(_PATH_TOKEN.sub(' ', line))):
                 continue
         kept.append(f)
     return kept
@@ -1439,8 +1551,11 @@ def scan_content(content, rel_path, budget=None, decode_cache=None, odd_breaks=F
                 return not (key and key.group(1) in evaluated)
             prerequisite_findings = [f for f in prerequisite_findings
                                      if not _safe_env_value(f)]
+        action_lines = None
+        action_evaluated = None
         for finding in prerequisite_findings:
-            action_env = is_action and _action_env_line(content, finding.line)
+            action_env = (finding.rule_id == "ST-PR-010" and is_action
+                          and _action_env_line(content, finding.line))
             if finding.rule_id == "ST-PR-010" and (is_workflow or ext == '.py'
                     or action_env):
                 # An expression in workflow metadata or Python source is not
@@ -1448,6 +1563,22 @@ def scan_content(content, rel_path, budget=None, decode_cache=None, odd_breaks=F
                 finding.severity = "high"
                 if action_env:
                     finding.title = "Action environment expression"
+                    # Same rule as a workflow env value: passing an input
+                    # through `env:` is GitHub's recommended mitigation, so
+                    # it is only a note unless the variable is re-evaluated
+                    # as code later in the action (eval "$X", sh -c "$X",
+                    # $X as a command, written to $GITHUB_ENV) and its value
+                    # comes from an untrusted context (inputs, github.event).
+                    if action_lines is None:
+                        action_lines = content.split('\n')
+                        action_evaluated = _workflow_evaluated_vars(action_lines)
+                    key = (_WORKFLOW_ENV_KEY.match(action_lines[finding.line - 1])
+                           if 1 <= finding.line <= len(action_lines) else None)
+                    if key and (key.group(1) not in action_evaluated
+                                or not _workflow_untrusted(
+                                    action_lines[finding.line - 1][:_WORKFLOW_MAX_LINE])):
+                        finding.severity = "low"
+                        finding.title = "Action environment value"
                 elif (is_workflow and finding.line in workflow_inert_lines
                         and 1 <= finding.line <= len(workflow_lines)):
                     line_text = workflow_lines[finding.line - 1]
@@ -1467,11 +1598,15 @@ def scan_content(content, rel_path, budget=None, decode_cache=None, odd_breaks=F
         # Cat 5: Persistence
         findings.extend(scan_rules(content, rel_path, PERSISTENCE_RULES, "persistence", "high"))
         # Cat 6: Scope escalation
-        findings.extend(scan_rules(content, rel_path, SCOPE_RULES, "scope-escalation", "high"))
+        scope = scan_rules(content, rel_path, SCOPE_RULES, "scope-escalation", "high")
+        if ext in code_exts and not is_agent_instruction_file:
+            scope = _drop_comment_path_mentions(scope, content, ext)
+        findings.extend(scope)
         # Cat 7: Stealth
         stealth = scan_rules(content, rel_path, STEALTH_RULES, "stealth", "high")
         if ext in code_exts and not is_agent_instruction_file:
             stealth = _drop_plain_comment_suppression(stealth, content)
+        stealth = _drop_bash_redirect_ampersand(stealth, content, ext)
         findings.extend(stealth)
 
     # Cat 4b: Credential-path directives (agent instruction files + text files)
