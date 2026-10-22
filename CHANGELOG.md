@@ -4,6 +4,20 @@ All notable changes to repo-forensics. Versions follow semver.
 
 ## [Unreleased]
 
+### Fixed
+- Far fewer false alarms on ordinary repositories. On three popular open-source projects, high and critical findings dropped from 2,562 to 116 with no loss of detection on the malicious test cases.
+- `uv.lock`, `pdm.lock`, `bun.lock` and `deno.lock` are treated as lockfiles like `poetry.lock`: their integrity hashes no longer show up as hundreds of "Long Hex String" and "Base64 Encoded Block" findings. Dependency checks still read them.
+- Shell scripts: `"$(cd "$(dirname "$0")" && pwd)"`, arithmetic such as `$(( $(date +%s) - start ))` and similar path or time lookups no longer count as nested command substitution.
+- Shell scripts: `2>/dev/null && ...` and `>/dev/null 2>&1 && ...` are no longer read as hidden background jobs. A real trailing `&` is still flagged.
+- A 64- or 128-character hex string assigned to a named public key, hash, checksum or fingerprint is no longer reported as a possible packed payload, and no longer feeds the "Obfuscated Code Execution" warning.
+- GitHub composite actions that pass inputs through `env:` (GitHub's recommended defence against script injection) get a low note instead of a high finding per input, unless the variable is later run as code with `eval` or `sh -c`.
+- GitHub workflows: a one-line `run:` with `&&` no longer stops the scanner from grading the rest of the file, and an expression in `working-directory` is graded as inert.
+- GitHub workflows: `contents: write` and `id-token: write` are low, not medium, when the workflow only runs on push, release, schedule or manual dispatch. Workflows reachable from pull requests, comments or other workflows keep medium.
+- `/etc/passwd`, `~/.claude/skills` and similar paths mentioned in a plain code comment are no longer reported as access. Code that uses the path, comments addressed to an AI agent, and agent instruction files are still checked.
+- Loading a fixed module file next to the script through `os.path.join(os.path.dirname(__file__), ...)` or `Path(__file__).parents[N]` is graded like the `pathlib` form already was.
+- `__import__("json")` and lazy-import tables such as `__import__("pkg.tools")` are low. Imports of process, file, network, loader or decoding modules, computed names, and `getattr(__import__(...), ...)` stay high.
+- "Lethal Trifecta" no longer counts copying the environment for a subprocess as a network call.
+
 ## [2.14.16] - 2026-10-22
 
 ### Security
