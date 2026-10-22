@@ -14,19 +14,22 @@
           "disclosed": "2026-10-21",
           "cvss": 9.2,
           "severity": "critical",
-          "summary": "Stale request-owned global state (fatal-error backtrace, session upload progress, OPcache) reused across requests by a persistent worker gives unauthenticated remote code execution and Heartbleed-style process-memory disclosure on any PHP deployment, independent of the application. Present for over a decade; every PHP release back to 5.4 is affected. Exploit traffic observed before public disclosure.",
+          "summary": "Stale request-owned global state (fatal-error backtrace, session upload progress, OPcache) reused across requests by a persistent worker gives unauthenticated remote code execution and Heartbleed-style process-memory disclosure on any PHP deployment, independent of the application. Present for over a decade; every PHP release back to 5.4 is affected.",
           "patched_floors": {
             "8.2": "8.2.35",
             "8.3": "8.3.36",
             "8.4": "8.4.27",
-            "8.5": "8.5.12"
+            "8.5": "8.5.12",
+            "8.6": "8.6.0"
           },
+          "patched_floors_note": "8.6.0 RC4 and later include the fix, so every 8.6 GA release is patched; 8.6 release candidates before RC4 are affected (pre-release tags are not judged by this scanner).",
           "eol_below": "8.2",
-          "eol_note": "The PHP Foundation ships the fix only for 8.2.35 / 8.3.36 / 8.4.27 / 8.5.12. PHP 8.1 and older receive no patch; the only remediation is upgrading to a patched branch.",
+          "eol_note": "Upstream releases the fix only as 8.2.35 / 8.3.36 / 8.4.27 / 8.5.12. PHP 8.1 and older get no upstream release; the PHP security team published minimal source backports for 7.4/8.0/8.1 and some distributions/LTS vendors ship them. Verify your vendor build is patched, or upgrade to a patched branch.",
           "references": [
             "https://github.com/php/php-src/security/advisories/GHSA-6wmf-4rv5-p3rp",
             "https://github.com/php/php-src/security/advisories/GHSA-w8hw-w9fx-j79w",
-            "https://www.wiz.io/blog/php2shell-php-rce"
+            "https://www.wiz.io/blog/php2shell-php-rce",
+            "https://www.php.net/"
           ]
         }
       ]
