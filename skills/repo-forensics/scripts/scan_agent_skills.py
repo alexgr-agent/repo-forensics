@@ -524,6 +524,69 @@ _NETWORK_ACCESS_SIGNALS = [
 ]
 
 _COOCCURRENCE_SCAN_EXTS = {'.md', '.txt', '.py', '.js', '.ts', '.json', '.yml', '.yaml', '.sh', '.bash', '.toml'}
+# Agent instructions (SKILL.md, CLAUDE.md, markdown under skills/ or commands/)
+# are read with every signal: there the words are the payload. Everywhere else
+# the memory side must name a real memory store (a memory file, a memory tool,
+# an explicit memory API) rather than the plain word "memory", and in code the
+# evidence must come from code, not from a comment.
+_PROSE_EXTS = {'.md', '.txt'}
+# Markdown under these folders is agent instructions (skills, slash commands,
+# subagents, prompt libraries), read with the broad signals like SKILL.md.
+_INSTRUCTION_DIRS = {'skills', 'commands', 'agents', 'prompts', 'references', '.claude', 'rules'}
+_STRONG_MEMORY_SIGNALS = [
+    re.compile(r'(?i)(?:^|[\s/"\'`(~])(?:MEMORY|CLAUDE|AGENTS|GEMINI)\.md\b'),
+    re.compile(r'(?i)[~/]\.(?:claude|codex|gemini|cursor)/(?:projects|memory|memories)\b'),
+    re.compile(r'(?i)\b(?:mcp__recall|mcp__memory|mcp__knowledge)\w*'),
+    re.compile(r'(?i)\b(?:read|fetch|get|load|query|search|dump|export)_?memor(?:y|ies)\b'),
+    re.compile(r'(?i)\b(?:memory|conversation|recall)_?search\b'),
+    re.compile(r'(?i)\btotal[_-]?recall\b'),
+]
+_HASH_COMMENT_CODE = {'.py', '.sh', '.bash', '.yml', '.yaml', '.toml'}
+_SLASH_COMMENT_CODE = {'.js', '.ts'}
+
+
+def _code_only(line, ext, state):
+    '''Return the part of a code line outside comments. `state` carries an
+    open /* */ block across lines for JS/TS. Quote-aware and linear.'''
+    out = []
+    quote = ''
+    i, n = 0, len(line)
+    while i < n:
+        c = line[i]
+        if state.get('block'):
+            end = line.find('*/', i)
+            if end < 0:
+                return ''.join(out)
+            state['block'] = False
+            i = end + 2
+            continue
+        if quote:
+            out.append(c)
+            if c == '\\':
+                if i + 1 < n:
+                    out.append(line[i + 1])
+                i += 2
+                continue
+            if c == quote:
+                quote = ''
+            i += 1
+            continue
+        if c in '"\'`':
+            quote = c
+            out.append(c)
+            i += 1
+            continue
+        if ext in _HASH_COMMENT_CODE and c == '#':
+            break
+        if ext in _SLASH_COMMENT_CODE and c == '/' and line.startswith('//', i):
+            break
+        if ext in _SLASH_COMMENT_CODE and c == '/' and line.startswith('/*', i):
+            state['block'] = True
+            i += 2
+            continue
+        out.append(c)
+        i += 1
+    return ''.join(out)
 
 
 def scan_memory_exfil_cooccurrence(repo_path):
@@ -551,9 +614,18 @@ def scan_memory_exfil_cooccurrence(repo_path):
         content = _read(fpath)
         if not content:
             continue
+        prose = ext in _PROSE_EXTS
+        instructions = (os.path.basename(rel).upper() in core._AGENT_INSTRUCTION_BASENAMES
+                        or (prose and _INSTRUCTION_DIRS & set(rel.replace('\\', '/').lower().split('/')[:-1])))
+        memory_signals = _MEMORY_ACCESS_SIGNALS if instructions else _STRONG_MEMORY_SIGNALS
+        comment_state = {}
         for i, line in enumerate(content.split('\n')):
             line = core.clip_line(line)
-            for pat in _MEMORY_ACCESS_SIGNALS:
+            if not prose and not instructions:
+                line = _code_only(line, ext, comment_state)
+                if not line.strip():
+                    continue
+            for pat in memory_signals:
                 m = pat.search(line)
                 if m:
                     memory_hits.append((rel, i + 1, m.group(0)))
