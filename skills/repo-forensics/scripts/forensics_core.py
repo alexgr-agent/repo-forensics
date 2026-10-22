@@ -404,6 +404,52 @@ def resolve_scan_ext(path, supported):
     return ""
 
 
+# Top-level modules that hand out a capability (process, file, network, code
+# loading, decoding, native calls). `__import__("os")` is the classic way to
+# reach one without an import statement; `__import__("json")` reaches none.
+CAPABILITY_MODULES = frozenset({
+    "os", "posix", "nt", "posixpath", "ntpath", "subprocess", "sys", "builtins",
+    "__builtin__", "importlib", "imp", "pkgutil", "runpy", "zipimport", "code",
+    "codeop", "ctypes", "cffi", "_ctypes", "socket", "ssl", "select", "selectors",
+    "asyncio", "http", "urllib", "urllib2", "urllib3", "requests", "httpx",
+    "aiohttp", "ftplib", "smtplib", "telnetlib", "xmlrpc", "webbrowser", "pty",
+    "tty", "fcntl", "signal", "resource", "multiprocessing", "concurrent",
+    "threading", "_thread", "pickle", "cPickle", "_pickle", "marshal", "shelve",
+    "dill", "cloudpickle", "base64", "binascii", "codecs", "zlib", "bz2", "lzma",
+    "gzip", "zipfile", "tarfile", "shutil", "tempfile", "io", "pathlib", "glob",
+    "commands", "popen2", "platform", "getpass", "pwd", "grp", "spwd", "crypt",
+    "inspect", "types", "gc", "dis", "linecache", "sqlite3", "mmap", "winreg",
+    "_winreg", "msvcrt", "_winapi", "win32api", "win32com", "pywintypes",
+})
+_LITERAL_IMPORT = re.compile(r'__import__\s*\(\s*(["\'])([A-Za-z_][\w.]{0,200})\1\s*[,)]')
+_ANY_IMPORT_CALL = re.compile(r'__import__\s*\(')
+
+
+def literal_import_is_inert(line):
+    """True when every __import__(...) call on the line names a literal module
+    whose top-level package grants no capability (json, a project module).
+    A computed name, or any capability module, keeps the line suspicious."""
+    calls = len(_ANY_IMPORT_CALL.findall(line))
+    if not calls:
+        return False
+    literals = [m.group(2).split('.', 1)[0] for m in _LITERAL_IMPORT.finditer(line)]
+    return (len(literals) == calls
+            and not any(name in CAPABILITY_MODULES for name in literals))
+
+
+def downgrade_inert_literal_imports(findings, text, rule_ids):
+    """Grade a dynamic-import finding low when its line only imports inert
+    modules by literal name (lazy imports, `__import__("json").load(f)`)."""
+    if not any(f.rule_id in rule_ids for f in findings):
+        return findings
+    lines = text.split('\n')
+    for f in findings:
+        if (f.rule_id in rule_ids and 1 <= f.line <= len(lines)
+                and literal_import_is_inert(clip_line(lines[f.line - 1]))):
+            f.severity = "low"
+    return findings
+
+
 def clip_line(line):
     """Truncate an over-long line to MAX_LINE_LENGTH (the ReDoS bound) while
     preserving a trailing newline so line numbering is unaffected.

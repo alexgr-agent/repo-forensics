@@ -238,6 +238,10 @@ def scan_file_regex(file_path, rel_path):
         or js_import_call.search(content_lines[f.line - 1])
     ]
 
+    # __import__("json") or a lazy __import__("pkg.tools") reaches no
+    # capability; only a computed name or a capability module stays high.
+    findings = core.downgrade_inert_literal_imports(findings, content, {"RD-DYN-004"})
+
     # module_from_spec constructs a module but does not execute it. Treat a
     # standalone call as HIGH; retain CRITICAL when its function writes a file
     # before loading and executes the resulting module. Test fixtures keep the

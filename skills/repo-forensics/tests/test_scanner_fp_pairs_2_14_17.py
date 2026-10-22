@@ -324,3 +324,47 @@ def test_write_permissions_on_outside_triggers_stay_medium(tmp_path, on_block):
     assert _perm_severities(tmp_path, on_block) == [
         ("GHA: contents: write Permission", "medium"),
         ("GHA: id-token: write Permission", "medium")]
+
+
+# ---------------------------------------------------------------------------
+# __import__ with a literal, capability-free module name
+# ---------------------------------------------------------------------------
+
+_IMPORTS_BENIGN = '''manifest = __import__("json").load(handle)
+TOOLS = {
+    "gmail": lambda: __import__("gmail.gmail_tools"),
+    "drive": lambda: __import__('gdrive.drive_tools', fromlist=["x"]),
+}
+'''
+
+_IMPORTS_RISKY = '''__import__("os").system(cmd)
+run = __import__('subprocess').run
+mod = __import__(name)
+both = __import__("json"), __import__("socket")
+lib = __import__("importlib.util")
+'''
+
+
+def _import_severities(tmp_path, body):
+    import scan_runtime_dynamism
+    path = tmp_path / "mod.py"
+    path.write_text(body)
+    out = {}
+    for f in scan_sast.scan_file(str(path), "mod.py") + \
+            scan_runtime_dynamism.scan_file(str(path), "mod.py"):
+        if f.rule_id in ("SA-PY-003", "RD-DYN-004"):
+            out.setdefault(f.rule_id, []).append((f.line, f.severity))
+    return out
+
+
+def test_literal_import_of_inert_module_is_low(tmp_path):
+    found = _import_severities(tmp_path, _IMPORTS_BENIGN)
+    assert found["SA-PY-003"] == [(1, "low"), (3, "low"), (4, "low")]
+    assert found["RD-DYN-004"] == [(1, "low"), (3, "low"), (4, "low")]
+
+
+def test_capability_or_computed_import_stays_high(tmp_path):
+    found = _import_severities(tmp_path, _IMPORTS_RISKY)
+    assert found["SA-PY-003"] == [(i, "high") for i in (1, 2, 3, 4, 5)]
+    # RD-DYN-004 only matches a literal name; the computed one is SA-PY-003's.
+    assert found["RD-DYN-004"] == [(i, "high") for i in (1, 2, 4, 5)]

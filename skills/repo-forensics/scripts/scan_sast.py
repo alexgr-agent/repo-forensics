@@ -30,6 +30,9 @@ import rule_loader
 SCANNER_NAME = "sast"
 
 
+_DYNAMIC_IMPORT_IDS = frozenset({"SA-PY-003"})
+
+
 def _filter_python_shell_docstring_examples(findings, source, ext):
     """A quoted historical shell call in a docstring is not executable code."""
     if ext != ".py" or not any(f.rule_id == "SA-PY-006" for f in findings):
@@ -1035,6 +1038,7 @@ def scan_file(file_path, rel_path):
             findings.extend(_scan_structured_tls(text, rel_path, ext, rules))
     except (OSError, UnicodeDecodeError) as e:
         print(f"[!] Skipped {rel_path}: {e}", file=sys.stderr)
+    findings = core.downgrade_inert_literal_imports(findings, source, _DYNAMIC_IMPORT_IDS)
     return _filter_python_shell_docstring_examples(findings, source, ext)
 
 
@@ -1090,6 +1094,7 @@ def scan_text(text, rel_path, ext=None):
                     asset=rule.asset,
                 ))
     findings.extend(_scan_structured_tls(text, rel_path, ext, rules))
+    findings = core.downgrade_inert_literal_imports(findings, text, _DYNAMIC_IMPORT_IDS)
     return _filter_python_shell_docstring_examples(findings, text, ext)
 
 
