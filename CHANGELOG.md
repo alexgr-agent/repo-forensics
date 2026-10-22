@@ -2,7 +2,28 @@
 
 All notable changes to repo-forensics. Versions follow semver.
 
-## [Unreleased]
+## [2.14.17] - 2026-10-22
+
+### Added
+- `bun.lock` and `deno.lock` are now checked like other lockfiles for packages resolved over plain HTTP, from git, or from a non-standard registry. `deno.land` and `jsr.io` count as standard registries.
+
+### Fixed
+- The command hook no longer blocks text that is only being written or read as data: notes and docs written with `cat > file <<'EOF'` after `cd` or `mkdir`, Python fed a script on stdin (including a virtualenv Python), and `python -c` programs whose strings quote an attack command. Anything that can still reach a shell stays blocked: writing a file and running it in the same command, heredocs fed to a shell, unquoted heredocs that expand, Python that calls a shell, and output or downloads piped onward. Python on stdin that calls `subprocess` with a shell is now caught as well.
+- Framework build output is skipped when `.gitignore` excludes it: `.next`, `.nuxt`, `.svelte-kit`, `.turbo`, `.vercel`, `.output` and similar folders, plus `*.tsbuildinfo`. A local Next.js dev build no longer floods a scan with findings in generated files. Build folders committed to the repository are still scanned.
+- Far fewer false alarms on ordinary repositories. On three popular open-source projects, high and critical findings dropped from 2,562 to 127. Evasions built against each change are still caught.
+- `uv.lock`, `pdm.lock`, `bun.lock` and `deno.lock`: integrity hashes and registry download links are no longer reported as "Long Hex String" or "Base64 Encoded Block". Any other encoded value in these files is still reported.
+- Shell scripts: `"$(cd "$(dirname "$0")" && pwd)"`, arithmetic such as `$(( $(date +%s) - start ))`, and other path or time lookups no longer count as nested command substitution. Nesting around any other command is still reported, including host lookups such as `$(hostname)`.
+- Shell scripts: `2>/dev/null && ...` and `>/dev/null 2>&1 && ...` are no longer read as hidden background jobs. A real `&` is still flagged. So is `&>` in `sh` scripts, where it starts a background job.
+- A 64- or 128-character random-looking hex string assigned to a named public key, hash, checksum or fingerprint is no longer reported as a possible packed payload. It is still reported when the file also decodes hex, or when the file holds more than eight such strings.
+- GitHub composite actions that pass inputs through `env:` (GitHub's recommended defence against script injection) get a low note instead of a high finding per input. A value that is later run as code or written to `$GITHUB_ENV` or `$GITHUB_PATH` stays high. Workflows now apply the same wider check.
+- GitHub workflows: a one-line `run:` with `&&` no longer stops the scanner from grading the rest of the file, and an expression in `working-directory` is graded as inert.
+- GitHub workflows: `contents: write` and `id-token: write` are low, not medium, when the workflow only runs on push, release, schedule or manual dispatch. Workflows that can be triggered from pull requests, comments or other workflows keep medium, and so does any trigger block the scanner cannot read with confidence.
+- `/etc/passwd`, `~/.claude/skills` and similar paths mentioned in a code comment are no longer reported as access. Comment syntax is checked per language, so a JavaScript `#private` field, a C `#include`, a Rust `#[path]` attribute and a Go `//go:generate` line are still checked as code. Comments addressed to an AI agent and agent instruction files are always checked.
+- Loading a module file from the script's own folder, or from a parent folder inside the scanned repository, is graded like the `pathlib` sibling form. A path that climbs outside the repository stays high.
+- `__import__("json")`, other pure-computation standard-library modules, and the repository's own modules imported by name are low. Every other literal import stays high, as do computed names and `getattr(__import__(...), ...)`.
+- "Lethal Trifecta" no longer counts copying the environment for a subprocess as a network call.
+- "Memory + Network co-occurrence" names the same file on every operating system.
+- "Memory + Network co-occurrence" no longer fires on the word "memory" in a code comment or data file, a link in a README, or `fetch-depth` in a workflow. Outside agent instruction files, it needs a real memory store (`MEMORY.md`, `~/.claude/projects`, a memory tool) and a real network call in code.
 
 ## [2.14.16] - 2026-10-22
 

@@ -541,7 +541,7 @@ class TestTanStackCIVector:
         workflow.mkdir(parents=True)
         ci = workflow / "ci.yml"
         ci.write_text(
-            "name: CI\non:\n  push:\n"
+            "name: CI\non:\n  pull_request:\n  push:\n"
             "permissions:\n  id-token: write\n"
             "jobs:\n  build:\n    runs-on: ubuntu-latest\n"
         )
@@ -549,6 +549,8 @@ class TestTanStackCIVector:
         id_token = [f for f in findings if "id-token" in f.title.lower()]
         assert len(id_token) >= 1
         assert any(f.severity == "medium" for f in id_token)
+        # Maintainer-only triggers (push, release, schedule, manual) make the
+        # same permission a low note: see test_scanner_fp_pairs_2_14_17.
 
     def test_prt_without_id_token_no_combo(self, tmp_path):
         workflow = tmp_path / ".github" / "workflows"

@@ -50,6 +50,97 @@ def _is_pinned_digest(line, match):
             and _PINNED_DIGEST_PREFIX.search(line, 0, match.start()) is not None)
 
 
+_DIGEST_SIZES = (64, 128)      # sha256 / Ed25519 key, sha512 / Ed25519 signature
+_DIGEST_NAME = re.compile(
+    r'(?i)(?<![a-z])(?:sha(?:1|224|256|384|512)?|digests?|hash(?:es)?|checksums?'
+    r'|fingerprints?|pub(?:lic)?[_-]?keys?|verify(?:ing)?[_-]?keys?|signatures?'
+    r'|integrity|pinned)(?![a-z])')
+# A file that turns hex back into bytes can be storing a payload in "digest"
+# rows, so nothing in it is exempted as a digest.
+_HEX_DECODER = re.compile(
+    r'(?i)fromhex|unhexlify|a2b_hex|hex2bin|DecodeString|xxd\s+-r'
+    r'|["\']hex["\']|\bpack\s*\(\s*["\']H')
+# More named digests than this in one file is a table, not a pin: report them.
+_MAX_NAMED_DIGESTS = 8
+# Lockfiles whose integrity fields are skipped one field at a time (the older
+# formats in core.LOCKFILES are skipped as whole files).
+_FIELD_LOCKFILES = frozenset({'uv.lock', 'pdm.lock', 'bun.lock', 'deno.lock'})
+_INTEGRITY_PREFIX = re.compile(r'(?i)(?:\bsha(?:1|256|384|512)[:-]|"integrity"\s*:\s*")$')
+_URL_KEY_HEX_VALUE = re.compile(r'^"https?://[^"\s]+"\s*:\s*"[0-9a-fA-F]{64}",?$')
+
+
+def _looks_random_digest(text):
+    """A real digest or key is uniformly random: its hex spreads over the whole
+    alphabet and it does not decode to readable text. Padding runs and hex
+    encoded source code fail one test or the other."""
+    if shannon_entropy(text.lower()) < 3.0:
+        return False
+    try:
+        raw = bytes.fromhex(text)
+    except ValueError:
+        return True
+    printable = sum(1 for b in raw if 32 <= b < 127 or b in (9, 10, 13))
+    return printable < 0.6 * len(raw)
+
+
+_REGISTRY_HOSTS = ('pythonhosted.org', 'pypi.org', 'registry.npmjs.org',
+                   'registry.yarnpkg.com', 'deno.land', 'jsr.io', 'codeload.github.com')
+_URL_HOST = re.compile(r'https?://([A-Za-z0-9.-]{1,253})(?=[/:?#]|$)')
+
+
+def _in_registry_url(stripped, start):
+    """True when position `start` sits inside a whitespace/quote-delimited URL
+    token on a package registry host (a download link's path, not a blob)."""
+    token_start = max(stripped.rfind(c, 0, start) for c in ' \t"\'<>(),')
+    host = _URL_HOST.match(stripped, token_start + 1)
+    if host is None:
+        return False
+    name = host.group(1).lower()
+    return any(name == h or name.endswith('.' + h) for h in _REGISTRY_HOSTS)
+
+
+def _is_lockfile_integrity(basename, stripped, match, is_hex):
+    """An integrity field of a modern lockfile: a hash after sha256:/sha512-,
+    an "integrity" value, a deno.lock "<url>": "<sha256>" row, or a path
+    segment inside a download URL. Low-entropy filler is never integrity."""
+    if basename not in _FIELD_LOCKFILES:
+        return False
+    text = match.group(0)
+    if is_hex and not _looks_random_digest(text[:128]):
+        return False
+    if _in_registry_url(stripped, match.start()):
+        return True
+    if _INTEGRITY_PREFIX.search(stripped, 0, match.start()):
+        return True
+    return (is_hex and basename == 'deno.lock' and len(text) == 64
+            and _URL_KEY_HEX_VALUE.match(stripped) is not None)
+
+
+def _is_named_digest(lines, index, stripped, match):
+    """True when the hex run is exactly one digest or public-key sized quoted
+    string and the assignment it belongs to names it as a hash or public key (EXPECTED_PUBLIC_KEY = "<64 hex>", sha256: '<64 hex>').
+    The name is read from the text before the string, or from the previous line
+    when the string sits alone inside a parenthesised assignment. The caller
+    exempts it only when it also looks random, the file does not decode hex,
+    and the file holds no more than _MAX_NAMED_DIGESTS such strings."""
+    text = match.group(0)
+    start, end = match.start(), match.end()
+    if len(text) not in _DIGEST_SIZES or start == 0 or end >= len(stripped):
+        return False
+    quote = stripped[start - 1]
+    if quote not in '"\'' or stripped[end] != quote:
+        return False
+    before = stripped[:start - 1]
+    if not before.strip(' \t([{,'):
+        prev = index - 1
+        while prev >= 0 and not lines[prev].strip():
+            prev -= 1
+        if prev < 0 or index - prev > 2:
+            return False
+        before = lines[prev].strip()[-200:]
+    return _DIGEST_NAME.search(before[-200:]) is not None
+
+
 def shannon_entropy(data):
     if not data:
         return 0
@@ -125,6 +216,9 @@ def scan_file(file_path, rel_path, threshold=5.8, budget=None):
             blobs = scan_decode.detect_encoded_blobs("\n".join(lines))
             scan_decode.feed_blobs(blobs, rel_path, decoded_seen, findings, budget)
 
+        decodes_hex = _HEX_DECODER.search("".join(lines)) is not None
+        named_digests = []
+        named_shapes = 0
         for i, line in enumerate(lines):
             stripped = line.strip()
             if len(stripped) < 50:
@@ -144,6 +238,8 @@ def scan_file(file_path, rel_path, threshold=5.8, budget=None):
                 prefix = stripped[:m.start()]
                 if 'data:' in prefix and prefix.rstrip().endswith(';base64,'):
                     continue
+                if _is_lockfile_integrity(basename, stripped, m, False):
+                    continue
                 if len(matched) >= 80:
                     findings.append(core.Finding(
                         scanner=SCANNER_NAME, severity="high",
@@ -159,17 +255,24 @@ def scan_file(file_path, rel_path, threshold=5.8, budget=None):
             # once-per-file detect_encoded_blobs pass above).
             for m in HEX_PATTERN.finditer(stripped):
                 if (_is_sha256_manifest_hash(rel_path, stripped, m)
-                        or _is_pinned_digest(stripped, m)):
+                        or _is_pinned_digest(stripped, m)
+                        or _is_lockfile_integrity(basename, stripped, m, True)):
                     continue
                 matched = m.group(0)
-                findings.append(core.Finding(
+                hex_finding = core.Finding(
                     scanner=SCANNER_NAME, severity="high",
                     title="Long Hex String",
                     description=f"Long hex string ({len(matched)} chars) may be encoded data or a packed payload",
                     file=rel_path, line=i+1,
                     snippet=matched[:120],
                     category="encoding"
-                ))
+                )
+                if _is_named_digest(lines, i, stripped, m):
+                    named_shapes += 1
+                    if not decodes_hex and _looks_random_digest(matched):
+                        named_digests.append(hex_finding)
+                        continue
+                findings.append(hex_finding)
                 break
 
             # Shannon entropy check (per-string distribution, threshold 5.8)
@@ -191,6 +294,10 @@ def scan_file(file_path, rel_path, threshold=5.8, budget=None):
                         category="obfuscation"
                     ))
 
+        # A handful of named digests is a set of pins; more is a table that
+        # could be a payload cut into digest-sized rows, so report them all.
+        if named_shapes > _MAX_NAMED_DIGESTS:
+            findings.extend(named_digests)
     except (OSError, UnicodeDecodeError) as e:
         print(f"[!] Skipped {rel_path}: {e}", file=sys.stderr)
     return findings

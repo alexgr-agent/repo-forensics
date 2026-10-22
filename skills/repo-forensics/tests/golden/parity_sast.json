@@ -1044,7 +1044,7 @@
   ],
   [
     "Dynamic Import",
-    "high",
+    "low",
     "RD-DYN-002.py",
     4,
     "code-execution"
