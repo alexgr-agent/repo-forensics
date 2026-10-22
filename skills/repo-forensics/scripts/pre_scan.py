@@ -68,6 +68,34 @@ _PM_FLAGS = (
     r'\s+)*'
 )
 
+
+# Composer (Symfony console) accepts any unambiguous command prefix plus the
+# aliases r / i / u / upgrade, so `composer req x`, `composer i`, `composer u`
+# reach the same code as the full names. Each abbreviation is a chain of
+# nested optional groups: linear, no alternation explosion.
+def _abbrev(word, min_len):
+    out = ''
+    for ch in reversed(word[min_len:]):
+        out = '(?:' + re.escape(ch) + out + ')?'
+    return re.escape(word[:min_len]) + out
+
+
+_COMPOSER = r'composer(?:\.phar)?\s+' + _PM_FLAGS
+_COMPOSER_GLOBAL = r'(?:' + _abbrev('global', 1) + r'\s+)?'
+# require: alias r, unique from `req` (re = reinstall/remove/require)
+# install: alias i, unique from `ins` (in = init/install)
+# update:  aliases u / upgrade, every up* prefix resolves to update
+_COMPOSER_INSTALL_CMDS = (
+    r'(?:r|' + _abbrev('require', 3) + r'|i|' + _abbrev('install', 3)
+    + r'|' + _abbrev('upgrade', 3) + r'|' + _abbrev('update', 1) + r')'
+)
+_COMPOSER_INSTALL_RE = re.compile(
+    _COMPOSER + _COMPOSER_GLOBAL + _COMPOSER_INSTALL_CMDS + r'\s+(.+)')
+# create-project vendor/pkg [directory] [version]: installs and runs the
+# package's scripts exactly like require. Unique from `cr`.
+_COMPOSER_CREATE_PROJECT_RE = re.compile(
+    _COMPOSER + _abbrev('create-project', 2) + r'\s+(.+)')
+
 INSTALL_PATTERNS = [
     # uv/pnpm must precede pip/npm: the patterns are unanchored, so
     # 'uv pip install x' / 'pnpm install x' substring-match the pip/npm entries.
@@ -88,7 +116,8 @@ INSTALL_PATTERNS = [
     # composer require/install/update (Packagist). Composer plugins and
     # autoload.files execute at install time (intercom-php 2026-04,
     # laravel-lang 2026-05), so this gate matters exactly like npm's.
-    (re.compile(r'composer(?:\.phar)?\s+' + _PM_FLAGS + r'(?:global\s+)?(?:require|update|install)\s+(.+)'), 'composer_install'),
+    (_COMPOSER_INSTALL_RE, 'composer_install'),
+    (_COMPOSER_CREATE_PROJECT_RE, 'composer_install'),
 ]
 
 _DOWNLOADERS = r'(?:curl|wget|aria2c|http|Invoke-WebRequest)'
@@ -226,11 +255,15 @@ def extract_package_names(pattern_type, match):
         return []
     raw = match.group(1)
     cleaned = INSTALL_FLAGS.sub('', raw).strip()
-    names = [n.strip() for n in cleaned.split() if n.strip() and not n.startswith('-')]
+    # Shell quotes do not reach the package manager: `npm i "pkg@1.0.0"` and
+    # `composer require 'vendor/pkg:1.0'` install the unquoted token.
+    names = [n.strip().strip('\'"') for n in cleaned.split()]
+    names = [n for n in names if n and not n.startswith('-')]
     if pattern_type in ('pip_install', 'uv_install'):
-        # A quoted requirement (`pip install "pkg==1.0"`) keeps its leading
-        # quote through the split, so the IOC name check never matched it.
-        names = [re.split(r'[>=<!\[\];@]', n.strip('"\''))[0] for n in names]
+        names = [re.split(r'[>=<!\[\];@]', n)[0] for n in names]
+    if pattern_type == 'composer_install':
+        names = _normalize_composer_tokens(
+            names, create_project=match.re is _COMPOSER_CREATE_PROJECT_RE)
     return names
 
 
@@ -299,16 +332,59 @@ def split_composer_name_version(token):
       monolog/monolog        -> ('monolog/monolog', None)
       ./packages/local       -> ('./packages/local', None)
     """
-    m = re.match(r'^([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+):(.+)$', token)
+    m = (re.match(r'^([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+):(.+)$', token)
+         or re.match(r'^([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)=(.+)$', token))
     if m:
-        return m.group(1), m.group(2)
-    m = re.match(r'^([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)=(.+)$', token)
-    if m:
-        return m.group(1), m.group(2)
+        # A trailing stability flag (15.29.5@stable, ^1.0@dev) does not change
+        # which release resolves; strip it so the exact-pin check still fires.
+        version = re.sub(r'@[A-Za-z]+$', '', m.group(2)).strip()
+        return m.group(1), (version or None)
     m = re.match(r'^([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)$', token)
     if m:
         return m.group(1), None
     return token, None
+
+
+_COMPOSER_NAME_RE = re.compile(r'^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$')
+_COMPOSER_VERSIONISH_RE = re.compile(r'^(?:[v=<>^~*@]|\d|dev-)', re.IGNORECASE)
+
+
+def _normalize_composer_tokens(names, create_project=False):
+    """Pair Composer's space-separated `vendor/pkg <version>` arguments into
+    `vendor/pkg:<version>` so the version reaches the pinned-version check.
+
+    require mirrors Composer's own pairing rule (a bare vendor/pkg followed by
+    a token with no '/' takes that token as its constraint), limited to
+    version-shaped tokens so a trailing `&& next-command` is never read as
+    one. create-project is positional (`vendor/pkg [directory] [version]`);
+    flag values and the
+    directory cannot be told apart reliably offline, so every later
+    version-shaped token is checked against the package (an over-check can
+    only deny on a real IOC hit)."""
+    if create_project:
+        pkg_idx = next((i for i, n in enumerate(names)
+                        if split_composer_name_version(n)[0] != n
+                        or _COMPOSER_NAME_RE.match(n)), None)
+        if pkg_idx is None:
+            return names
+        pkg = names[pkg_idx]
+        if split_composer_name_version(pkg)[1] is not None:
+            return [pkg]
+        versions = [n for n in names[pkg_idx + 1:] if _COMPOSER_VERSIONISH_RE.match(n)]
+        return [pkg + ':' + v for v in versions] or [pkg]
+    out = []
+    i = 0
+    while i < len(names):
+        tok = names[i]
+        nxt = names[i + 1] if i + 1 < len(names) else None
+        if (_COMPOSER_NAME_RE.match(tok) and nxt is not None and '/' not in nxt
+                and _COMPOSER_VERSIONISH_RE.match(nxt)):
+            out.append(tok + ':' + nxt)
+            i += 2
+            continue
+        out.append(tok)
+        i += 1
+    return out
 
 
 def _semver_tuple(v):

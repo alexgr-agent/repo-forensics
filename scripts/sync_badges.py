@@ -10,14 +10,18 @@ everywhere they appear, so a stale count is impossible.
 
 Sources of truth:
   - scanners: number of `scan_*.py` files that declare a `SCANNER_NAME` (the
-    canonical scanner marker).
+    canonical scanner marker). It must equal the FULL_SCANNERS launch list in
+    run_forensics.sh (the script refuses to run otherwise).
+  - targeted: the PostToolUse / afterShellExecution scanner list in
+    auto_scan.run_targeted_scan.
   - tests:    pytest collected-test count.
   - version:  the root .claude-plugin/plugin.json `version`.
 
 Outputs (idempotent — running twice changes nothing):
   - .github/badges/metrics.json  (read live by the README's dynamic shields)
   - README.md prose counts + the "The N Scanners" heading / "Show all N" summary
-  - diagrams/hero.svg, scan-verdict.svg, attack-flow.svg scanner counts
+  - diagrams/hero.svg, scan-verdict.svg, attack-flow.svg, scanner-map.svg
+  - plugin manifests, SKILL.md and the Cursor rule (TEXT_SURFACES below)
 
 Run locally any time, and from CI on every push (see .github/workflows/sync-badges.yml).
 Pure standard library; no third-party deps (the repo's zero-dependency promise).
@@ -49,6 +53,71 @@ def count_scanners():
                 if re.search(r"^SCANNER_NAME\s*=", f.read(), re.M):
                     n += 1
     return n
+
+
+def full_launch_list():
+    """Scanner scripts in run_forensics.sh's FULL_SCANNERS array."""
+    with open(os.path.join(SCRIPTS, "run_forensics.sh"), encoding="utf-8") as f:
+        body = re.search(r"^FULL_SCANNERS=\((.*?)^\)", f.read(), re.M | re.S)
+    if not body:
+        return []
+    return re.findall(r'"[\w]+:(scan_[\w]+\.py)"', body.group(1))
+
+
+def count_targeted():
+    """Scanners auto_scan.run_targeted_scan launches after an install/clone."""
+    with open(os.path.join(SCRIPTS, "auto_scan.py"), encoding="utf-8") as f:
+        body = re.search(r"targeted_scanners = \[(.*?)\]", f.read(), re.S)
+    return len(re.findall(r"'scan_[\w]+\.py'", body.group(1))) if body else 0
+
+
+# Every other file that states a scanner count: (path, [(pattern, kind)]).
+# kind 'full' = the full audit count, 'targeted' = the post-install count.
+TEXT_SURFACES = [
+    ("README.md", [(r"\b\d+( scanners below include)", "full"),
+                   (r"(Targeted )\d+(-scanner audit)", "targeted")]),
+    (".cursor/rules/repo-forensics.mdc", [(r"(full audit, )\d+( scanners)", "full"),
+                                          (r"(Targeted )\d+(-scanner audit)", "targeted")]),
+    ("skills/repo-forensics/SKILL.md", [(r"(full )\d+(-scanner deep scan)", "full"),
+                                        (r"(\*\*)\d+( scanners\*\*)", "full"),
+                                        (r"(all )\d+( scanners\))", "full")]),
+    (".codex-plugin/plugin.json", [(r"\b\d+( scanners detect)", "full")]),
+    (".cursor-plugin/plugin.json", [(r"\b\d+( scanners detect)", "full")]),
+    (".kimi-plugin/plugin.json", [(r"\b\d+( scanners detect)", "full")]),
+    (".claude-plugin/marketplace.json", [(r"\b\d+( scanners detect)", "full")]),
+    ("openclaw/openclaw.plugin.json", [(r"\b\d+( scanners, zero dependencies)", "full")]),
+    ("diagrams/scanner-map.svg", [(r"\b\d+(-scanner attack surface map)", "full")]),
+]
+
+
+def _sub_count(pattern, value, text):
+    """Replace the number in every match of pattern, keeping the groups."""
+    def repl(m):
+        if m.re.groups == 2:
+            return m.group(1) + str(value) + m.group(2)
+        return str(value) + m.group(1)
+    return re.sub(pattern, repl, text)
+
+
+def update_text_surfaces(scanners, targeted, write=True):
+    """Rewrite TEXT_SURFACES counts. Returns the files that were stale."""
+    counts = {"full": scanners, "targeted": targeted}
+    stale = []
+    for rel, pats in TEXT_SURFACES:
+        path = os.path.join(ROOT, rel)
+        if not os.path.exists(path):
+            continue
+        with open(path, encoding="utf-8") as f:
+            orig = f.read()
+        new = orig
+        for pat, kind in pats:
+            new = _sub_count(pat, counts[kind], new)
+        if new != orig:
+            stale.append(rel)
+            if write:
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write(new)
+    return stale
 
 
 def count_tests():
@@ -125,6 +194,13 @@ def update_svgs(scanners):
 def main():
     check = "--check" in sys.argv
     scanners, tests, version = count_scanners(), count_tests(), read_version()
+    targeted = count_targeted()
+    launched = full_launch_list()
+    if len(launched) != scanners or len(set(launched)) != len(launched):
+        print(f"ERROR: run_forensics.sh FULL_SCANNERS launches {len(launched)} scanners "
+              f"but {scanners} scan_*.py files declare SCANNER_NAME; add the new "
+              f"scanner to FULL_SCANNERS (or remove the stale entry).", file=sys.stderr)
+        sys.exit(2)
     # Flat keys so the README's shields.io dynamic/json badges can query
     # $.scanners / $.tests / $.version directly.
     metrics = {
@@ -161,7 +237,9 @@ def main():
     else:
         dirty += [f"diagrams/{c}" for c in update_svgs(scanners)]
 
-    print(f"scanners={scanners} tests={_grp(tests)} version={version}")
+    dirty += update_text_surfaces(scanners, targeted, write=not check)
+
+    print(f"scanners={scanners} targeted={targeted} tests={_grp(tests)} version={version}")
     if dirty:
         print(("OUT OF DATE: " if check else "updated: ") + ", ".join(sorted(set(dirty))))
         if check:

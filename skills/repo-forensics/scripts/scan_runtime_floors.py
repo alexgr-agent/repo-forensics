@@ -4,8 +4,8 @@ scan_runtime_floors.py - Vulnerable language-runtime declaration scanner
 
 Engine-level vulnerabilities are not malicious code and no package IOC catches
 them: PHP2Shell (CVE-2026-109618 / CVE-2026-109619, disclosed 2026-10-21) is a
-use-after-free in the PHP engine itself, exploitable on a clean "Hello World"
-deploy. What a repository CAN tell you is which runtime it declares. This
+set of memory-safety bugs (use-after-free, OOM corruption) in the PHP engine
+itself, exploitable on a clean "Hello World" deploy. What a repository CAN tell you is which runtime it declares. This
 scanner reads those declarations and flags the ones pinned to - or capped
 below - a patched floor:
 
@@ -13,6 +13,7 @@ below - a patched floor:
                          config.platform.php exact pins
   - composer.lock        platform / platform-overrides "php" entries
   - Dockerfile*          FROM php:<tag>, including ARG-resolved versions
+                         (${VAR}, ${VAR:-default}, $VAR anywhere in the tag)
   - docker-compose*.yml  image: php:<tag> and <image>:...phpX.Y tags
   - .github/workflows/*  setup-php php-version pins and matrix php lists
                          (advisory severity - CI testing an old branch is
@@ -21,15 +22,27 @@ below - a patched floor:
 The floors are DATA (data/runtime_floors.json), keyed by advisory, so the
 next engine-level event (any runtime) is a data edit, not a code change.
 
-Flagging posture (false-positive discipline):
-  - EXACT pins below a floor or on an end-of-life branch: flag.
-  - Constraints that CANNOT resolve to any patched version: flag.
-  - Constraints that admit a patched version (e.g. ^8.2, >=7.4): silent. A
-    range is not a deployment; the concrete pins above carry the signal.
+Severity posture (false-positive discipline). CRITICAL is reserved for what
+actually deploys:
+  - Dockerfile / docker-compose image tags on an end-of-life branch, or an
+    exact patch tag below the floor: CRITICAL.
+  - composer require / require-dev (and composer.lock platform) constraints
+    that CANNOT resolve to any patched version: HIGH. A constraint is a
+    declaration, not a deployment.
+  - config.platform.php / platform-overrides (the runtime Composer emulates
+    for dependency resolution, often a library's minimum): LOW below the
+    floor, MEDIUM on an end-of-life branch.
+  - setup-php: a direct single php-version pin on an EOL branch is MEDIUM
+    (an exact pin below the floor is LOW); matrix entries are LOW, since a
+    library testing old branches is legitimate.
+  - Constraints that admit a patched version (e.g. ^8.2, >=7.4) or a branch
+    newer than every listed floor (^9.0): silent.
   - Moving minor tags on maintained branches (php:8.2): low note to rebuild,
     because a cached pull from before the patch is still vulnerable.
-  - Unparseable constraints: silent. This scanner only flags what it is
-    sure about.
+  - Installed dependencies' metadata (vendor/**/composer.json|lock) says
+    nothing about the runtime that executes the project: skipped.
+  - Unparseable constraints and unresolved variables: silent. This scanner
+    only flags what it is sure about.
 
 Created by Alex Greenshpun
 """
@@ -71,6 +84,16 @@ def load_runtime_floors(path=DATA_PATH):
         advs = raw.get('advisories')
         if not isinstance(advs, list) or not all(isinstance(a, dict) for a in advs):
             return {}, "runtime %r has a malformed 'advisories' list" % (name,)
+        for adv in advs:
+            label = adv.get('id', '?')
+            floors = adv.get('patched_floors') or {}
+            if not isinstance(floors, dict) or not all(
+                    isinstance(k, str) and isinstance(v, str) for k, v in floors.items()):
+                return {}, "advisory %r has a malformed 'patched_floors' object" % (label,)
+            for key in ('cves', 'references'):
+                val = adv.get(key) or []
+                if not isinstance(val, list) or not all(isinstance(x, str) for x in val):
+                    return {}, "advisory %r has a malformed %r list" % (label, key)
     return runtimes, None
 
 
@@ -129,7 +152,7 @@ class Advisory:
         branch = _branch_key(v)
         if self.eol_below and branch < self.eol_below:
             return ('critical', 'eol',
-                    "%s %d.%d is end-of-life and receives NO patch for %s. %s"
+                    "%s %d.%d is end-of-life and has no upstream release fixing %s. %s"
                     % (self.runtime, v[0], v[1], self.cve_label, self.eol_note))
         if branch in self.floors:
             floor, floor_text = self.floors[branch]
@@ -168,6 +191,8 @@ def _interval_of_token(token):
     token = token.strip().rstrip(',')
     if not token:
         return None
+    # 8.3.x-dev / 8.x-dev is the branch's dev head: same as the 8.3.* wildcard
+    token = re.sub(r'(?i)^(v?\d+(?:\.\d+)*\.x)-dev$', r'\1', token)
     # wildcard ranges: 8.1.* / 8.1.x / 8.* / *
     if '*' in token or re.search(r'(?:^|\.)x$', token, re.IGNORECASE):
         parts = re.split(r'[.*]', token.lower())
@@ -274,9 +299,11 @@ def check_constraint(constraint, advisory):
 
     Returns (severity, kind, detail) or None. SILENT unless NO alternative can
     resolve to a patched release:
-      - no alternative reaches any maintained branch at all -> 'eol' critical
+      - no alternative reaches any maintained (or newer) branch -> 'eol' high
       - some alternative reaches a maintained branch but always below that
         branch's floor -> 'below-floor' high
+    A constraint is a declaration, not a deployment, so it never goes above
+    HIGH; the concrete image pins carry CRITICAL.
     Anything else (admits a patched release, or unparseable) -> None.
     """
     if not isinstance(constraint, str) or not constraint.strip():
@@ -289,6 +316,14 @@ def check_constraint(constraint, advisory):
             return None  # unknown syntax: say nothing rather than guess
         intervals.append(iv)
 
+    # A constraint that admits a branch NEWER than every listed floor (e.g.
+    # ^8.6 or >=9.0 once those ship) can resolve to a release cut after the
+    # fix: never flag it.
+    if advisory.floors:
+        beyond = _next_branch(max(advisory.floors))
+        if any(_intersects(iv, beyond, None) for iv in intervals):
+            return None
+
     reaches_maintained = False
     for iv in intervals:
         for branch in advisory.floors:
@@ -300,7 +335,7 @@ def check_constraint(constraint, advisory):
 
     if not reaches_maintained:
         if advisory.eol_below is not None:
-            return ('critical', 'eol',
+            return ('high', 'eol',
                     "constraint '%s' cannot resolve to any maintained %s branch; "
                     "every version it permits is end-of-life and unpatched for %s. %s"
                     % (constraint.strip(), advisory.runtime, advisory.cve_label,
@@ -341,13 +376,13 @@ def _finding(severity, title, description, rel_path, line, snippet, confidence=0
 
 
 def _pin_finding(advisory, version_text, source_desc, rel_path, line, snippet,
-                 severity_override=None):
+                 severity_by_kind=None):
     hit = advisory.check_pin(version_text)
     if hit is None:
         return None
     severity, kind, detail = hit
-    if severity_override:
-        severity = severity_override
+    if severity_by_kind:
+        severity = severity_by_kind.get(kind, severity)
     return _finding(
         severity,
         "%s runtime pin vulnerable to %s: %s" % (advisory.runtime, advisory.cve_label,
@@ -357,14 +392,11 @@ def _pin_finding(advisory, version_text, source_desc, rel_path, line, snippet,
         rel_path, line, snippet)
 
 
-def _constraint_finding(advisory, constraint, source_desc, rel_path, line, snippet,
-                        severity_override=None):
+def _constraint_finding(advisory, constraint, source_desc, rel_path, line, snippet):
     hit = check_constraint(constraint, advisory)
     if hit is None:
         return None
     severity, kind, detail = hit
-    if severity_override:
-        severity = severity_override
     return _finding(
         severity,
         "%s version constraint excludes every %s patch: %s"
@@ -375,6 +407,11 @@ def _constraint_finding(advisory, constraint, source_desc, rel_path, line, snipp
 
 
 # --- composer.json / composer.lock -------------------------------------------
+
+# config.platform.php / platform-overrides.php is the runtime Composer EMULATES
+# when resolving dependencies. Libraries routinely set it to their minimum
+# supported version, so it is a weak deployment signal.
+_PLATFORM_SEVERITY = {'eol': 'medium', 'below-floor': 'low'}
 
 def _find_php_line(content, section_hint):
     """Best-effort line number of the "php" key for attribution."""
@@ -415,7 +452,9 @@ def scan_composer_json(filepath, rel_path, advisories):
             for adv in advisories:
                 f = _pin_finding(adv, pin, 'composer.json config.platform.php '
                                  '(the runtime Composer emulates for dependency '
-                                 'resolution)', rel_path, line, snippet)
+                                 'resolution; libraries often set it to their '
+                                 'minimum supported version)', rel_path, line,
+                                 snippet, severity_by_kind=_PLATFORM_SEVERITY)
                 if f:
                     findings.append(f)
     return findings
@@ -443,7 +482,8 @@ def scan_composer_lock(filepath, rel_path, advisories):
         for adv in advisories:
             if key == 'platform-overrides':
                 f = _pin_finding(adv, value, 'composer.lock platform-overrides.php '
-                                 '(the runtime Composer emulates)', rel_path, line, snippet)
+                                 '(the runtime Composer emulates)', rel_path, line,
+                                 snippet, severity_by_kind=_PLATFORM_SEVERITY)
             else:
                 f = _constraint_finding(adv, value, 'composer.lock platform.php',
                                         rel_path, line, snippet)
@@ -453,40 +493,67 @@ def scan_composer_lock(filepath, rel_path, advisories):
 
 
 # --- Dockerfile / docker-compose ----------------------------------------------
+#
+# Every regex here runs on attacker-controlled lines (up to the 10 MB file
+# cap), so each one is linear: no two adjacent unbounded runs that can both
+# consume the same character. The compose `<image>:...phpX.Y` form is split
+# by hand instead of by regex (a two-run pattern was O(n^2) on colon floods).
 
 _TAG_VERSION_RE = re.compile(r'^v?(\d+(?:\.\d+){0,2})((?:[-+].*)?)$')
 _ARG_RE = re.compile(r'^\s*ARG\s+([A-Za-z_][A-Za-z0-9_]*)(?:=(\S+))?\s*$')
 _FROM_PHP_RE = re.compile(
     r'^\s*FROM\s+(?:--platform=\S+\s+)?["\']?(?:[\w.-]+(?::\d+)?/)*(?:library/)?php:([^\s"\']+)',
     re.IGNORECASE)
-_VAR_RE = re.compile(r'^\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}$|^\$([A-Za-z_][A-Za-z0-9_]*)$')
-# <image>:...php8.1 or ...php8.1.4 tags (wordpress:php8.1-apache etc.)
-_IMAGE_PHP_TAG_RE = re.compile(r'^\s*image:\s*["\']?[^\s"\']*:([^\s"\']*php(\d+(?:\.\d+){0,2})[^\s"\']*)["\']?', re.IGNORECASE)
+# ${VAR}, ${VAR:-default}, ${VAR-default}, $VAR anywhere inside a tag
+_VAR_REF_RE = re.compile(r'\$\{([A-Za-z_][A-Za-z0-9_]*)(?::?-([^}$]*))?\}|\$([A-Za-z_][A-Za-z0-9_]*)')
+# compose image references: php:<tag> directly, or any <image>:<tag> whose tag
+# carries phpX.Y (wordpress:php8.1-apache etc.)
 _IMAGE_PHP_RE = re.compile(
     r'^\s*image:\s*["\']?(?:[\w.-]+(?::\d+)?/)*(?:library/)?php:([^\s"\']+)',
     re.IGNORECASE)
+_IMAGE_REF_RE = re.compile(r'^\s*image:\s*["\']?([^\s"\']+)', re.IGNORECASE)
+_PHP_IN_TAG_RE = re.compile(r'php(\d+(?:\.\d+){0,2})', re.IGNORECASE)
 
 
-def _resolve_tag_var(tag, args):
-    """Resolve a FROM tag that is a variable reference against collected ARG
-    defaults. Returns the resolved literal, or None when unresolvable."""
-    m = _VAR_RE.match(tag)
-    if not m:
+def _strip_quotes(value):
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
+        return value[1:-1]
+    return value
+
+
+def _resolve_tag_vars(tag, args):
+    """Substitute ARG references anywhere in a FROM tag (php:${V}-fpm,
+    php:$V, php:${V:-8.2}) using collected ARG defaults. Returns the resolved
+    literal, or None when any reference stays unresolved (a `$` remains):
+    the version is unknowable from the repo alone."""
+    if '$' not in tag:
         return tag
-    name = m.group(1) or m.group(3)
-    default = m.group(2)
-    if name in args and args[name]:
-        return args[name]
-    if default:
-        return default
-    return None
+
+    def sub(m):
+        name = m.group(1) or m.group(3)
+        default = m.group(2)
+        if args.get(name):
+            return args[name]
+        if default:
+            return default
+        return m.group(0)  # leave it; the '$' check below rejects the tag
+
+    resolved = _VAR_REF_RE.sub(sub, tag)
+    if '$' in resolved:
+        return None
+    return resolved
 
 
-def _check_docker_tag(advisory, tag, source_desc, rel_path, line_no, line_text,
-                      severity_override=None):
-    """Check one image tag; returns a Finding or None. Handles exact pins,
-    branch-only moving tags (EOL = critical; maintained = low rebuild note),
-    and non-version tags (latest/cli/fpm -> silent)."""
+def _check_docker_tag(advisory, tag, source_desc, rel_path, line_no, line_text):
+    """Check one image tag; returns a Finding or None.
+
+    An image tag is what actually deploys, so it carries the only CRITICAL:
+      - any tag on an end-of-life branch, including major-only tags on an
+        EOL major (php:7, php:7.4-apache): CRITICAL
+      - an exact patch tag below the floor (php:8.3.30): CRITICAL
+      - a moving minor tag on a maintained branch (php:8.3): LOW rebuild note
+      - non-version tags (latest/cli/fpm), patched tags, and major-only tags
+        on a maintained major (php:8 resolves to the newest 8.x): silent."""
     tag = tag.split('@', 1)[0]  # drop digest pins (image:tag@sha256:...)
     m = _TAG_VERSION_RE.match(tag)
     if not m:
@@ -495,28 +562,35 @@ def _check_docker_tag(advisory, tag, source_desc, rel_path, line_no, line_text,
     v = parse_version(version_text)
     if v is None:
         return None
-    segments = len(re.match(r'^v?(\d+(?:\.\d+){0,2})', version_text).group(1).split('.'))
+    segments = len(version_text.split('.'))
     branch = _branch_key(v)
-    if segments == 1:
-        # php:8 is a moving MAJOR tag resolving to the newest 8.x, not 8.0.
-        return None
-    if advisory.eol_below and branch < advisory.eol_below:
-        # Every release on an EOL branch is unpatched, moving tag or not.
+    eol_hit = False
+    if advisory.eol_below:
+        if segments == 1:
+            # php:7 is a moving MAJOR tag resolving to the newest 7.x. It is
+            # EOL only when the WHOLE major sits below the EOL line.
+            eol_hit = v[0] < advisory.eol_below[0]
+        else:
+            eol_hit = branch < advisory.eol_below
+    if eol_hit:
+        label = ('%d' % v[0]) if segments == 1 else ('%d.%d' % (v[0], v[1]))
         return _finding(
-            'critical' if severity_override is None else severity_override,
-            "%s image tag on end-of-life %s %d.%d: php:%s"
-            % (advisory.runtime, advisory.runtime, v[0], v[1], tag),
-            ("%s %d.%d is end-of-life and receives NO patch for %s. %s (%s). "
-             "The only remediation is upgrading to a patched branch. Reference: %s")
-            % (advisory.runtime, v[0], v[1], advisory.cve_label,
+            'critical',
+            "%s image tag on end-of-life %s %s: php:%s"
+            % (advisory.runtime, advisory.runtime, label, tag),
+            ("%s %s is end-of-life and has no upstream release fixing %s. %s (%s). "
+             "Reference: %s")
+            % (advisory.runtime, label, advisory.cve_label,
                advisory.eol_note, source_desc, advisory.reference),
             rel_path, line_no, line_text.strip())
+    if segments == 1:
+        return None  # php:8 -> newest 8.x, which is patched
     if branch in advisory.floors:
         floor, floor_text = advisory.floors[branch]
         if segments >= 3 and v < floor:
-            # Exact patch pin below the floor.
+            # Exact patch pin below the floor: a concrete vulnerable deploy.
             return _finding(
-                'high' if severity_override is None else severity_override,
+                'critical',
                 "%s image tag vulnerable to %s: php:%s"
                 % (advisory.runtime, advisory.cve_label, tag),
                 ("%s %d.%d.%d is below the %s patched floor %s (%s). %s. "
@@ -524,9 +598,11 @@ def _check_docker_tag(advisory, tag, source_desc, rel_path, line_no, line_text,
                 % (advisory.runtime, v[0], v[1], v[2], advisory.cve_label,
                    floor_text, source_desc, advisory.title, advisory.reference),
                 rel_path, line_no, line_text.strip())
-        if segments == 2:
+        if segments == 2 and floor[2] > 0:
             # Moving MINOR tag on a maintained branch: resolves to the newest
             # patch on rebuild, but a cached pull from before it is vulnerable.
+            # (A branch whose first release already carries the fix, floor
+            # X.Y.0, never had a vulnerable GA image: nothing to rebuild.)
             return _finding(
                 'low',
                 "Moving %s image tag php:%s - rebuild to pull the %s patch"
@@ -549,21 +625,38 @@ def scan_dockerfile(filepath, rel_path, advisories):
     args = {}
     for line_no, line in enumerate(content.split('\n'), 1):
         am = _ARG_RE.match(line)
-        if am and am.group(2):
-            args[am.group(1)] = am.group(2)
+        if am:
+            if am.group(2):
+                args[am.group(1)] = _strip_quotes(am.group(2))
             continue
         fm = _FROM_PHP_RE.match(line)
         if not fm:
             continue
-        raw_tag = fm.group(1).strip()
-        tag = _resolve_tag_var(raw_tag, args)
+        raw_tag = _strip_quotes(fm.group(1).strip())
+        tag = _resolve_tag_vars(raw_tag, args)
         if tag is None:
-            continue  # ARG with no default: version unknowable here
+            continue  # unresolved variable: version unknowable here
         for adv in advisories:
             f = _check_docker_tag(adv, tag, 'Dockerfile FROM', rel_path, line_no, line)
             if f:
                 findings.append(f)
     return findings
+
+
+def _compose_php_version(line):
+    """The PHP version text an `image:` line deploys, or None. Linear time."""
+    m = _IMAGE_PHP_RE.match(line)
+    if m:
+        return m.group(1)  # image is php:<tag>: the tag itself carries it
+    rm = _IMAGE_REF_RE.match(line)
+    if not rm:
+        return None
+    ref = rm.group(1).split('@', 1)[0]
+    colon = ref.rfind(':')
+    if colon <= ref.rfind('/'):
+        return None  # no tag (a registry port colon sits before the last '/')
+    pm = _PHP_IN_TAG_RE.search(ref[colon + 1:])
+    return pm.group(1) if pm else None
 
 
 def scan_compose(filepath, rel_path, advisories):
@@ -572,19 +665,9 @@ def scan_compose(filepath, rel_path, advisories):
     if content is None:
         return findings
     for line_no, line in enumerate(content.split('\n'), 1):
-        m = _IMAGE_PHP_RE.match(line)
-        if m:
-            # image is php:<tag>: the tag itself carries the version
-            version_text = m.group(1)
-        else:
-            m = _IMAGE_PHP_TAG_RE.match(line)
-            if not m:
-                continue
-            # <image>:...phpX.Y tag: extract the phpX.Y part
-            pm = re.search(r'php(\d+(?:\.\d+){0,2})', m.group(1))
-            if pm is None:
-                continue
-            version_text = pm.group(1)
+        version_text = _compose_php_version(line)
+        if version_text is None:
+            continue
         for adv in advisories:
             f = _check_docker_tag(adv, version_text, 'docker-compose image',
                                   rel_path, line_no, line)
@@ -596,8 +679,9 @@ def scan_compose(filepath, rel_path, advisories):
 # --- GitHub workflows (setup-php) ---------------------------------------------
 #
 # Advisory severity only: a library CI matrix that tests old PHP branches is
-# legitimate. Medium for EOL, low for below-floor, and the finding text says
-# why it may not apply.
+# legitimate. Matrix entries are LOW; a direct single php-version pin is MEDIUM
+# on an EOL branch (it is what this job runs on) and LOW below the floor. The
+# finding text says why it may not apply.
 
 _PHP_VERSION_KEY_RE = re.compile(r'^\s*php-version:\s*["\']?([\d.]+)["\']?\s*$', re.IGNORECASE)
 _MATRIX_PHP_KEY_RE = re.compile(r'^\s*php:\s*\[(.*?)\]\s*$', re.IGNORECASE)
@@ -610,7 +694,7 @@ def scan_workflow(filepath, rel_path, advisories):
     content = _read_text(filepath)
     if content is None:
         return findings
-    versions = []  # (line_no, version_text, line)
+    versions = []  # (line_no, version_text, line, is_matrix)
     in_php_block = False
     php_block_indent = 0
     for line_no, line in enumerate(content.split('\n'), 1):
@@ -618,25 +702,25 @@ def scan_workflow(filepath, rel_path, advisories):
             indent = len(line) - len(line.lstrip())
             im = _MATRIX_ITEM_RE.match(line)
             if line.strip() and indent > php_block_indent and im:
-                versions.append((line_no, im.group(1), line))
+                versions.append((line_no, im.group(1), line, True))
                 continue
             in_php_block = False
         m = _PHP_VERSION_KEY_RE.match(line)
         if m:
-            versions.append((line_no, m.group(1), line))
+            versions.append((line_no, m.group(1), line, False))
             continue
         m = _MATRIX_PHP_KEY_RE.match(line)
         if m:
             for tok in re.split(r'[,]', m.group(1)):
                 tok = tok.strip().strip('\'"')
                 if re.match(r'^\d+(\.\d+){0,2}$', tok):
-                    versions.append((line_no, tok, line))
+                    versions.append((line_no, tok, line, True))
             continue
         m = _MATRIX_PHP_BLOCK_RE.match(line)
         if m:
             in_php_block = True
             php_block_indent = len(m.group(1))
-    for line_no, version_text, line in versions:
+    for line_no, version_text, line, is_matrix in versions:
         # A minor-only CI pin (php-version: '8.3') is a MOVING tag: setup-php
         # resolves it to the newest 8.3.x on every run, so it picks up the
         # patch by itself. Only EOL pins and exact patch pins below the floor
@@ -650,15 +734,16 @@ def scan_workflow(filepath, rel_path, advisories):
                 vm = re.match(r'^v?(\d+\.\d+)(?:\.(\d+))?', version_text)
                 if vm is not None and vm.group(2) is None:
                     continue  # moving minor pin on a maintained branch
-            severity = 'medium' if kind == 'eol' else 'low'
+            severity = 'medium' if (kind == 'eol' and not is_matrix) else 'low'
             findings.append(_finding(
                 severity,
                 "CI workflow pins %s %s, vulnerable to %s"
                 % (adv.runtime, version_text, adv.cve_label),
-                ("%s (GitHub Actions setup-php). Testing against an old branch "
-                 "in CI is legitimate for libraries; flag only if this workflow "
-                 "deploys or publishes from that runtime. %s. Reference: %s")
-                % (detail, adv.title, adv.reference),
+                ("%s (GitHub Actions setup-php %s). Testing against an old branch "
+                 "in CI is legitimate for libraries; act on this only if the "
+                 "workflow deploys or publishes from that runtime. %s. Reference: %s")
+                % (detail, 'matrix entry' if is_matrix else 'php-version pin',
+                   adv.title, adv.reference),
                 rel_path, line_no, line.strip(), confidence=0.5))
     return findings
 
@@ -722,6 +807,12 @@ def main():
                                                   skip_binary=True,
                                                   skip_lockfiles=False):
             kind = _target_kind(rel_path)
+            if kind in ('composer.json', 'composer.lock') and \
+                    '/vendor/' in '/' + rel_path.replace(os.sep, '/'):
+                # Installed dependency metadata: a library's `php` requirement
+                # says nothing about the runtime that executes this project.
+                # (scan_dependencies still reads vendor/ for package IOCs.)
+                continue
             if kind == 'composer.json':
                 findings.extend(scan_composer_json(file_path, rel_path, advisories))
             elif kind == 'composer.lock':

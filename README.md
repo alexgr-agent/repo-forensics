@@ -102,7 +102,7 @@ Point it at any repository. 29 scanners run in parallel, each checking a differe
 
 Every finding carries a confidence score alongside severity, surfaced through four verdict tiers: BLOCK, WARN, INFO, and SUPPRESSED. Ambiguous WARN-tier findings can be adjudicated by the host agent (Claude Code, Codex, etc.) under a prompt-injection-safe protocol -- sanitized snippets, metadata-first, no code fences -- so context that the scanner can't infer is factored in without creating a new attack surface.
 
-The result is a severity-ranked verdict with exit codes designed for CI/CD gating. Export it as text, JSON, a compact summary, or **SARIF 2.1.0** (`--format sarif`) that drops straight into the GitHub Security tab and any SARIF-consuming tooling. The 28 scanners below include a **YARA signature scanner** for curated malware, webshell, cryptominer, and hacktool families.
+The result is a severity-ranked verdict with exit codes designed for CI/CD gating. Export it as text, JSON, a compact summary, or **SARIF 2.1.0** (`--format sarif`) that drops straight into the GitHub Security tab and any SARIF-consuming tooling. The 29 scanners below include a **YARA signature scanner** for curated malware, webshell, cryptominer, and hacktool families.
 
 <details>
 <summary>SARIF mapping details</summary>
@@ -121,7 +121,7 @@ Installed as a plugin, repo-forensics also runs automatically in the background,
 | Hook | Trigger | What It Does |
 |------|---------|-------------|
 | **PreToolUse** | Before any `npm install`, `pip install`, `uv add`, `bun install`, `pnpm add`, shell command | Blocks known-malicious packages before execution. IOC-only, <10ms. |
-| **PostToolUse** | After `git clone`, `git pull`, `npm install`, `uv sync`, `brew upgrade`, etc. | Full 28-scanner audit on the cloned/installed code. |
+| **PostToolUse** | After `git clone`, `git pull`, `npm install`, `uv sync`, `brew upgrade`, etc. | Targeted 20-scanner audit on the cloned/installed code. |
 | **SessionStart** | Every new session | Detects changed plugins, skills, and MCP servers since last session. Bootstraps/repairs daily IOC, CISA KEV, and signed rule-pack refresh. |
 
 **Platform support:**
@@ -204,7 +204,7 @@ Scanning never requires network access. The feed is a freshness layer on top of 
 ---
 ## Battle-Tested Against Real Attacks
 
-5,099 tests across 40+ test files. Not synthetic toy examples: detection patterns built from real supply chain campaigns that hit production systems.
+5,369 tests across 40+ test files. Not synthetic toy examples: detection patterns built from real supply chain campaigns that hit production systems.
 
 **Named attack campaigns in the IOC database:**
 
@@ -235,7 +235,7 @@ Scanning never requires network access. The feed is a freshness layer on top of 
 
 Every campaign above has version-pinned IOCs in `compromised_versions.json`, detection rules in the lifecycle and dependency scanners, and correlation rules for compound attack patterns.
 
-**The tests are safe to run.** All 5,099 tests use synthetic fixtures in temporary directories. No real malware is downloaded or executed. Pattern matching runs against fake package.json files containing attack signatures, the same way antivirus software tests against EICAR strings.
+**The tests are safe to run.** All 5,369 tests use synthetic fixtures in temporary directories. No real malware is downloaded or executed. Pattern matching runs against fake package.json files containing attack signatures, the same way antivirus software tests against EICAR strings.
 
 ---
 ## Why Not the Alternatives?
@@ -305,6 +305,7 @@ Each scanner targets a distinct attack surface. Together they cover the full thr
 | **dead_anchors** | Dead/claimable external anchors a skill references -- **SkillJacking** (repojacking of deleted GitHub owners/repos, phantom npm/PyPI packages, expired domains, dangling cloud-hosting subdomains) -- that an attacker can register to hijack the trust chain | GitHub / registry / RDAP / DNS probes with a per-host circuit breaker; three-tier verdict (only CONFIRMED-CLAIMABLE emits; LIVE-AND-OWNED and COULDNT-CHECK stay silent); `--offline` opt-out, zero non-stdlib deps |
 | **git_config** | Executable git configuration (Beltdown class): shipped `.git` directories (nested in a checkout, hidden in `node_modules`, or packed in an archive), `.git/config` carrying armed exec keys (`core.fsmonitor`, `core.hooksPath`, `core.sshCommand`, `core.pager`/`editor`, `core.askpass`, `filter.*.clean/smudge/process`, `gpg.program`, `diff.external`, shell aliases, include paths, `credential.helper`), hostile `gitdir:` pointer files, `.gitmodules` with `update = !command`, and the staged plant that writes those keys and then renames or copies a directory to `.git` | Tolerant git-config parsing with protective-value awareness (`fsmonitor=false`, `hooksPath=/dev/null`, `git-lfs` filters stay silent), shipped-vs-own-checkout severity split, worktree-proof pointer logic, exact-`.git` target matching with one-hop variable resolution (shell/cmd/PowerShell/Python/Node), recognised-hook-name and case-insensitive `.sample` handling, path-shape classification for archive members |
 | **yara** | Curated malware, webshell, cryptominer, and hacktool signatures (11 hand-authored rules across 4 families). Multi-string conjunctive conditions plus filesize bounds, so a match is a confirmed family indicator, not a single-token guess. `yara-python` is optional: when absent the scanner degrades to a capability gap (exit-neutral), so the core stays zero-dep and offline. Context-gated so a match on a real payload stays CRITICAL while the same bytes in docs, tests, or blocklists demote, no false-positive noise | YARA signature matching with `data/yara/{webshells,malware,cryptominers,hacktools}.yar`, per-file sha256 integrity in `data/yara/manifest.json`, evidence gating via the unified file-type and line-context classifier |
+| **runtime_floors** | Declared language runtimes with a known engine-level vulnerability (PHP2Shell, CVE-2026-109618 / CVE-2026-109619): Dockerfile `FROM php:` and docker-compose image tags on end-of-life or below-floor versions (CRITICAL, what actually deploys), composer.json/lock `php` constraints that cannot resolve to a patched release (HIGH), `config.platform.php` / `platform-overrides` pins (LOW/MEDIUM), and setup-php workflow pins (LOW/MEDIUM) | Floors are data (`data/runtime_floors.json`, keyed by advisory), so the next engine-level event is a data edit; constraints are reduced to version intervals and stay silent whenever a patched or newer release is admissible; `ARG`-resolved Docker tags; vendored `vendor/**/composer.*` metadata is skipped; every parser is linear-time |
 
 </details>
 
@@ -490,7 +491,7 @@ Exit codes: `0` = clean, `1` = warn, `2` = block merge.
 | **IOC auto-update** | `--update-iocs` pulls latest C2 IPs, malicious domains, known-bad packages |
 | **Installation verification** | `--verify-install` checks repo-forensics itself for tampering |
 | **Manifest drift** | Declared vs actual imports, phantom deps, runtime installs |
-| **5,099 pytest tests** | Full coverage across 40+ test files |
+| **5,369 pytest tests** | Full coverage across 40+ test files |
 
 </details>
 
@@ -575,7 +576,7 @@ Writes three hooks to `~/.cursor/hooks.json`:
 | Cursor event | What it does |
 |---|---|
 | `beforeShellExecution` | Blocks known-malicious installs and pipe-to-shell **before the command executes**. Fast IOC gate only (~18ms including interpreter startup; the detection itself is microseconds). |
-| `afterShellExecution` | Full 28-scanner audit of what was just installed or cloned. Observe-only — it never gates execution. |
+| `afterShellExecution` | Targeted 20-scanner audit of what was just installed or cloned. Observe-only — it never gates execution. |
 | `sessionStart` | Baseline diff of plugins/skills/MCP servers, plus threat-feed refresh. Cursor does not always dispatch this in cloud contexts, so the blocking hook bootstraps the refresh daemon too, behind a once-per-session latch. |
 
 The installer merges rather than overwrites: existing non-repo-forensics hooks
