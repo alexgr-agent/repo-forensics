@@ -18,11 +18,11 @@ Audit untrusted repos before they touch your agent. Fully local, self-updating d
 </p>
 <p align="center">
   <img src="https://img.shields.io/badge/dynamic/json?url=https://raw.githubusercontent.com/alexgreensh/repo-forensics/main/.github/badges/metrics.json&query=$.scanners&label=scanners&color=blue" alt="Scanners">
-  <img src="https://img.shields.io/badge/patterns-800%2B-orange.svg" alt="800+ Patterns">
+  <img src="https://img.shields.io/badge/signed%20rules-450%2B-orange.svg" alt="450+ signed detection rules">
   <img src="https://img.shields.io/badge/dynamic/json?url=https://raw.githubusercontent.com/alexgreensh/repo-forensics/main/.github/badges/metrics.json&query=$.tests&label=tests&color=brightgreen" alt="Tests">
   <img src="https://img.shields.io/badge/CVE%20%2B%20CISA%20KEV-live%20scanning-critical.svg" alt="Live CVE + CISA KEV scanning">
   <img src="https://img.shields.io/badge/correlation%20rules-41-purple.svg" alt="41 Correlation Rules">
-  <img src="https://img.shields.io/badge/package%20IOCs-190%2B-red.svg" alt="190+ Package IOCs">
+  <img src="https://img.shields.io/badge/malicious%20packages%20tracked-2%2C400%2B-red.svg" alt="2,400+ malicious packages tracked">
   <img src="https://img.shields.io/badge/rule%20feed-Ed25519%20signed-blueviolet.svg" alt="Ed25519 signed rule feed">
 </p>
 <p align="center">
@@ -34,12 +34,16 @@ Audit untrusted repos before they touch your agent. Fully local, self-updating d
   <img src="https://img.shields.io/badge/NanoClaw-supported-8B5CF6.svg" alt="NanoClaw">
 </p>
 <p align="center">
-  <img src="https://img.shields.io/badge/dependencies-zero-brightgreen.svg" alt="Zero Dependencies">
+  <a href="#can-you-trust-repo-forensics"><img src="https://img.shields.io/badge/dependencies-zero-brightgreen.svg" alt="Zero Dependencies"></a>
   <img src="https://img.shields.io/badge/telemetry-none-brightgreen.svg" alt="Zero Telemetry">
   <img src="https://img.shields.io/badge/works-offline-blue.svg" alt="Works Offline">
   <img src="https://img.shields.io/badge/python-3.8%2B-blue.svg" alt="Python 3.8+">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-PolyForm%20Noncommercial-blue.svg" alt="License: PolyForm Noncommercial"></a>
   <a href="https://github.com/sponsors/alexgreensh"><img src="https://img.shields.io/badge/sponsor-keep%20it%20free-%23ea4aaa?logo=githubsponsors" alt="Sponsor - Keep It Free"></a>
+</p>
+<p align="center">
+  <a href="https://github.com/alexgreensh/repo-forensics/actions/workflows/tests.yml"><img src="https://github.com/alexgreensh/repo-forensics/actions/workflows/tests.yml/badge.svg?branch=main" alt="Tests"></a>
+  <a href="https://github.com/alexgreensh/repo-forensics/actions/workflows/verify-checksums.yml"><img src="https://github.com/alexgreensh/repo-forensics/actions/workflows/verify-checksums.yml/badge.svg?branch=main" alt="Signed release manifest"></a>
 </p>
 
 ---
@@ -54,7 +58,7 @@ You won't feel it. There are no symptoms.
 
 **Repo Forensics is the vetting step.** Audit any repo, skill, MCP server, or plugin before it touches your machine. Works across the AI agent ecosystem: Claude Code, OpenClaw, Codex, Cursor, NanoClaw, or anything that installs third-party code. 29 scanners, runtime behavior prediction, ClawHavoc campaign detection. Runs in seconds.
 
-**Your code never leaves your machine.** Zero dependencies. No cloud API. No telemetry. Unlike mcp-scan, nothing is uploaded anywhere.
+**Your code never leaves your machine.** Zero dependencies. No cloud API. No telemetry. Unlike mcp-scan, nothing is uploaded anywhere. The only things that go out are package names and versions (to look up known CVEs) and links the scanned repo points to (to catch hijackable dead links). `--offline` turns those lookups off. [Can you trust repo-forensics itself?](#can-you-trust-repo-forensics)
 
 **It doesn't stop at install.** Every `git pull`, `npm update`, `pnpm update`, `bun update`, `uv sync`, `gem update`, `brew upgrade`, and plugin update is monitored too. Known-malicious packages are blocked before the command even runs. A clean install today doesn't mean a clean update tomorrow -- repo-forensics watches both.
 
@@ -301,7 +305,7 @@ Each scanner targets a distinct attack surface. Together they cover the full thr
 | **bytecode** | Dangerous-call primitives, embedded URLs / credential paths, orphan bytecode, and **bytecode poisoning** (a benign `.py` source shipping a malicious compiled `.pyc`, since Python loads the cache over source), inside compiled Python that source-only scanners never read | Poisoning is detected by diffing raw `.pyc` danger markers against the sibling source with **zero unmarshalling or execution** (cross-version-safe); best-effort multi-interpreter parsing enriches the report without invoking CPython's native code-object deserializer; obfuscated dynamic-attribute (`getattr`+char-built names) gadget detection |
 | **oversize** | Payloads padded past the 10 MB scan cap, and whitespace-inflation that pushes a payload past the cap or hides it after a long whitespace run | Head+tail window scan of oversized files, vectorized whitespace analysis, wall-clock bounded |
 | **splitstream** | Payloads split into inert base64/base85/base32/hex fragments scattered across unrelated files (no import edge) and concatenated at runtime -- evades per-file and cross-file taint checks | Single O(n) pass, fragments fingerprinted by alphabet + length-band and grouped, reassembled per group and decode-rescanned; member/size/wall-clock bounded |
-| **provenance** | Artifacts whose present signature/attestation **fails** verification -- the tampering signal (modified after signing, or signed by an untrusted key) | Shells out to cosign / gh / npm / pip when on PATH (zero added deps), timeout-bounded, never networks or hard-fails; the universal unsigned state is deliberately not alarmed -- only real tampering surfaces, as CRITICAL |
+| **provenance** | Artifacts whose present signature/attestation **fails** verification -- the tampering signal (modified after signing, or signed by an untrusted key) | Shells out to cosign / gh / npm / pip when on PATH (zero added deps), timeout-bounded and never hard-fails; `npm audit signatures` and `gh attestation verify` contact their registries, with your environment stripped; the universal unsigned state is deliberately not alarmed -- only real tampering surfaces, as CRITICAL |
 | **dead_anchors** | Dead/claimable external anchors a skill references -- **SkillJacking** (repojacking of deleted GitHub owners/repos, phantom npm/PyPI packages, expired domains, dangling cloud-hosting subdomains) -- that an attacker can register to hijack the trust chain | GitHub / registry / RDAP / DNS probes with a per-host circuit breaker; three-tier verdict (only CONFIRMED-CLAIMABLE emits; LIVE-AND-OWNED and COULDNT-CHECK stay silent); `--offline` opt-out, zero non-stdlib deps |
 | **git_config** | Executable git configuration (Beltdown class): shipped `.git` directories (nested in a checkout, hidden in `node_modules`, or packed in an archive), `.git/config` carrying armed exec keys (`core.fsmonitor`, `core.hooksPath`, `core.sshCommand`, `core.pager`/`editor`, `core.askpass`, `filter.*.clean/smudge/process`, `gpg.program`, `diff.external`, shell aliases, include paths, `credential.helper`), hostile `gitdir:` pointer files, `.gitmodules` with `update = !command`, and the staged plant that writes those keys and then renames or copies a directory to `.git` | Tolerant git-config parsing with protective-value awareness (`fsmonitor=false`, `hooksPath=/dev/null`, `git-lfs` filters stay silent), shipped-vs-own-checkout severity split, worktree-proof pointer logic, exact-`.git` target matching with one-hop variable resolution (shell/cmd/PowerShell/Python/Node), recognised-hook-name and case-insensitive `.sample` handling, path-shape classification for archive members |
 | **yara** | Curated malware, webshell, cryptominer, and hacktool signatures (11 hand-authored rules across 4 families). Multi-string conjunctive conditions plus filesize bounds, so a match is a confirmed family indicator, not a single-token guess. `yara-python` is optional: when absent the scanner degrades to a capability gap (exit-neutral), so the core stays zero-dep and offline. Context-gated so a match on a real payload stays CRITICAL while the same bytes in docs, tests, or blocklists demote, no false-positive noise | YARA signature matching with `data/yara/{webshells,malware,cryptominers,hacktools}.yar`, per-file sha256 integrity in `data/yara/manifest.json`, evidence gating via the unified file-type and line-context classifier |
@@ -496,6 +500,57 @@ Exit codes: `0` = clean, `1` = warn, `2` = block merge.
 </details>
 
 ---
+## Can you trust repo-forensics?
+
+You're about to give a security tool access to your code, so you should ask. You don't have to take our word for anything below. Every point is something you can check yourself.
+
+**Run it where trust doesn't matter.** A full scan needs no network and no credentials. Run it in a throwaway container or VM with networking switched off, add `--offline`, and every scanner still works. If repo-forensics were malicious, it would have nothing to steal and no way to send it.
+
+**Your copy is exactly what we published.** Each release ships `checksums.json` (a SHA-256 for every file) signed with our Ed25519 release key. Any changed, missing, or extra file fails the check:
+
+```bash
+python3 skills/repo-forensics/scripts/verify_install.py --verify-signature   # the hash list is ours
+python3 skills/repo-forensics/scripts/verify_install.py --verify             # every file matches it
+```
+
+The public keys are pinned in the code and printed here so you can compare them out-of-band:
+
+| Key | Ed25519 public key |
+|-----|--------------------|
+| Release manifest | `c86f717c5f3293da397435cde3d8ab49cddba2165eddbd47c6fb62aad3e9526a` |
+| Rule-pack feed | `a6529e80619abaf38bec2b15154ca8f540f9a830e310f1a0c7a6771e85f1b76c` |
+
+**Nothing hidden upstream.** The core is the Python standard library and nothing else, so there is no dependency tree to poison. `yara-python` and `PyYAML` are used only if you already have them installed.
+
+**Exactly what goes over the network.** Your code never does. `--offline` turns off the first three rows. The last row doesn't respect `--offline` yet; that fix ships in the next release.
+
+| Destination | What is sent | Why |
+|-------------|--------------|-----|
+| `api.osv.dev`, `registry.npmjs.org`, `pypi.org` | Package names and versions from the scanned repo | Known CVEs and package age |
+| `www.cisa.gov`, `raw.githubusercontent.com` | Nothing (downloads only) | CISA KEV list, signed IOC and rule-pack feeds |
+| GitHub, npm, PyPI, `rdap.org`, DNS | Links and package names the scanned repo references | Catch dead links an attacker could register |
+| npm registry, GitHub (only if `npm` or `gh` is installed) | Package names from the lockfile, the repo's artifact digest | `npm audit signatures` and `gh attestation verify` check published signatures. Your environment and tokens are stripped first |
+
+No telemetry, no analytics, no account. If `GITHUB_TOKEN` is set, the dead-link checker notes that it exists but never sends it.
+
+**Updates can't carry code.** The daily rule-pack feed is data: search patterns checked against the pinned key on every load, with a version floor so an older pack can't be swapped back in. The loader has no `eval` or `exec` path.
+
+**It doesn't run what it scans.** Scanning is static: files are read, never executed. The one exception is the hook stress test (`dast`), which runs a repo's hook scripts inside your OS sandbox (macOS Seatbelt or Linux bubblewrap) with the network blocked and a 5-second limit. With no sandbox available, it is skipped and the report says so.
+
+**What runs in the background.** Installed as a plugin, three hooks scan installs, clones, and new sessions, and a daily scheduled job (launchd, systemd user timer, or Task Scheduler) refreshes the signed feeds. Check or stop it any time:
+
+```bash
+python3 skills/repo-forensics/scripts/refresh_controller.py status
+python3 skills/repo-forensics/scripts/refresh_controller.py disable   # stays off until you run enable
+```
+
+**Tested in public.** The full test suite runs in GitHub Actions on Linux, macOS, and Windows for every change, including tests that attack the safety features above: forged signatures, rolled-back feeds, tampered files.
+
+**Reviewed in public.** The full source and history are on GitHub, outside contributors' changes are reviewed and merged in the open, and [SECURITY.md](SECURITY.md) explains how to report a problem.
+
+**What it can't promise.** No scanner catches everything. repo-forensics is one layer of defense, so treat a clean report as evidence, not proof.
+
+---
 ## Install
 
 <details open>
@@ -635,7 +690,12 @@ Then run `/repo-forensics /path/to/repo` before installing a new skill, plugin, 
 git clone https://github.com/alexgreensh/repo-forensics.git
 cd repo-forensics
 
-# Zero-config self-scan -- proves it works with no setup:
+# Verify before you run: the files match our signed release manifest
+python3 skills/repo-forensics/scripts/verify_install.py --verify-signature
+python3 skills/repo-forensics/scripts/verify_install.py --verify
+
+# Zero-config self-scan -- proves it works with no setup.
+# Expect findings: a scanner contains the patterns it hunts for.
 ./skills/repo-forensics/scripts/run_forensics.sh .
 
 # Scan any repo, skill, or MCP server:
@@ -678,7 +738,9 @@ Suppress false positives with `.forensicsignore` (the ignore file itself is scan
 ---
 ## Security
 
-Defense-in-depth, not a guarantee. Always verify findings manually. See [LICENSE](LICENSE).
+Found a vulnerability in repo-forensics itself? See [SECURITY.md](SECURITY.md) for private reporting and response times. For how to verify the tool before you run it, see [Can you trust repo-forensics?](#can-you-trust-repo-forensics)
+
+Defense-in-depth, not a guarantee. Always verify findings manually.
 
 ---
 ## License
