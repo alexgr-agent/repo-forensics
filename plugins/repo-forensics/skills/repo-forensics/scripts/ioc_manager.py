@@ -24,6 +24,7 @@ Created by Alex Greenshpun
 """
 
 import os
+import re
 import sys
 import json
 import tempfile
@@ -116,6 +117,7 @@ HARDCODED_MALICIOUS_DOMAINS = [
     "sfrclak.com",  # Axios supply chain RAT C2 domain (March 2026)
     "checkmarx.zone",          # TeamPCP Wave 1-2 C2 domain (March 2026)
     "models.litellm.cloud",    # LiteLLM supply chain compromise (March 2026)
+    "www.litellm.dev",         # LiteLLM 1.107.0 credential-stealer exfil, lookalike of litellm.ai (October 2026)
     "checkmarx.cx",            # TeamPCP Wave 3 C2 domain (April 2026)
     "audit.checkmarx.cx",      # TeamPCP Wave 3 exfil endpoint (April 2026)
     "scan.aquasecurity.org",   # Trivy compromise exfil domain (March 2026)
@@ -184,6 +186,7 @@ HARDCODED_MALICIOUS_PYPI = {
 
 HARDCODED_MALICIOUS_PTH_FILES = {
     "litellm_init.pth", "litellm-init.pth", "litellm.pth",
+    "cook.pth",  # LiteLLM 1.107.0 startup hook that imports cook.py (October 2026)
     "llm_init.pth", "init_hook.pth", "startup.pth",
 }
 
@@ -274,6 +277,33 @@ def _load_compromised_versions_file(path=None):
                 version_map[pkg_lower][v] = campaign_id
 
     return version_map, entirely_malicious, data
+
+
+def _pypi_version_map(raw_data):
+    """{normalised PyPI name: {version: campaign_id}} from campaigns whose
+    ecosystem is "pypi". The flat map get_iocs() exposes mixes ecosystems, so a
+    package name shared with npm/composer/go would otherwise cross-match; PyPI
+    install checks read this one instead. Names use PEP 503 normalisation."""
+    out = {}
+    campaigns = raw_data.get('campaigns', {}) if isinstance(raw_data, dict) else {}
+    if not isinstance(campaigns, dict):
+        return out
+    for campaign_id, campaign in campaigns.items():
+        if not isinstance(campaign, dict) or str(campaign.get('ecosystem', '')).lower() != 'pypi':
+            continue
+        packages = campaign.get('packages', {})
+        if not isinstance(packages, dict):
+            continue
+        for pkg_name, versions in packages.items():
+            if not isinstance(pkg_name, str) or not isinstance(versions, list):
+                continue
+            if versions == ['*']:
+                continue
+            key = re.sub(r'[-_.]+', '-', pkg_name.strip()).lower()
+            for v in versions:
+                if isinstance(v, str):
+                    out.setdefault(key, {})[v] = campaign_id
+    return out
 
 
 def _get_compromised_versions():
@@ -993,6 +1023,7 @@ def get_iocs(cache_dir=None):
         'malicious_pypi': set(HARDCODED_MALICIOUS_PYPI),
         'malicious_pth_files': set(HARDCODED_MALICIOUS_PTH_FILES),
         'compromised_versions': {},
+        'compromised_versions_pypi': {},
         '_ioc_degraded': ioc_degraded or ioc_signature_invalid or refused,
         # True when the latest refresh was refused (published feed unverifiable);
         # the cached feed that still verifies is merged but reads as stale.
@@ -1021,6 +1052,8 @@ def get_iocs(cache_dir=None):
     result['malicious_npm'].update(entirely_malicious)
     # Version-pinned IOCs get their own key
     result['compromised_versions'] = version_map
+    # PyPI-only view (pip/uv install gate, requirements pins)
+    result['compromised_versions_pypi'] = _pypi_version_map(_raw)
 
     return result
 
