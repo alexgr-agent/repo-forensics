@@ -870,8 +870,21 @@ class TestTemplateExpressionContext:
                    "      run: |\n        echo ${{ inputs.cmd }}\n")
         hits = [f for f in scanner.scan_content(content, "action.yml")
                 if f.rule_id == "ST-PR-010"]
+        # The env value is GitHub's recommended way to hand an input to a
+        # script, so it is a low note; inline use in run: stays critical.
         assert [(f.line, f.severity, f.evidence_class) for f in hits] == [
-            (6, "high", "direct"), (8, "critical", "direct")]
+            (6, "low", "direct"), (8, "critical", "direct")]
+        assert hits[0].title == "Action environment value"
+
+    def test_action_environment_value_reevaluated_as_code_stays_high(self):
+        content = ("runs:\n  using: composite\n  steps:\n    - shell: bash\n"
+                   "      env:\n        INPUT_PATH: ${{ inputs.path }}\n"
+                   "        INPUT_SAFE: ${{ inputs.safe }}\n"
+                   "      run: |\n        eval \"$INPUT_PATH\"\n"
+                   "        echo \"$INPUT_SAFE\"\n")
+        hits = [f for f in scanner.scan_content(content, "action.yml")
+                if f.rule_id == "ST-PR-010"]
+        assert [(f.line, f.severity) for f in hits] == [(6, "high"), (7, "low")]
 
     def test_workflow_metadata_expression_is_advisory(self, tmp_path):
         f = tmp_path / "tests.yml"

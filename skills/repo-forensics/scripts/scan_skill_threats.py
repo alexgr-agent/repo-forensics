@@ -1439,8 +1439,11 @@ def scan_content(content, rel_path, budget=None, decode_cache=None, odd_breaks=F
                 return not (key and key.group(1) in evaluated)
             prerequisite_findings = [f for f in prerequisite_findings
                                      if not _safe_env_value(f)]
+        action_lines = None
+        action_evaluated = None
         for finding in prerequisite_findings:
-            action_env = is_action and _action_env_line(content, finding.line)
+            action_env = (finding.rule_id == "ST-PR-010" and is_action
+                          and _action_env_line(content, finding.line))
             if finding.rule_id == "ST-PR-010" and (is_workflow or ext == '.py'
                     or action_env):
                 # An expression in workflow metadata or Python source is not
@@ -1448,6 +1451,18 @@ def scan_content(content, rel_path, budget=None, decode_cache=None, odd_breaks=F
                 finding.severity = "high"
                 if action_env:
                     finding.title = "Action environment expression"
+                    # Same rule as a workflow env value: passing an input
+                    # through `env:` is GitHub's recommended mitigation, so
+                    # it is only a note unless the variable is re-evaluated
+                    # as code later in the action (eval "$X", sh -c "$X").
+                    if action_lines is None:
+                        action_lines = content.split('\n')
+                        action_evaluated = _workflow_evaluated_vars(action_lines)
+                    key = (_WORKFLOW_ENV_KEY.match(action_lines[finding.line - 1])
+                           if 1 <= finding.line <= len(action_lines) else None)
+                    if key and key.group(1) not in action_evaluated:
+                        finding.severity = "low"
+                        finding.title = "Action environment value"
                 elif (is_workflow and finding.line in workflow_inert_lines
                         and 1 <= finding.line <= len(workflow_lines)):
                     line_text = workflow_lines[finding.line - 1]
