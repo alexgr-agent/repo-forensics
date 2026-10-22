@@ -15,9 +15,7 @@ _GENERIC_BUILTINS = {"list", "dict", "tuple", "set", "frozenset", "type"}
 _NEW_ATTRS = {"removeprefix", "removesuffix", "is_relative_to", "with_stem", "unparse",
               "randbytes", "bit_count", "pairwise"}
 _NEW_MODULES = {"zoneinfo", "graphlib", "tomllib"}
-# auto_scan.py is frozen for this release; its PurePath.is_relative_to call
-# (3.9+) is a known gap to fix in that file.
-_KNOWN = {("auto_scan.py", "is_relative_to")}
+_KNOWN = set()
 
 
 def _python_files():
