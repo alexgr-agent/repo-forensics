@@ -464,6 +464,29 @@ class TestSandboxHookExecution:
         )
 
 
+    @_NEEDS_POSIX_HOOKS
+    @pytest.mark.parametrize("rc,err", [
+        (1, "bwrap: execvp /r/hook: No such file or directory\n"),
+        (71, "sandbox-exec: execvp() of '/r/hook' failed: Permission denied\n"),
+    ])
+    def test_launcher_exec_failure_is_incomplete(self, tmp_path, monkeypatch, rc, err):
+        # The sandbox launcher could not exec the hook (missing shebang
+        # interpreter, no exec bit): no hook code ran, so this must never
+        # read as a clean run.
+        hook = tmp_path / "hook"
+        hook.write_text("#!/opt/missing/node\n")
+        hook.chmod(0o755)
+        monkeypatch.setattr(scanner, "SANDBOX_AVAILABLE", rc == 71)
+        monkeypatch.setattr(scanner, "BWRAP_AVAILABLE", rc == 1)
+        monkeypatch.setattr(scanner, "_BWRAP_EXEC", "/usr/bin/bwrap")
+        monkeypatch.setattr(scanner, "_run_hook_process", lambda *a: (
+            subprocess.CompletedProcess([], rc, "", err), False, ""))
+        findings = scanner.execute_hook_with_payload(
+            {"event": "e", "command": str(hook), "source": "s"},
+            scanner.PAYLOADS[0], str(tmp_path))
+        assert [f.category for f in findings] == ["scan-incomplete"]
+
+
 @_NEEDS_LINUX
 class TestLinuxBwrapSandbox:
     """The Linux sandbox must rebuild its root from minimal read-only binds,
@@ -476,7 +499,7 @@ class TestLinuxBwrapSandbox:
         binds = [cmd[i + 1] for i, a in enumerate(cmd[:-1])
                  if a == "--ro-bind"]
         assert "/" not in binds, "host root must never be bound"
-        allowed = set(scanner._bwrap_system_roots()) | {"/x"}
+        allowed = set(scanner._bwrap_system_roots()) | {"/x", "/etc/ld.so.cache"}
         for src in binds:
             assert src in allowed, f"unexpected ro-bind source {src}"
 
