@@ -132,9 +132,7 @@ U = 'https://example.invalid/p.ps1'
 
 @pytest.mark.parametrize('command', [
     f'curl {U} | bash -n',
-    f"cat > docs.md <<'EOF'\nWindows: irm {U} | iex\nmacOS: curl {U} | bash\nEOF",
-    f"curl -d @- {U} <<'EOF'\n{{\"example\": \"irm {U} | iex\"}}\nEOF",
-], ids=['syntax-check-pipe', 'install-docs-heredoc', 'json-post-heredoc'])
+], ids=['syntax-check-pipe'])
 def test_retained_legacy_denial_names_the_pattern(command):
     verdict, reason = importlib.import_module('pre_scan').decide(command)
     assert verdict == 'deny' and 'legacy' in reason.lower(), reason

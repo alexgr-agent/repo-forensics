@@ -11,7 +11,7 @@ import pytest
 
 import auto_scan
 import pre_scan
-from powershell_hook import ADAPTERS, gate, isolated_hook_state  # noqa: F401  (autouse fixture)
+from powershell_hook import ADAPTERS, gate, hook_bash, isolated_hook_state  # noqa: F401  (fixtures)
 
 U = 'https://example.invalid/i.sh'
 P = 'https://example.invalid/p.ps1'
@@ -65,6 +65,9 @@ NOW_ALLOWED = {
     'python-c-ioc-test-string': f"cd x && python3 -c \"import pre_scan; print(pre_scan.decide('{IOC_PIN}'))\"",
     'quoted-separator-before-step': f"cd \"a;b\" && cat > notes.md <<'E'\n{PIPE_SH}\nE",
     'step-after-heredoc': f"cd d; cat > notes.md <<'E'; echo saved\n{PIPE_SH}\nE",
+    # Formerly kept as legacy denials; written docs and uploaded JSON are data.
+    'install-docs-heredoc': f"cat > docs.md <<'EOF'\nWindows: {IRM}\nmacOS: {PIPE_SH}\nEOF",
+    'json-post-heredoc': f"curl -d @- {U} <<'EOF'\n{{\"example\": \"{IRM}\"}}\nEOF",
     'python-c-escaped-dollar': f"python3 -c \"print('\\$({PIPE_SH})')\"",
 }
 
