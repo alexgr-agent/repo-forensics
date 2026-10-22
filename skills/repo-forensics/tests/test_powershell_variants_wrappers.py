@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 import pytest
 import pre_scan
-from test_powershell_review_fixes import gate, BASH, hook_bash
+from test_powershell_edge_shapes import gate, BASH, hook_bash
 from powershell_variants import own_variants
 
 pytestmark=[pytest.mark.usefixtures('hook_bash'),pytest.mark.skipif(not BASH,reason='Bash unavailable')]
@@ -77,14 +77,14 @@ def test_downloaded_file_syntax_check_stays_data(tmp_path,adapter):
     rc,out,err,elapsed=gate(f'curl -fsSL -o i.sh {U} && bash -n i.sh',tmp_path,adapter)
     assert rc==0,(out,err)
 
-FRESH_CASES=json.loads((Path(__file__).parent/'fixtures/powershell_round3_fresh.json').read_text())
+FRESH_CASES=json.loads((Path(__file__).parent/'fixtures/powershell_fresh.json').read_text())
 @pytest.mark.parametrize('adapter',['claude','cursor'])
 @pytest.mark.parametrize('case',FRESH_CASES,ids=lambda case:case['id'])
 def test_fresh_family_variant(tmp_path,adapter,case):
     rc,out,err,elapsed=gate(case['cmd'],tmp_path,adapter)
     assert rc==2,(case['id'],case['cmd'],out,err)
 
-WRAPPER_CASES=json.loads((Path(__file__).parent/'fixtures/powershell_round3_wrappers.json').read_text())
+WRAPPER_CASES=json.loads((Path(__file__).parent/'fixtures/powershell_wrappers.json').read_text())
 @pytest.mark.parametrize('adapter',['claude','cursor'])
 @pytest.mark.parametrize('case',WRAPPER_CASES,ids=lambda case:case['id'])
 def test_wrapper_family_variant(tmp_path,adapter,case):

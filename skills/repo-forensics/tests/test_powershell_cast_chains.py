@@ -13,7 +13,7 @@ def test_cast_result_not_payload(module,tail):
  assert not importlib.import_module(module).detects_powershell_execution(P+tail)
 
 
-# v5 panel: chained typed targets convert right to left, and sequential -as casts apply in order.
+# Chained typed targets convert right to left, and sequential -as casts apply in order.
 import pytest as _pytest
 import pre_scan as _pre, auto_scan as _auto
 

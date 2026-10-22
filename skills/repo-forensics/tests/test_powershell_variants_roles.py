@@ -7,9 +7,9 @@ import json
 from pathlib import Path
 import pytest
 import pre_scan
-from test_powershell_review_fixes import gate
+from test_powershell_edge_shapes import gate
 from powershell_workload import FAMILIES,repeated,benign_work
-from powershell_round4_variants import own_variants
+from powershell_role_variants import own_variants
 
 U='https://example.invalid/p.ps1'
 
@@ -86,7 +86,7 @@ def test_large_ordinary_work_is_allowed(tmp_path,adapter,case):
     rc,out,err,_=gate(command,tmp_path,adapter)
     assert rc==0,(name,out,err)
 
-REVIEW_CASES=json.loads((Path(__file__).parent/'fixtures/powershell_round4.json').read_text())
+REVIEW_CASES=json.loads((Path(__file__).parent/'fixtures/powershell_roles.json').read_text())
 REQUIRED_CASES=[case for case in REVIEW_CASES if case['class'] in ('ordinary-spelling','wrapper') or '$PROFILE' in case['cmd']]
 @pytest.mark.parametrize('adapter',['claude','cursor'])
 @pytest.mark.parametrize('case',REQUIRED_CASES,ids=lambda case:case['id'])

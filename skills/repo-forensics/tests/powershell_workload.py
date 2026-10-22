@@ -25,7 +25,7 @@ def benign_work():
     curls=curl_line*((512*1024)//len(curl_line))
     data=json.dumps({'items':[{'id':i,'tags':['a','b','c']} for i in range(10000)]})
     return {
-        'reviewer-1561-lines':'set -e\n'+body(1561),
+        'long-script-1561-lines':'set -e\n'+body(1561),
         'script-512KB':big,
         'downloads-512KB':curls,
         'script-file-512KB':"cat > build.sh <<'EOF'\n"+big[:-100]+"\nEOF\nbash build.sh",
