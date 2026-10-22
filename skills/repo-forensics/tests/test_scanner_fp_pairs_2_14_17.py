@@ -368,3 +368,58 @@ def test_capability_or_computed_import_stays_high(tmp_path):
     assert found["SA-PY-003"] == [(i, "high") for i in (1, 2, 3, 4, 5)]
     # RD-DYN-004 only matches a literal name; the computed one is SA-PY-003's.
     assert found["RD-DYN-004"] == [(i, "high") for i in (1, 2, 4, 5)]
+
+
+# ---------------------------------------------------------------------------
+# ST-PR-010 in a workflow working-directory
+# ---------------------------------------------------------------------------
+
+_WD_WORKFLOW = """name: build
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: src/${{ matrix.package }}
+    strategy:
+      matrix:
+        package: [a, b]
+    steps:
+      - name: Install
+        working-directory: src/${{ matrix.package }}
+        run: npm ci
+      - name: Untrusted
+        working-directory: ${{ github.event.pull_request.title }}
+        run: npm test
+      - name: Inline
+        run: cd src/${{ matrix.package }} && npm test
+"""
+
+
+def test_working_directory_expression_is_inert_but_run_is_not(tmp_path):
+    path = tmp_path / "build.yml"
+    path.write_text(_WD_WORKFLOW)
+    found = {f.line: f.severity
+             for f in scan_skill_threats.scan_file(str(path), ".github/workflows/build.yml")
+             if f.rule_id == "ST-PR-010"}
+    assert found[8] == "low" and found[14] == "low"
+    assert found[17] == "high"          # untrusted context keeps its grade
+    assert found[20] == "high"          # spliced into a shell command
+
+
+def test_and_chain_in_a_run_line_does_not_disable_workflow_grading(tmp_path):
+    body = ("name: ci-${{ github.ref_name }}\non: [push]\njobs:\n  t:\n"
+            "    runs-on: ubuntu-latest\n    steps:\n"
+            "      - run: make && make test\n")
+    path = tmp_path / "ci.yml"
+    path.write_text(body)
+    hits = [f.severity for f in scan_skill_threats.scan_file(str(path), ".github/workflows/ci.yml")
+            if f.rule_id == "ST-PR-010"]
+    assert hits == ["low"]
+    # A real anchor or alias still makes the file ungradable (fail closed).
+    for anchored in ("      - run: &r make\n", "      - <<: *base\n", "      - &s\n        run: x\n"):
+        path.write_text(body + anchored)
+        hits = [f.severity for f in scan_skill_threats.scan_file(str(path), ".github/workflows/ci.yml")
+                if f.rule_id == "ST-PR-010"]
+        assert hits == ["high"], anchored

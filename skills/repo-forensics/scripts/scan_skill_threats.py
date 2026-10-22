@@ -757,7 +757,10 @@ def _action_env_line(content, line_number):
 _WORKFLOW_PLAIN_KEY = re.compile(r'^([A-Za-z_][\w-]*)[ \t]*:(?:[ \t]+(.*))?$')
 _WORKFLOW_QUOTED_KEY = re.compile(r'''^(?:-\s*)?["'][^"']+["']\s*:''')
 _WORKFLOW_BLOCK_SCALAR = re.compile(r'^[|>](?:[+-][1-9]?|[1-9][+-]?|[+-]?[1-9])?$')
-_WORKFLOW_ANCHOR_ALIAS = re.compile(r'(?<![\w])(?:&|\*)[^\s\[\]{},]+')
+# An anchor or alias is a node property: it can only open a node, i.e. sit at
+# the start of the line, after `key: ` or `- `, or after a flow [ { or ,.
+# The && or * inside a plain scalar (`run: make && make test`) is text.
+_WORKFLOW_ANCHOR_ALIAS = re.compile(r'(?:^|[:\-]\s+|[\[{,]\s*)(?:&|\*)[^\s\[\]{},]+')
 # Fail-closed limits. Lines longer than this are never reasoned about, and the
 # per-file budget bounds the regex work spent grading downgrades.
 _WORKFLOW_MAX_LINE = 4096
@@ -928,7 +931,12 @@ def _workflow_line_is_inert(path, key_indent, stack):
             return True
         if (len(path) == 5 and path[2] == 'steps' and path[3] == '*'
                 and valid_nested_prefix(path[:4]) and key_indent > stack[3][0]
-                and path[4] in {'if', 'name', 'timeout-minutes'}):
+                and path[4] in {'if', 'name', 'timeout-minutes', 'working-directory'}):
+            # working-directory becomes the step's cwd; no shell parses it.
+            return True
+        if (len(path) == 5 and path[2:4] == ('defaults', 'run')
+                and valid_nested_prefix(path[:4]) and key_indent > stack[3][0]
+                and path[4] == 'working-directory'):
             return True
     return False
 
