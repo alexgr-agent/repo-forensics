@@ -553,13 +553,21 @@ def _line_of(content, position):
     return content.count('\n', 0, position) + 1
 
 
+_CLOSE_TAG = re.compile(r'</([a-zA-Z][\w:-]*)')
+_VOID_TAGS = frozenset('area base br col embed hr img input link meta source track wbr'.split())
+
+
 def _nested_shrink_line(content, live_templates=False):
-    """Conservative bound on compounding em/% shrink, with no HTML parsing.
+    """Conservative bound on compounding em/% shrink, with no full HTML parse.
     Every element that carries a parent-relative size under 1 (a class with such
-    a rule, or an inline style) is counted, and the factors are multiplied as if
-    all of them were nested. Returns the line of the element where the product
-    times the root size drops below one pixel, or None. Nesting is not verified,
-    so a long list of small items can report this too."""
+    a rule, or an inline style) is a hit. Nesting is estimated from open and
+    close tags: factors multiply only along hits that are still open, so
+    siblings do not compound. A closing tag pops its element and anything left
+    open inside it; void and self-closed elements never nest; unclosed elements
+    stay open, which errs toward flagging. Returns (line, limit_line,
+    shrink_seen): the line of the element where the product times the root size
+    drops below one pixel (or None), the line where reading stopped short (or
+    None), and whether any shrinking size was seen at all."""
     limited = len(content) > _CSS_INPUT_MAX
     content = _blank_dead_markup(content[:_CSS_INPUT_MAX], live_templates)
     clean, _braces, _lim = _css_clean(content)
@@ -634,17 +642,41 @@ def _nested_shrink_line(content, live_templates=False):
             if jf is not None:
                 f = min(f, jf)
         if f < 1.0:
-            hits.append((m.start(), f))
+            tag = content[m.start() + 1:m.end()].lower()
+            closed = tag in _VOID_TAGS or attrs.rstrip().endswith('/')
+            hits.append((m.start(), f, tag, closed))
+    shrink_seen = bool(factors or hits)
     if not hits:
-        return (None, limit_line)
-    hits.sort()
+        return (None, limit_line, shrink_seen)
+    # Multiply only along elements that are still open: a closing tag pops its
+    # element (and anything left open inside it), so siblings do not compound.
+    events = [(pos, 1, f, tag, closed) for pos, f, tag, closed in hits]
+    names = {tag for _p, _f, tag, _c in hits}
+    events.extend((cm.start(), 0, None, cm.group(1).lower(), False)
+                  for cm in _CLOSE_TAG.finditer(content)
+                  if cm.group(1).lower() in names)
+    events.sort()
     root = 16.0
-    product = 1.0
-    for count, (pos, f) in enumerate(hits, 1):
-        product *= f
+    stack = []                                # (tag, product including this element)
+    open_count = {}
+    count = 0
+    for pos, kind, f, tag, closed in events:
+        if kind == 0:
+            if open_count.get(tag):
+                while stack:
+                    t, _ = stack.pop()
+                    open_count[t] -= 1
+                    if t == tag:
+                        break
+            continue
+        count += 1
+        product = (stack[-1][1] if stack else 1.0) * f
         if product * root < 1.0 or count > _NEST_MAX_ITEMS:
-            return (_line_of(content, pos), limit_line)
-    return (None, limit_line)
+            return (_line_of(content, pos), limit_line, shrink_seen)
+        if not closed:
+            stack.append((tag, product))
+            open_count[tag] = open_count.get(tag, 0) + 1
+    return (None, limit_line, shrink_seen)
 
 
 def scan_css_steganography(file_path, rel_path):
@@ -677,8 +709,12 @@ def scan_css_steganography(file_path, rel_path):
     if ('font' in lowered
             or ('\\' in content and 'font' in _css_unescape(content).lower())
             or ('&' in content and 'font' in _html.unescape(lowered))):
-        nested, limit_line = _nested_shrink_line(content, ext == '.vue')
-        if limit_line and not nested and not any(x.line == limit_line for x in findings):
+        nested, limit_line, shrink_seen = _nested_shrink_line(content, ext == '.vue')
+        # Only report an unverifiable input when there is evidence to verify: a
+        # shrinking size in the part that was read, or `font` in the unread tail.
+        unread_font = len(content) > _CSS_INPUT_MAX and 'font' in content[_CSS_INPUT_MAX:].lower()
+        if (limit_line and not nested and (shrink_seen or unread_font)
+                and not any(x.line == limit_line for x in findings)):
             findings.append(core.Finding(
                 scanner=SCANNER_NAME, severity="low",
                 title="CSS hiding: possible compounding shrink (input too large to verify)",
@@ -689,8 +725,8 @@ def scan_css_steganography(file_path, rel_path):
         if nested and not any(x.line == nested for x in findings):
             findings.append(core.Finding(
                 scanner=SCANNER_NAME, severity="low",
-                title="CSS hiding: possible compounding shrink (nesting not verified)",
-                description="Parent-relative font sizes under 1 on this many elements would shrink text below one pixel if nested. Nesting was not checked.",
+                title="CSS hiding: possible compounding shrink (nesting estimated from tags)",
+                description="Parent-relative font sizes under 1 on elements nested inside one another (estimated from open and close tags) shrink text below one pixel.",
                 file=rel_path, line=nested,
                 snippet=lines[nested - 1].strip()[:120] if nested <= len(lines) else "",
                 category="css-steganography"))

@@ -100,13 +100,13 @@ class TestCompoundingLabel:
 
     def test_compounding_bound_is_a_labelled_low_finding(self, tmp_path):
         css = "<style>.n{font-size:0.8em}</style>\n"
-        found = self._found(tmp_path, css + '<p class="n">x</p>' * 20)
+        found = self._found(tmp_path, css + '<span class="n">' * 20 + 'x' + '</span>' * 20)
         assert [f.severity for f in found] == ["low"]
-        assert "nesting not verified" in found[0].title
+        assert "nesting estimated from tags" in found[0].title
 
     def test_few_small_items_stay_clean(self, tmp_path):
         css = "<style>.n{font-size:0.8em}</style>\n"
-        assert not self._found(tmp_path, css + '<p class="n">x</p>' * 8)
+        assert not self._found(tmp_path, css + '<span class="n">' * 8 + 'x' + '</span>' * 8)
 
 
 class TestCompoundingDeclarations:
@@ -302,12 +302,12 @@ class TestReviewRound1:
     def test_compound_selector_needs_every_key(self, tmp_path):
         css = "<style>td.small{font-size:0.6em}</style>\n"
         assert not self._found(tmp_path, css + "<td>x</td>" * 40 + '<td class="small">y</td>')
-        assert self._found(tmp_path, css + '<td class="small">y</td>' * 8)
+        assert self._found(tmp_path, css + '<td class="small">' * 8 + 'y' + '</td>' * 8)
 
     def test_attribute_compound_does_not_count_every_tag(self, tmp_path):
         css = "<style>a[href^=http]{font-size:0.6em}</style>\n"
         assert not self._found(tmp_path, css + "<a>x</a>" * 40 + '<a href="http://x">y</a>')
-        assert self._found(tmp_path, css + '<a href="http://x">y</a>' * 8)
+        assert self._found(tmp_path, css + '<a href="http://x">' * 8 + 'y' + '</a>' * 8)
 
     def test_many_compounds_on_one_key_stay_bounded(self, tmp_path):
         import time
@@ -317,7 +317,7 @@ class TestReviewRound1:
         assert time.perf_counter() - start < 5.0
 
     RULE = "<style>.s{font-size:0.5em}</style>\n"
-    ELEMS = '<p class="s">x</p>' * 30
+    ELEMS = '<p class="s">' * 30 + 'x' + '</p>' * 30
 
     def test_commented_style_rule_is_not_live(self, tmp_path):
         assert not self._found(tmp_path, "<!-- " + self.RULE + "-->\n" + self.ELEMS)
@@ -398,3 +398,65 @@ class TestReviewRound1:
         spans = '<span style={{fontSize: "50%"}}>' * 6 + "x" + "</span>" * 6
         p.write_text("const re = '{/*';\nexport const C = () => (<div>" + spans + "</div>);\nconst c = '*/}';\n")
         assert [f for f in scan_sast.scan_css_steganography(str(p), p.name) if "compounding" in f.title]
+
+
+class TestSiblingsDoNotCompound:
+    """Nesting is estimated from open/close tags (2.14.16 review B1): the common
+    docs pattern of a `code{font-size:85%}` rule plus many inline <code> tags is
+    siblings, not a chain, and must stay clean."""
+
+    CSS = "<style>code{font-size:85%}</style>\n"
+
+    @staticmethod
+    def _found(tmp_path, text):
+        f = tmp_path / "a.html"
+        f.write_text(text)
+        return scan_sast.scan_css_steganography(str(f), "a.html")
+
+    def test_twenty_sibling_code_tags_do_not_flag(self, tmp_path):
+        body = "<p>see <code>x</code></p>\n" * 20
+        assert not self._found(tmp_path, self.CSS + body)
+
+    def test_twenty_nested_code_tags_flag(self, tmp_path):
+        body = "<code>" * 20 + "x" + "</code>" * 20
+        found = self._found(tmp_path, self.CSS + body)
+        assert [f.severity for f in found] == ["low"]
+        assert "nesting estimated from tags" in found[0].title
+
+    def test_unclosed_elements_still_compound(self, tmp_path):
+        assert self._found(tmp_path, self.CSS + "<code>x" * 20)
+
+    def test_void_and_self_closed_elements_never_nest(self, tmp_path):
+        css = "<style>.s{font-size:0.5em}</style>\n"
+        assert not self._found(tmp_path, css + '<img class="s">' * 20)
+        assert not self._found(tmp_path, css + '<span class="s"/>' * 20)
+
+
+class TestInputTooLargeNeedsEvidence:
+    """'input too large to verify' fires only with a shrinking size seen or
+    `font` in the unread tail (2.14.16 review B2)."""
+
+    @staticmethod
+    def _found(tmp_path, text):
+        f = tmp_path / "big.html"
+        f.write_text(text)
+        return scan_sast.scan_css_steganography(str(f), "big.html")
+
+    def test_big_benign_html_without_font_sizes_is_clean(self, tmp_path):
+        body = "<p>plain paragraph of ordinary text</p>\n" * 80000
+        assert len(body) > 3_000_000
+        # 'font' appears in the read part (a font-family rule), never a shrink.
+        text = "<style>body{font-family:sans-serif}</style>\n" + body
+        assert not self._found(tmp_path, text)
+
+    def test_big_html_with_shrinking_rule_past_the_limit_still_flags(self, tmp_path):
+        body = "<p>plain paragraph of ordinary text</p>\n" * 80000
+        text = "<style>body{font-family:sans-serif}</style>\n" + body + "<style>.s{font-size:0.5em}</style>\n"
+        found = self._found(tmp_path, text)
+        assert [f.title for f in found] == ["CSS hiding: possible compounding shrink (input too large to verify)"]
+
+    def test_big_html_with_shrinking_rule_in_read_part_flags(self, tmp_path):
+        body = "<p>plain paragraph of ordinary text</p>\n" * 80000
+        text = "<style>.s{font-size:0.9em}</style>\n" + body
+        found = self._found(tmp_path, text)
+        assert [f.title for f in found] == ["CSS hiding: possible compounding shrink (input too large to verify)"]
