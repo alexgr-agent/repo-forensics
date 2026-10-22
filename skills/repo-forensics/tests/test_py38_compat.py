@@ -60,6 +60,10 @@ def test_no_python39_plus_constructs(path):
         if (isinstance(node, ast.Attribute) and node.attr in _NEW_ATTRS
                 and (name, node.attr) not in _KNOWN):
             problems.append(f"line {node.lineno}: .{node.attr}() is 3.9+")
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and node.func.attr in ("write_text", "read_text")
+                and any(k.arg == "newline" for k in node.keywords)):
+            problems.append(f"line {node.lineno}: {node.func.attr}(newline=) is 3.10+")
         if isinstance(node, (ast.Import, ast.ImportFrom)):
             modules = [a.name for a in node.names]
             if isinstance(node, ast.ImportFrom) and node.module:

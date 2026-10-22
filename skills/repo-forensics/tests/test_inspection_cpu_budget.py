@@ -18,6 +18,7 @@ import json
 import random
 import signal
 import subprocess
+import sys
 import time
 import tracemalloc
 
@@ -175,6 +176,7 @@ def test_scoped_chain_memory_stays_flat(module):
         assert peak < 16 * 1024 * 1024, (shape, peak)
 
 
+@pytest.mark.skipif(sys.version_info < (3, 9), reason='3.8 fnmatch raises on reversed ranges, so it is no oracle')
 @pytest.mark.parametrize('module', ['pre_scan', 'auto_scan'])
 def test_wildcard_command_names_match_fnmatch_without_using_it(module):
     """Command words are attacker text: matched by a linear parser, same answers."""
