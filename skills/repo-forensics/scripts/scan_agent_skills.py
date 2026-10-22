@@ -630,6 +630,8 @@ def scan_memory_exfil_cooccurrence(repo_path):
                 if m:
                     memory_hits.append((rel, i + 1, m.group(0)))
                     break
+            if prose and not instructions:
+                continue            # a link in a README or notes file is not a network call
             for pat in _NETWORK_ACCESS_SIGNALS:
                 m = pat.search(line)
                 if m:
