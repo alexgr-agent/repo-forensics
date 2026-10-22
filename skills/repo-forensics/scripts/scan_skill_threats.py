@@ -933,20 +933,55 @@ def _workflow_line_is_inert(path, key_indent, stack):
     return False
 
 
+def _workflow_line_is_env_value(path, key_indent, stack):
+    """Recognize a value in a workflow, job or step `env:` mapping. Actions puts
+    the evaluated expression in an environment variable instead of splicing it
+    into a script, which is GitHub's recommended mitigation for injection."""
+    path = tuple(path)
+    count = len(path) - 1
+    if count not in (1, 3, 5) or len(stack) != count or path[-2] != 'env':
+        return False
+    if count == 3 and path[0] != 'jobs':
+        return False
+    if count == 5 and (path[0] != 'jobs' or path[2:4] != ('steps', '*')):
+        return False
+    return (tuple(entry[1] for entry in stack) == path[:-1]
+            and stack[0][0] == 0
+            and all(stack[i][0] > stack[i - 1][0] for i in range(1, count))
+            and key_indent > stack[-1][0])
+
+
+_WORKFLOW_ENV_KEY = re.compile(r'^\s*(?:-\s+)?([A-Za-z_][\w-]*)\s*:')
+_WORKFLOW_EVAL_TAIL = re.compile(r'\b(?:eval|(?:ba|z|da)?sh\s+-c)\b(.*)')
+_WORKFLOW_SHELL_VAR = re.compile(r'\$\{?([A-Za-z_]\w*)')
+
+
+def _workflow_evaluated_vars(lines):
+    """Names of shell variables the workflow re-evaluates as code (`eval "$X"`,
+    `sh -c "$X"`). An env value that reaches one of these is still injection."""
+    names = set()
+    for line in lines:
+        m = _WORKFLOW_EVAL_TAIL.search(line)
+        if m:
+            names.update(_WORKFLOW_SHELL_VAR.findall(m.group(1)))
+    return names
+
+
 _WORKFLOW_EMPTY_MAP_VALUE = re.compile(r':[ ]+\{[ ]*\}[ ]*$')
 
 
 def _workflow_inert_expression_lines(lines):
-    """Return expression lines positively identified as inert workflow fields.
+    """Return (inert, env) expression lines: those positively identified as
+    inert workflow fields, and those that are values of an `env:` mapping.
 
     This deliberately parses only plain block-style YAML mappings. Unsupported
     YAML constructs make the whole file ineligible for downgrading, since an
     alias, flow map, or quoted key can change which field actually executes.
     """
     if sum(len(line) + 1 for line in lines) > 1024 * 1024:
-        return frozenset()
+        return frozenset(), frozenset()
     if any(len(line) > _WORKFLOW_MAX_LINE for line in lines):
-        return frozenset()
+        return frozenset(), frozenset()
 
     candidates = {}
     stack = []
@@ -1030,9 +1065,11 @@ def _workflow_inert_expression_lines(lines):
             stack.append((key_indent, key))
 
     if ambiguous:
-        return frozenset()
-    return frozenset(number for number, context in candidates.items()
-                     if _workflow_line_is_inert(*context))
+        return frozenset(), frozenset()
+    return (frozenset(number for number, context in candidates.items()
+                      if _workflow_line_is_inert(*context)),
+            frozenset(number for number, context in candidates.items()
+                      if _workflow_line_is_env_value(*context)))
 
 
 def _grade_quoted_defensive_examples(findings, content, rel_path):
@@ -1334,9 +1371,10 @@ def scan_content(content, rel_path, budget=None, decode_cache=None, odd_breaks=F
     # a finding always indexes the same line here.
     workflow_lines = ([ln[:-1] if ln.endswith('\r') else ln for ln in content.split('\n')]
                       if is_workflow else ())
-    workflow_inert_lines = (_workflow_inert_expression_lines(workflow_lines)
-                            if is_workflow and not odd_breaks and not _WORKFLOW_ODD_BREAK.search(content)
-                            else frozenset())
+    workflow_inert_lines, workflow_env_lines = (
+        _workflow_inert_expression_lines(workflow_lines)
+        if is_workflow and not odd_breaks and not _WORKFLOW_ODD_BREAK.search(content)
+        else (frozenset(), frozenset()))
     workflow_budget = _WORKFLOW_UNTRUSTED_BUDGET
 
     # AI agent instruction files: treat like SKILL.MD for prompt injection + exfiltration + persistence.
@@ -1367,6 +1405,19 @@ def scan_content(content, rel_path, budget=None, decode_cache=None, odd_breaks=F
         prerequisite_findings = scan_rules(content, rel_path, PREREQUISITE_RULES,
                                            "prerequisite-attack", "critical")
         is_action = os.path.basename(rel_path).lower() in ('action.yml', 'action.yaml')
+        if is_workflow and workflow_env_lines:
+            # An expression as a workflow/job/step env value is not spliced
+            # into a script; the inline use in `run:` is what gets flagged.
+            # Unless the variable is later re-evaluated as code (eval/sh -c).
+            evaluated = _workflow_evaluated_vars(workflow_lines)
+
+            def _safe_env_value(f):
+                if f.rule_id != "ST-PR-010" or f.line not in workflow_env_lines:
+                    return False
+                key = _WORKFLOW_ENV_KEY.match(workflow_lines[f.line - 1])
+                return not (key and key.group(1) in evaluated)
+            prerequisite_findings = [f for f in prerequisite_findings
+                                     if not _safe_env_value(f)]
         for finding in prerequisite_findings:
             action_env = is_action and _action_env_line(content, finding.line)
             if finding.rule_id == "ST-PR-010" and (is_workflow or ext == '.py'

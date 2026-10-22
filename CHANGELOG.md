@@ -35,6 +35,7 @@ All notable changes to repo-forensics. Versions follow semver.
 - `verify_install --verify` on Windows no longer reports the `skill` compatibility link as tampered: Windows reads link targets back with backslashes, and they are now compared with forward slashes.
 - Pinned container image digests (`FROM image@sha256:...`) and pip hash pins (`--hash=sha256:...`) no longer raise a HIGH "Long Hex String" finding. Other long hex strings still do.
 - "GHA: Secret in Multi-line Run Block" no longer fires on an earlier `run: |` script when the secret sits in a later step's `env:`. A run block now ends at the next line indented at or below its `run:` key; secrets inside the script are still flagged.
+- `ST-PR-010` no longer flags `${{ }}` expressions in a workflow, job or step `env:` mapping (such as `GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}`). Passing values through `env` and reading `"$X"` in the script is GitHub's recommended mitigation. Inline `${{ }}` inside `run:` is still flagged, and so is an env value the workflow later runs through `eval` or `sh -c`.
 
 ## [2.14.15] - 2026-10-16
 
