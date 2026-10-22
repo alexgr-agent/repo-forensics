@@ -268,3 +268,59 @@ def test_real_outbound_call_still_completes_the_trifecta():
                                   "Known exfiltration webhook service", "credential-exfiltration",
                                   14, rule_id="ST-EX-001")]
     assert len(_trifecta(webhook)) == 1
+
+
+# ---------------------------------------------------------------------------
+# GHA write permissions on maintainer-only triggers
+# ---------------------------------------------------------------------------
+
+_PERMS_JOB = """
+permissions:
+  contents: read
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - run: echo ok
+"""
+
+
+def _perm_severities(tmp_path, on_block):
+    import scan_infra
+    path = tmp_path / "wf.yml"
+    path.write_text("name: wf\n" + on_block + _PERMS_JOB)
+    found = scan_infra.scan_github_actions(str(path), ".github/workflows/wf.yml")
+    return sorted((f.title, f.severity) for f in found
+                  if f.title in ("GHA: contents: write Permission",
+                                 "GHA: id-token: write Permission"))
+
+
+@pytest.mark.parametrize("on_block", [
+    "on:\n  release:\n    types: [published]\n  workflow_dispatch:\n    inputs:\n      tag:\n        type: string\n",
+    "on:\n  push:\n    branches: [main]\n  schedule:\n    - cron: \"17 4 * * 1\"\n  workflow_dispatch: {}\n",
+    "on: [push, release]\n",
+    "on: release\n",
+    "'on':\n  - push\n  - workflow_dispatch\n",
+])
+def test_write_permissions_on_maintainer_triggers_are_low(tmp_path, on_block):
+    assert _perm_severities(tmp_path, on_block) == [
+        ("GHA: contents: write Permission", "low"),
+        ("GHA: id-token: write Permission", "low")]
+
+
+@pytest.mark.parametrize("on_block", [
+    "on:\n  pull_request:\n  push:\n",
+    "on: [push, issue_comment]\n",
+    "on:\n  workflow_run:\n    workflows: [ci]\n",
+    "on:\n  workflow_call:\n",
+    "on:\n  push: &p {}\n  release: *p\n",          # anchors: unreadable, stay medium
+    "on: {push: {}}\n",                             # flow mapping: unreadable
+    "",                                             # no trigger at all
+])
+def test_write_permissions_on_outside_triggers_stay_medium(tmp_path, on_block):
+    assert _perm_severities(tmp_path, on_block) == [
+        ("GHA: contents: write Permission", "medium"),
+        ("GHA: id-token: write Permission", "medium")]
