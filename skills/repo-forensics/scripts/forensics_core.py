@@ -1560,6 +1560,67 @@ def _effective_skip_dirs(repo_path, skip_dirs):
             refined.discard(payload_dir)
     return refined
 
+# Framework build output (Next.js, Nuxt, SvelteKit, Turborepo, ...). Skipped
+# only when a .gitignore at or above it lists it: a dev build sitting in a
+# checkout is generated noise, but the same folder committed to the repo is
+# content an attacker chose to ship, so it stays in scope. .gitignore is read
+# as text; git itself is never run inside the repo under audit.
+GENERATED_BUILD_DIRS = frozenset({
+    '.next', '.nuxt', '.svelte-kit', '.turbo', '.vercel', '.output', '.parcel-cache',
+    '.angular', '.docusaurus', '.astro', '.expo', '.vite', '.webpack', '.serverless',
+})
+_GITIGNORE_CACHE_LIMIT = 4096
+
+
+def _gitignore_patterns(directory, cache):
+    """Plain patterns from directory/.gitignore (comments and blanks dropped)."""
+    if directory in cache:
+        return cache[directory]
+    patterns = ()
+    path = os.path.join(directory, '.gitignore')
+    try:
+        if os.path.isfile(path) and not os.path.islink(path) and os.path.getsize(path) <= 256 * 1024:
+            with open(path, encoding='utf-8', errors='replace') as fh:
+                patterns = tuple(line.strip() for line in fh
+                                 if line.strip() and not line.lstrip().startswith('#'))
+    except OSError:
+        patterns = ()
+    if len(cache) < _GITIGNORE_CACHE_LIMIT:
+        cache[directory] = patterns
+    return patterns
+
+
+def is_ignored_build_output(repo_path, root, name, cache):
+    """True when `root/name` is framework build output that .gitignore excludes."""
+    if name not in GENERATED_BUILD_DIRS:
+        return False
+    target = os.path.join(root, name)
+    repo_abs = os.path.abspath(repo_path)
+    directory = os.path.abspath(root)
+    listed = False
+    while True:
+        rel = os.path.relpath(target, directory).replace(os.sep, '/')
+        for raw in _gitignore_patterns(directory, cache):
+            negated = raw.startswith('!')
+            pattern = raw[1:] if negated else raw
+            pattern = pattern.rstrip('/')
+            if pattern.startswith('**/'):
+                pattern = pattern[3:]
+            anchored = pattern.startswith('/') or '/' in pattern
+            hit = (pattern.lstrip('/') == rel) if anchored else (pattern == name)
+            if hit:
+                if negated:
+                    return False  # Re-included on purpose: scan it.
+                listed = True
+        if directory == repo_abs or not directory.startswith(repo_abs):
+            break
+        parent = os.path.dirname(directory)
+        if parent == directory:
+            break
+        directory = parent
+    return listed
+
+
 def walk_repo(repo_path, ignore_patterns=None, skip_dirs=None, skip_lockfiles=True, skip_binary=True):
     """Generator that walks a repo respecting ignore rules.
     Yields (file_path, rel_path) tuples."""
@@ -1568,8 +1629,10 @@ def walk_repo(repo_path, ignore_patterns=None, skip_dirs=None, skip_lockfiles=Tr
     if ignore_patterns is None:
         ignore_patterns = load_ignore_patterns(repo_path)
 
+    gitignores = {}
     for root, dirs, files in os.walk(repo_path, followlinks=False):
-        dirs[:] = [d for d in dirs if d not in skip_dirs]
+        dirs[:] = [d for d in dirs if d not in skip_dirs
+                   and not is_ignored_build_output(repo_path, root, d, gitignores)]
 
         for filename in files:
             if skip_lockfiles and filename in LOCKFILES:
@@ -1626,12 +1689,14 @@ def walk_aux(repo_path, ignore_patterns=None, skip_dirs=None, *,
     if ignore_patterns is None:
         ignore_patterns = load_ignore_patterns(repo_path)
 
+    gitignores = {}
     for root, dirs, files in os.walk(repo_path, followlinks=False):
         # Deterministic order: os.walk yields readdir order (filesystem-dependent),
         # and these scanners enforce global budgets over the walk — which file a
         # fan-out decoy starves must not depend on inode layout, or the fail-loud
         # "budget exhausted" naming becomes nondeterministic.
-        dirs[:] = sorted(d for d in dirs if d not in skip_dirs)
+        dirs[:] = sorted(d for d in dirs if d not in skip_dirs
+                         and not is_ignored_build_output(repo_path, root, d, gitignores))
 
         for filename in sorted(files):
             if skip_lockfiles and filename in LOCKFILES:
