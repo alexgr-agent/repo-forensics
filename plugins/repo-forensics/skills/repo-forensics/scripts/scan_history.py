@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import platform
+import re
 import sqlite3
 import sys
 import time
@@ -262,10 +263,12 @@ class HistoryStore:
         prefix matches more than one record (ambiguous) so the caller can
         refuse rather than delete the wrong suppression.
         """
+        if not isinstance(prefix, str) or not re.fullmatch(r"[0-9a-f]{4,64}", prefix):
+            raise ValueError("fingerprint must be 4 to 64 lowercase hex characters")
         with self.connect() as db:
             rows = db.execute(
-                "SELECT fingerprint FROM suppressions WHERE fingerprint = ? "
-                "OR fingerprint LIKE ? || '%'",
+                "SELECT fingerprint FROM suppressions "
+                "WHERE substr(fingerprint, 1, length(?)) = ?",
                 (prefix, prefix),
             ).fetchall()
             matches = [row[0] for row in rows]

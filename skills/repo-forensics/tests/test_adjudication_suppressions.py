@@ -409,3 +409,68 @@ def test_focused_mode_count_matches_launcher(repo):
     match = _re.search(r"Running focused skill scan \((\d+) scanners\)", text)
     assert match, f"banner missing; stdout head: {text[:400]}"
     assert int(match.group(1)) == len(scanner_names)
+
+
+def test_critical_warn_band_finding_never_eligible(repo, db):
+    # Many critical rules carry WARN-band confidence; the exit code follows
+    # severity, so silencing one would turn a blocking scan into a clean one.
+    finding = _warn_finding(severity="critical", confidence=0.85)
+    _add(repo, db)
+    active, suppressed = suppressions.partition_suppressed(
+        [finding], str(repo), suppressions.load_active_records())
+    assert suppressed == [] and active == [finding]
+
+
+def test_prompt_injection_finding_never_eligible(repo, db):
+    finding = _warn_finding(rule_id="ST-PI-001", severity="high", confidence=0.85)
+    _add(repo, db, rule_id="ST-PI-001")
+    active, suppressed = suppressions.partition_suppressed(
+        [finding], str(repo), suppressions.load_active_records())
+    assert suppressed == [] and active == [finding]
+    assert suppressions.persist_command(finding) is None
+
+
+def test_persist_command_quotes_repo_controlled_file_name():
+    import shlex
+    hostile = 'docs/$(touch PWNED)";touch p;\'x.md'
+    cmd = suppressions.persist_command(_warn_finding(file=hostile))
+    assert cmd is not None
+    argv = shlex.split(cmd.replace("<scanned-repo>", "/r").replace("'<why>'", "why"))
+    assert argv[argv.index("--file") + 1] == hostile
+    assert suppressions.persist_command(_warn_finding(severity="critical")) is None
+    assert suppressions.persist_command(_warn_finding(file="a\nb.md")) is None
+
+
+def test_adjudication_block_prints_persist_line_only_when_allowed():
+    import adjudication
+    block = adjudication.build_adjudication_block([
+        _warn_finding(),
+        _warn_finding(rule_id="ST-PI-002", file="README.md", title="Injection"),
+    ])
+    persist_lines = [ln for ln in block.splitlines() if ln.strip().startswith("persist:")]
+    assert len(persist_lines) == 1
+    assert "--file install.sh" in persist_lines[0]
+
+
+def test_revoke_rejects_non_hex_and_wildcards(repo, db):
+    _add(repo, db)
+    store = scan_history.HistoryStore(db)
+    for bad in ("", "%", "_", "abc", "ABCD", "de%d", "zzzz"):
+        with pytest.raises(ValueError):
+            store.revoke_suppression(bad)
+    assert len(store.list_suppressions()) == 1
+
+
+def test_report_lists_only_suppressions_for_this_repo(repo, db, tmp_path):
+    other = tmp_path / "other"
+    other.mkdir()
+    (other / "secret-plan.md").write_text("x\n")
+    _add(other, db, relpath="secret-plan.md", rule_id="SA-SH-001", reason="other project")
+    _add(repo, db, reason="this project")
+    results = tmp_path / "results"
+    results.mkdir()
+    _write_scanner_output(results, "sast", [_warn_finding()])
+    report = aggregate_json.build_report(str(results), str(repo), "false")
+    files = [r["file"] for r in report["adjudication_suppressions"]["active"]]
+    assert files == ["install.sh"]
+    assert "other project" not in aggregate_json.format_report_as_text(report)

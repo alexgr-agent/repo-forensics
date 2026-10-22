@@ -1067,8 +1067,12 @@ def build_report(tmpdir, repo_path, skill_scan):
     try:
         import suppressions as _supp
         _supp_records = _supp.load_active_records()
+        # Only records whose file exists in THIS repo: the store is
+        # machine-wide, and other projects' paths and reasons must not leak
+        # into this report.
         adjudication_suppressions["active"] = [
             _supp.summarize_record(r) for r in _supp_records
+            if _supp.record_applies_to_repo(r, repo_path)
         ]
         if _supp_records:
             all_findings, _adj_suppressed = _supp.partition_suppressed(

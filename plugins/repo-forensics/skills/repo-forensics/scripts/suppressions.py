@@ -34,6 +34,7 @@ import argparse
 import hashlib
 import json
 import os
+import shlex
 import stat
 import sys
 import time
@@ -158,6 +159,31 @@ def fingerprint_and_hash(repo_path: str, relpath: str, rule_id: str):
     return _fingerprint_from_parts(rel, rule_id, content_hash), content_hash
 
 
+PROMPT_INJECTION_PREFIXES = ("ST-PI-",)
+
+
+def persist_command(finding) -> str | None:
+    """Ready-to-run, shell-quoted persist command for one finding, or None.
+
+    The file name comes from the scanned repo, so the reviewer must never
+    compose this command by hand. Returns None when the finding can never be
+    suppressed or when the path holds characters that would not survive
+    display unchanged (then the fingerprint could not match anyway).
+    """
+    if not _finding_eligible(finding):
+        return None
+    raw_file = str(finding.get("file", ""))
+    raw_rule = str(finding.get("rule_id", ""))
+    if _normalize_relpath(raw_file) is None:
+        return None
+    if any(ord(ch) < 0x20 or ord(ch) == 0x7F or not ch.isprintable() for ch in raw_file + raw_rule):
+        return None
+    return (
+        f"{command_hint('add')} --repo <scanned-repo> --file {shlex.quote(raw_file)} "
+        f"--rule-id {shlex.quote(raw_rule)} --reason '<why>'"
+    )
+
+
 def _finding_eligible(finding) -> bool:
     """Apply-side guard: ONLY WARN-tier, non-correlation findings with both a
     rule id and a file can ever be matched to a stored suppression."""
@@ -166,6 +192,14 @@ def _finding_eligible(finding) -> bool:
     if finding.get("scanner") == "correlation":
         return False
     if not finding.get("rule_id") or not finding.get("file"):
+        return False
+    # Exit code is severity-driven while the tier is confidence-driven, and
+    # many critical rules sit in the WARN confidence band. A critical finding
+    # must never be silenced, and a prompt-injection snippet is by definition
+    # text trying to talk the reviewer into a benign verdict.
+    if str(finding.get("severity", "")).lower() == "critical":
+        return False
+    if str(finding.get("rule_id", "")).upper().startswith(PROMPT_INJECTION_PREFIXES):
         return False
     try:
         confidence = float(finding.get("confidence"))
@@ -217,6 +251,19 @@ def partition_suppressed(findings, repo_path, records):
 def load_active_records(db_path: str | None = None) -> list[dict]:
     """Failure-safe read of all active suppression records (never creates the DB)."""
     return scan_history.load_suppressions_safely(db_path)
+
+
+def record_applies_to_repo(record: dict, repo_path: str) -> bool:
+    """True when the record's file exists inside repo_path (any content)."""
+    rel = _normalize_relpath(str(record.get("relpath", "")))
+    if rel is None:
+        return False
+    try:
+        root = os.path.realpath(repo_path)
+        target = os.path.realpath(os.path.join(root, rel))
+    except (OSError, ValueError):
+        return False
+    return target.startswith(root + os.sep) and os.path.isfile(target)
 
 
 def summarize_record(record: dict) -> dict:

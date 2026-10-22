@@ -140,6 +140,11 @@ def _bwrap_fs_args(extra_ro_binds=()):
         if path not in bound and os.path.isdir(path):
             args += ["--ro-bind", path, path]
             bound.add(path)
+    # glibc's loader cache: library *paths* only, no secrets. Without it,
+    # interpreters whose libpython lives outside the loader's built-in dirs
+    # (official python:* images: /usr/local/lib) cannot start.
+    if os.path.isfile("/etc/ld.so.cache"):
+        args += ["--ro-bind", "/etc/ld.so.cache", "/etc/ld.so.cache"]
     args += ["--dev", "/dev", "--tmpfs", "/tmp"]
     return args
 
@@ -548,6 +553,15 @@ def execute_hook_with_payload(hook, payload, repo_path):
     if result['exit_code'] == 127 and not result['stdout']:
         mark_incomplete("The sandboxed hook process exited before any observable hook output; dynamic analysis is incomplete.")
         return findings
+    # The sandbox launcher itself could not exec the hook (missing shebang
+    # interpreter, no exec bit): bwrap exits 1, sandbox-exec exits 71. No hook
+    # code ran, so silence is not "clean". Do not return early: a hook that
+    # forges this line still gets its stderr scanned below.
+    _first_err = result['stderr'].lstrip().split('\n', 1)[0]
+    if not result['stdout'] and (
+            (result['exit_code'] == 1 and _first_err.startswith('bwrap: execvp '))
+            or (result['exit_code'] == 71 and _first_err.startswith('sandbox-exec: execvp()'))):
+        mark_incomplete("The sandbox could not start the hook (" + _first_err[:160] + "); dynamic analysis is incomplete.")
     for canary in ('CANARY_12345', 'CANARY_67890'):
         if canary in combined_output:
             result['canary_leaked'] = True

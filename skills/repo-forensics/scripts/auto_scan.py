@@ -739,10 +739,9 @@ def _format_suppression_lines(adjudication_suppressed):
         return []
     try:
         import suppressions as _supp
-        active_count = len(_supp.load_active_records())
         return [
             f"[repo-forensics] {len(adjudication_suppressed)} finding(s) "
-            f"suppressed by prior adjudication ({active_count} active). "
+            f"suppressed by prior adjudication. "
             f"List: {_supp.command_hint('list')} — "
             f"revoke: {_supp.command_hint('revoke', '--all')}"
         ]
@@ -765,7 +764,11 @@ def format_output(findings, command='', pattern_type='', scanned_target='',
 
     if not findings:
         if scanned_target or adjudication_suppressed:
-            lines = [f"[repo-forensics] auto-scan complete: {scanned_target or 'scan'} — no issues found."]
+            if adjudication_suppressed:
+                lines = [f"[repo-forensics] auto-scan complete: {scanned_target or 'scan'} — "
+                         f"no active issues ({len(adjudication_suppressed)} suppressed by prior adjudication)."]
+            else:
+                lines = [f"[repo-forensics] auto-scan complete: {scanned_target or 'scan'} — no issues found."]
             lines.extend(_format_suppression_lines(adjudication_suppressed))
             return '\n'.join(lines)
         return ''
