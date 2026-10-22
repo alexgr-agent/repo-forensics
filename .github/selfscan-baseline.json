@@ -5,7 +5,12 @@
     "medium"
   ],
   "findings": {
+    "agent_skills|Memory + Network co-occurrence: exfiltration risk (Memory Heist, July 2026)|skills/forensify/SKILL.md|high": 1,
+    "correlation|Obfuscated Code Execution|skills/repo-forensics/scripts/refresh_controller.py|high": 1,
     "correlation|Potential Data Exfiltration|skills/repo-forensics/scripts/dead_anchors_probe.py|high": 1,
+    "entropy|Long Hex String|scripts/sign_release_manifest.py|high": 1,
+    "entropy|Long Hex String|skills/repo-forensics/scripts/refresh_controller.py|high": 1,
+    "entropy|Long Hex String|skills/repo-forensics/scripts/rulepack_feed.py|high": 1,
     "runtime_dynamism|RD-SMOD-003|skills/repo-forensics/scripts/refresh_threat_dbs.py|high": 1,
     "sast|SA-PY-008|skills/forensify/scripts/build_inventory.py|high": 1,
     "skill_threats|Homoglyph Character in Code|skills/repo-forensics/scripts/rule_loader.py|high": 1,
