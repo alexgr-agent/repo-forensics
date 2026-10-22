@@ -1142,7 +1142,7 @@
   ],
   [
     "__import__() call (dynamic import evasion)",
-    "high",
+    "low",
     "RD-DYN-002.py",
     4,
     "dynamic-import"

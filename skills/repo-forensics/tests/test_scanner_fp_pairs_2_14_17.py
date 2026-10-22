@@ -342,6 +342,7 @@ run = __import__('subprocess').run
 mod = __import__(name)
 both = __import__("json"), __import__("socket")
 lib = __import__("importlib.util")
+f = getattr(__import__("helpers"), name)
 '''
 
 
@@ -365,9 +366,9 @@ def test_literal_import_of_inert_module_is_low(tmp_path):
 
 def test_capability_or_computed_import_stays_high(tmp_path):
     found = _import_severities(tmp_path, _IMPORTS_RISKY)
-    assert found["SA-PY-003"] == [(i, "high") for i in (1, 2, 3, 4, 5)]
+    assert found["SA-PY-003"] == [(i, "high") for i in (1, 2, 3, 4, 5, 6)]
     # RD-DYN-004 only matches a literal name; the computed one is SA-PY-003's.
-    assert found["RD-DYN-004"] == [(i, "high") for i in (1, 2, 4, 5)]
+    assert found["RD-DYN-004"] == [(i, "high") for i in (1, 2, 4, 5, 6)]
 
 
 # ---------------------------------------------------------------------------

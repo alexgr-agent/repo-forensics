@@ -428,10 +428,11 @@ _ANY_IMPORT_CALL = re.compile(r'__import__\s*\(')
 def literal_import_is_inert(line):
     """True when every __import__(...) call on the line names a literal module
     whose top-level package grants no capability (json, a project module).
-    A computed name, or any capability module, keeps the line suspicious."""
+    A computed name, any capability module, or a getattr() on the line keeps
+    it suspicious."""
     calls = len(_ANY_IMPORT_CALL.findall(line))
-    if not calls:
-        return False
+    if not calls or 'getattr' in line:
+        return False                    # getattr(__import__("m"), name) evasion
     literals = [m.group(2).split('.', 1)[0] for m in _LITERAL_IMPORT.finditer(line)]
     return (len(literals) == calls
             and not any(name in CAPABILITY_MODULES for name in literals))
