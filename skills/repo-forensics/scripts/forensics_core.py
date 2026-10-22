@@ -404,49 +404,71 @@ def resolve_scan_ext(path, supported):
     return ""
 
 
-# Top-level modules that hand out a capability (process, file, network, code
-# loading, decoding, native calls). `__import__("os")` is the classic way to
-# reach one without an import statement; `__import__("json")` reaches none.
-CAPABILITY_MODULES = frozenset({
-    "os", "posix", "nt", "posixpath", "ntpath", "subprocess", "sys", "builtins",
-    "__builtin__", "importlib", "imp", "pkgutil", "runpy", "zipimport", "code",
-    "codeop", "ctypes", "cffi", "_ctypes", "socket", "ssl", "select", "selectors",
-    "asyncio", "http", "urllib", "urllib2", "urllib3", "requests", "httpx",
-    "aiohttp", "ftplib", "smtplib", "telnetlib", "xmlrpc", "webbrowser", "pty",
-    "tty", "fcntl", "signal", "resource", "multiprocessing", "concurrent",
-    "threading", "_thread", "pickle", "cPickle", "_pickle", "marshal", "shelve",
-    "dill", "cloudpickle", "base64", "binascii", "codecs", "zlib", "bz2", "lzma",
-    "gzip", "zipfile", "tarfile", "shutil", "tempfile", "io", "pathlib", "glob",
-    "commands", "popen2", "platform", "getpass", "pwd", "grp", "spwd", "crypt",
-    "inspect", "types", "gc", "dis", "linecache", "sqlite3", "mmap", "winreg",
-    "_winreg", "msvcrt", "_winapi", "win32api", "win32com", "pywintypes",
+# Top-level modules whose import grants no capability: pure computation and
+# data formats from the standard library. `__import__("json")` reaches nothing
+# an attacker wants; anything outside this list (os, timeit, pydoc, site,
+# socketserver, a PyPI package, ...) keeps a literal __import__ high unless it
+# is the repository's own module.
+INERT_IMPORT_MODULES = frozenset({
+    "json", "re", "math", "cmath", "string", "collections", "itertools",
+    "functools", "operator", "datetime", "decimal", "fractions", "statistics",
+    "numbers", "enum", "dataclasses", "typing", "textwrap", "difflib", "pprint",
+    "copy", "heapq", "bisect", "array", "struct", "hashlib", "hmac", "uuid",
+    "unicodedata", "calendar", "abc", "contextlib", "warnings", "keyword",
+    "colorsys", "graphlib", "zoneinfo", "random", "secrets", "html",
 })
 _LITERAL_IMPORT = re.compile(r'__import__\s*\(\s*(["\'])([A-Za-z_][\w.]{0,200})\1\s*[,)]')
 _ANY_IMPORT_CALL = re.compile(r'__import__\s*\(')
+_STDLIB_NAMES = frozenset(getattr(sys, "stdlib_module_names", ()))
 
 
-def literal_import_is_inert(line):
+def _first_party_module(top, file_path, rel_path):
+    """True when `top` is a package or module shipped in the scanned repository
+    (next to the file or at the repository root) and does not shadow a
+    standard-library name. Its code is scanned like any other file."""
+    if not file_path or top in _STDLIB_NAMES:
+        return False
+    here = os.path.dirname(os.path.abspath(file_path))
+    bases = [here]
+    parts = [p for p in (rel_path or "").replace("\\", "/").split("/") if p]
+    root = os.path.abspath(file_path)
+    if parts:
+        for _ in parts:
+            root = os.path.dirname(root)
+        if os.path.join(root, *parts) == os.path.abspath(file_path):
+            bases.append(root)
+    for base in bases:
+        if (os.path.isfile(os.path.join(base, top + ".py"))
+                or os.path.isfile(os.path.join(base, top, "__init__.py"))
+                or os.path.isdir(os.path.join(base, top))):
+            return True
+    return False
+
+
+def literal_import_is_inert(line, file_path=None, rel_path=None):
     """True when every __import__(...) call on the line names a literal module
-    whose top-level package grants no capability (json, a project module).
-    A computed name, any capability module, or a getattr() on the line keeps
-    it suspicious."""
+    that is on the inert allowlist or is the repository's own module. A
+    computed name, any other module, or a getattr() on the line keeps it
+    suspicious."""
     calls = len(_ANY_IMPORT_CALL.findall(line))
     if not calls or 'getattr' in line:
         return False                    # getattr(__import__("m"), name) evasion
     literals = [m.group(2).split('.', 1)[0] for m in _LITERAL_IMPORT.finditer(line)]
     return (len(literals) == calls
-            and not any(name in CAPABILITY_MODULES for name in literals))
+            and all(name in INERT_IMPORT_MODULES
+                    or _first_party_module(name, file_path, rel_path)
+                    for name in literals))
 
 
-def downgrade_inert_literal_imports(findings, text, rule_ids):
-    """Grade a dynamic-import finding low when its line only imports inert
-    modules by literal name (lazy imports, `__import__("json").load(f)`)."""
+def downgrade_inert_literal_imports(findings, text, rule_ids, file_path=None, rel_path=None):
+    """Grade a dynamic-import finding low when its line only imports inert or
+    first-party modules by literal name (lazy imports, `__import__("json")`)."""
     if not any(f.rule_id in rule_ids for f in findings):
         return findings
     lines = text.split('\n')
     for f in findings:
         if (f.rule_id in rule_ids and 1 <= f.line <= len(lines)
-                and literal_import_is_inert(clip_line(lines[f.line - 1]))):
+                and literal_import_is_inert(clip_line(lines[f.line - 1]), file_path, rel_path)):
             f.severity = "low"
     return findings
 
@@ -1490,13 +1512,8 @@ IGNORE_DIRS = {'.git', 'node_modules', 'venv', '.venv', '__pycache__', 'dist', '
 BINARY_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.ico', '.pdf', '.zip', '.tar', '.gz', '.7z',
                      '.exe', '.dll', '.so', '.dylib', '.bin', '.pyc', '.class', '.woff', '.woff2',
                      '.ttf', '.eot', '.mp3', '.mp4', '.mov', '.avi', '.bmp', '.tiff'}
-# Generated dependency lockfiles. They are full of integrity hashes and download
-# URLs, so the text scanners skip them; the dependency engines (which walk with
-# skip_lockfiles=False) parse them instead. uv.lock and pdm.lock share
-# poetry.lock's layout, bun.lock is bun's text lockfile, deno.lock is Deno's.
 LOCKFILES = {'pnpm-lock.yaml', 'package-lock.json', 'yarn.lock', 'go.sum', 'Cargo.lock',
-             'Gemfile.lock', 'poetry.lock', 'Pipfile.lock', 'composer.lock',
-             'uv.lock', 'pdm.lock', 'bun.lock', 'deno.lock'}
+             'Gemfile.lock', 'poetry.lock', 'Pipfile.lock', 'composer.lock'}
 MAX_FILE_SIZE_MB = 10
 MAX_LINE_LENGTH = 10000  # Truncate lines longer than this to prevent ReDoS (C3)
 # C2: coarse per-call wall-clock budget for scan_patterns / scan_rule_patterns.
