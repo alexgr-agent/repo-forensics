@@ -38,6 +38,7 @@ All notable changes to repo-forensics. Versions follow semver.
 - `ST-PR-010` no longer flags `${{ }}` expressions in a workflow, job or step `env:` mapping (such as `GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}`). Passing values through `env` and reading `"$X"` in the script is GitHub's recommended mitigation. Inline `${{ }}` inside `run:` is still flagged, and so is an env value the workflow later runs through `eval` or `sh -c`.
 - `scripts/sync_badges.py` now stops with an error instead of writing a test count of 0 when pytest is missing or test collection fails.
 - Decoding an embedded blob no longer prints Python `SyntaxWarning` lines to the terminal.
+- The "Accessing credential stores" rule no longer fires on ordinary text such as a comment saying "pass show_caches=True"; `pass show <entry>`, `git-credential` and `credential-store` are still flagged.
 
 ## [2.14.15] - 2026-10-16
 

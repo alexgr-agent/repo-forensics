@@ -1188,7 +1188,7 @@
     {
       "id": "ST-SP-007",
       "type": "regex",
-      "pattern": "(?i)(credential-store|git-credential|pass\\s+show)",
+      "pattern": "(?i)(credential-store|git-credential|\\bpass\\s+show\\b)",
       "title": "Accessing credential stores",
       "severity": "high",
       "confidence": 0.65,
@@ -1202,7 +1202,9 @@
         ],
         "no_match": [
           "credentials documentation",
-          "pass the test"
+          "pass the test",
+          "# In 3.11, we need to pass show_caches=True.",
+          "bypass showing the dialog"
         ]
       }
     },
