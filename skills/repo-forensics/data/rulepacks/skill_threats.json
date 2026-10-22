@@ -1253,7 +1253,7 @@
     {
       "id": "ST-ST-003",
       "type": "regex",
-      "pattern": "(?i)2>\\s*/dev/null.*&",
+      "pattern": "(?i)2>\\s*/dev/null.*(?<![&>|])&(?![&>])",
       "title": "Stderr suppression with background exec",
       "severity": "high",
       "confidence": 0.7,
@@ -1267,14 +1267,17 @@
         ],
         "no_match": [
           "echo 2 plus 2",
-          "2>/dev/null without background"
+          "2>/dev/null without background",
+          "DIR=\"$(cd \"$d\" 2>/dev/null && pwd)\"",
+          "kill \"$pid\" 2>/dev/null; exec 3>&-",
+          "cmd 2>/dev/null || true"
         ]
       }
     },
     {
       "id": "ST-ST-004",
       "type": "regex",
-      "pattern": "(?i)(>\\s*/dev/null\\s+2>&1|&>\\s*/dev/null)\\s*&",
+      "pattern": "(?i)(>\\s*/dev/null\\s+2>&1|&>\\s*/dev/null)\\s*&(?![&>])",
       "title": "Full output suppression with background",
       "severity": "high",
       "confidence": 0.7,
@@ -1288,7 +1291,9 @@
         ],
         "no_match": [
           "redirect to a file",
-          "2>&1 without background here"
+          "2>&1 without background here",
+          "command -v jq >/dev/null 2>&1 && echo ok",
+          "if cmd >/dev/null 2>&1; then :; fi"
         ]
       }
     },

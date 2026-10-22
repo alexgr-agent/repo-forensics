@@ -67,3 +67,40 @@ def test_sa_sh_004_still_flags_nested_substitution_of_real_commands(tmp_path):
         'w=$( (echo $(id)) )',
     ]) + "\n"
     assert _rule_lines(_sast_sh(tmp_path, malicious), "SA-SH-004") == [1, 2, 3]
+
+
+# ---------------------------------------------------------------------------
+# ST-ST-003 / ST-ST-004 stealth background execution
+# ---------------------------------------------------------------------------
+
+def _threats(tmp_path, name, body):
+    path = tmp_path / name
+    path.write_text(body)
+    return scan_skill_threats.scan_file(str(path), name)
+
+
+def test_stealth_rules_ignore_and_chains_and_fd_closes(tmp_path):
+    benign = "\n".join([
+        '_self_dir="$(cd "$(dirname "$0")" 2>/dev/null && pwd)" || _self_dir=""',
+        'mkdir -p "$d" 2>/dev/null && : > "$d/latch" 2>/dev/null || true',
+        'jobs -p | xargs kill 2>/dev/null; wait 2>/dev/null; exec 3>&-',
+        'if command -v "$c" >/dev/null 2>&1 && check "$c"; then :; fi',
+        'git rev-parse --verify origin/main >/dev/null 2>&1 && echo main || echo master',
+        'some_cmd 2>/dev/null |& tee log.txt',
+    ]) + "\n"
+    found = _threats(tmp_path, "hook.sh", benign)
+    assert _rule_lines(found, "ST-ST-003") == []
+    assert _rule_lines(found, "ST-ST-004") == []
+
+
+def test_stealth_rules_still_flag_backgrounded_silent_jobs(tmp_path):
+    malicious = "\n".join([
+        'nohup ./agent 2>/dev/null &',
+        './agent >/dev/null 2>&1 &',
+        './agent &>/dev/null &',
+        './agent 2>/dev/null & disown',
+        './agent >/dev/null 2>&1 & echo started',
+    ]) + "\n"
+    found = _threats(tmp_path, "hook.sh", malicious)
+    assert _rule_lines(found, "ST-ST-003") == [1, 4]
+    assert _rule_lines(found, "ST-ST-004") == [2, 3, 5]
