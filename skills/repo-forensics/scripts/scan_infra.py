@@ -240,12 +240,93 @@ def scan_kubernetes(file_path, rel_path):
     return findings
 
 
+# Triggers that only run the repository's own committed code on events a
+# maintainer causes. A write permission there is the job's purpose (publish a
+# release, upload a scorecard, sign provenance), not a token an outside
+# contributor can reach, so it is graded low instead of medium.
+TRUSTED_NOTE = " Only maintainer-run triggers (push, release, schedule, manual) start this workflow."
+_TRUSTED_TRIGGERS = frozenset({
+    "push", "release", "schedule", "workflow_dispatch", "create", "delete",
+    "registry_package", "page_build",
+})
+_ON_KEY_RE = re.compile(r'^["\']?on["\']?\s*:(.*)$')
+# Line breaks YAML parsers may honour that this reader does not split on (NEL,
+# U+2028/2029, VT, FF, a bare CR): one could hide a trigger, so fail closed.
+_ODD_LINE_BREAK = re.compile('[\x0b\x0c\x1c\x1d\x1e\x85\u2028\u2029\r]')
+_TRIGGER_NAME_RE = re.compile(r'^[A-Za-z_][\w-]*$')
+
+
+def _workflow_triggers(lines):
+    """Return the set of trigger names under the top-level `on:` key, or None
+    when there is no single plain `on:` key this parser can read with
+    confidence (flow mappings, anchors, a second `on:` and so on)."""
+    triggers = None
+    child_indent = None
+    in_on = False
+    for raw in lines:
+        line = raw.rstrip('\r\n')
+        if _ODD_LINE_BREAK.search(line):
+            return None                           # a break other parsers honour
+        body = line.split(' #', 1)[0].rstrip() if not line.lstrip().startswith('#') else ''
+        if not body.strip():
+            continue
+        indent = len(body) - len(body.lstrip(' '))
+        if indent == 0:
+            in_on = False
+            match = _ON_KEY_RE.match(body)
+            if not match:
+                continue
+            if triggers is not None:
+                return None                       # a second on: key
+            triggers = set()
+            value = match.group(1).strip()
+            if not value:
+                in_on = True
+                continue
+            if value.startswith('[') and value.endswith(']'):
+                names = [v.strip().strip('"\'') for v in value[1:-1].split(',')]
+            else:
+                names = [value.strip('"\'')]
+            if not all(_TRIGGER_NAME_RE.match(n) for n in names):
+                return None
+            triggers.update(names)
+            continue
+        if not in_on:
+            continue
+        if '\t' in line[:indent + 1]:
+            return None
+        if child_indent is None:
+            child_indent = indent
+        if indent < child_indent:
+            return None
+        if indent > child_indent:
+            continue                              # a trigger's own settings
+        item = body.strip()
+        if item.startswith('- '):
+            item = item[2:].strip()
+        name, _, rest = item.partition(':')
+        name = name.strip().strip('"\'')
+        rest = rest.strip()
+        if rest == '{}':
+            rest = ''                             # `workflow_dispatch: {}`
+        if not _TRIGGER_NAME_RE.match(name) or any(c in rest for c in '{}[]&*!|>'):
+            return None
+        triggers.add(name)
+    return triggers or None
+
+
+def _trusted_triggers_only(lines):
+    triggers = _workflow_triggers(lines)
+    return bool(triggers) and triggers <= _TRUSTED_TRIGGERS
+
+
 def scan_github_actions(file_path, rel_path):
     findings = []
     try:
         with open(file_path, 'r', encoding='utf-8') as f:
             lines = f.readlines()
 
+        trusted_only = _trusted_triggers_only(lines)
         prt_lines = set()
         for i, line in enumerate(lines):
             stripped = line.strip()
@@ -321,9 +402,10 @@ def scan_github_actions(file_path, rel_path):
             # Dangerous permissions
             if re.search(r'contents\s*:\s*write', stripped):
                 findings.append(core.Finding(
-                    scanner=SCANNER_NAME, severity="medium",
+                    scanner=SCANNER_NAME, severity="low" if trusted_only else "medium",
                     title="GHA: contents: write Permission",
-                    description="Workflow has write access to repository contents (can push code, create releases)",
+                    description="Workflow has write access to repository contents (can push code, create releases)"
+                                + (TRUSTED_NOTE if trusted_only else ""),
                     file=rel_path, line=i+1, snippet=stripped[:120],
                     category="ci-cd"
                 ))
@@ -672,9 +754,10 @@ def scan_github_actions(file_path, rel_path):
             for i, line in enumerate(lines):
                 if re.search(r'id-token\s*:\s*write', line):
                     findings.append(core.Finding(
-                        scanner=SCANNER_NAME, severity="medium",
+                        scanner=SCANNER_NAME, severity="low" if trusted_only else "medium",
                         title="GHA: id-token: write Permission",
-                        description="Workflow can request OIDC tokens (used for npm provenance, cloud auth). Verify this is intentional.",
+                        description="Workflow can request OIDC tokens (used for npm provenance, cloud auth). Verify this is intentional."
+                                    + (TRUSTED_NOTE if trusted_only else ""),
                         file=rel_path, line=i + 1, snippet=line.strip()[:120],
                         category="ci-cd"
                     ))

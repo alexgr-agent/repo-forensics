@@ -238,6 +238,11 @@ def scan_file_regex(file_path, rel_path):
         or js_import_call.search(content_lines[f.line - 1])
     ]
 
+    # __import__("json") or a lazy __import__("pkg.tools") reaches no
+    # capability; only a computed name or a capability module stays high.
+    findings = core.downgrade_inert_literal_imports(findings, content, {"RD-DYN-004"},
+                                                    file_path, rel_path)
+
     # module_from_spec constructs a module but does not execute it. Treat a
     # standalone call as HIGH; retain CRITICAL when its function writes a file
     # before loading and executes the resulting module. Test fixtures keep the
@@ -256,7 +261,7 @@ def scan_file_regex(file_path, rel_path):
                 if is_test:
                     f.evidence_class = "inferred"
                 elif loader_tree is not None and not _write_then_load(loader_tree, f.line):
-                    if _fixed_sibling_loader(loader_tree, f.line):
+                    if _fixed_sibling_loader(loader_tree, f.line, _repo_depth(rel_path)):
                         f.evidence_class = "inferred"
                     else:
                         f.severity = "high"
@@ -335,8 +340,20 @@ def _test_generated_compile(tree, compile_line):
     return False
 
 
-def _fixed_sibling_loader(tree, load_line):
-    """Prove the spec path is a literal .py sibling rooted at __file__."""
+_AST_INDEX = ast.Index if sys.version_info < (3, 9) else None
+
+
+def _repo_depth(rel_path):
+    parts = [p for p in (rel_path or '').replace('\\', '/').split('/') if p not in ('', '.')]
+    if '..' in parts:
+        return 0
+    return max(len(parts) - 1, 0)
+
+
+def _fixed_sibling_loader(tree, load_line, repo_depth=0):
+    """Prove the spec path is a literal .py file rooted at __file__ that stays
+    inside the scanned tree. `repo_depth` is how many folders sit between the
+    file and the scan root."""
     scope = tree
     for node in ast.walk(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -368,23 +385,62 @@ def _fixed_sibling_loader(tree, load_line):
     if scope is not tree:
         collect(scope.body)
 
+    # path_proof returns (rooted, fixed_py, ups): rooted at __file__ through
+    # fixed steps only, ends in a literal .py name, and how many directory
+    # levels it climbs from the file (the file's own folder counts as one).
+    _NO = (False, False, 0)
+
+    def safe_part(value):
+        return (isinstance(value, str) and value not in ('', '.', '..')
+                and '/' not in value and '\\' not in value and ':' not in value)
+
     def path_proof(expr, seen=frozenset()):
         if isinstance(expr, ast.Name):
             if expr.id == '__file__':
-                return True, True
+                return True, True, 0
             if expr.id in seen or expr.id not in assignments or expr.id in ambiguous:
-                return False, False
+                return _NO
             return path_proof(assignments[expr.id], seen | {expr.id})
         if isinstance(expr, ast.Attribute) and expr.attr in ('parent', 'resolve'):
-            rooted, fixed_py = path_proof(expr.value, seen)
-            return rooted, fixed_py if expr.attr == 'resolve' else False
+            rooted, fixed_py, ups = path_proof(expr.value, seen)
+            if expr.attr == 'resolve':
+                return rooted, fixed_py, ups
+            return rooted, False, ups + 1
         if isinstance(expr, ast.BinOp) and isinstance(expr.op, ast.Div):
-            rooted, _ = path_proof(expr.left, seen)
-            if rooted and isinstance(expr.right, ast.Constant) and isinstance(expr.right.value, str):
-                part = expr.right.value
-                if part not in ('', '.', '..') and '/' not in part and '\\' not in part and ':' not in part:
-                    return True, part.endswith('.py')
-            return False, False
+            rooted, _, ups = path_proof(expr.left, seen)
+            if (rooted and isinstance(expr.right, ast.Constant)
+                    and safe_part(expr.right.value)):
+                return True, expr.right.value.endswith('.py'), ups
+            return _NO
+        index = getattr(expr, 'slice', None)
+        if _AST_INDEX is not None and isinstance(index, _AST_INDEX):
+            index = index.value                      # Python 3.8 wraps the index
+        if (isinstance(expr, ast.Subscript) and isinstance(expr.value, ast.Attribute)
+                and expr.value.attr == 'parents'
+                and isinstance(index, ast.Constant)
+                and type(index.value) is int and 0 <= index.value < 64):
+            # Path(__file__).resolve().parents[1]: a fixed ancestor directory.
+            rooted, _, ups = path_proof(expr.value.value, seen)
+            return rooted, False, ups + index.value + 1
+        if (isinstance(expr, ast.Call) and isinstance(expr.func, ast.Attribute)
+                and isinstance(expr.func.value, ast.Attribute)
+                and expr.func.value.attr == 'path'
+                and isinstance(expr.func.value.value, ast.Name)
+                and expr.func.value.value.id == 'os'
+                and expr.args and not expr.keywords):
+            fn = expr.func.attr
+            if fn in ('abspath', 'realpath', 'normpath') and len(expr.args) == 1:
+                return path_proof(expr.args[0], seen)
+            if fn == 'dirname' and len(expr.args) == 1:
+                rooted, _, ups = path_proof(expr.args[0], seen)
+                return rooted, False, ups + 1
+            if fn == 'join' and len(expr.args) >= 2:
+                rooted, _, ups = path_proof(expr.args[0], seen)
+                parts = expr.args[1:]
+                if rooted and all(isinstance(p, ast.Constant) and safe_part(p.value)
+                                  for p in parts):
+                    return True, parts[-1].value.endswith('.py'), ups
+            return _NO
         if isinstance(expr, ast.Call):
             name = (expr.func.id if isinstance(expr.func, ast.Name)
                     else expr.func.attr if isinstance(expr.func, ast.Attribute) else '')
@@ -398,8 +454,9 @@ def _fixed_sibling_loader(tree, load_line):
                     return path_proof(gen.generators[0].iter, seen)
         if isinstance(expr, (ast.Tuple, ast.List)) and expr.elts:
             proofs = [path_proof(item, seen) for item in expr.elts]
-            return all(root for root, _ in proofs), all(fixed for _, fixed in proofs)
-        return False, False
+            return (all(p[0] for p in proofs), all(p[1] for p in proofs),
+                    max(p[2] for p in proofs))
+        return _NO
 
     for node in ast.walk(scope):
         if not (isinstance(node, ast.Call) and node.lineno == load_line
@@ -413,7 +470,10 @@ def _fixed_sibling_loader(tree, load_line):
         if not (isinstance(spec, ast.Call) and isinstance(spec.func, ast.Attribute)
                 and spec.func.attr == 'spec_from_file_location' and len(spec.args) >= 2):
             return False
-        return path_proof(spec.args[1]) == (True, True)
+        rooted, fixed_py, ups = path_proof(spec.args[1])
+        # Climbing above the scanned tree (parents[4] / ".cache" / x.py) is not
+        # a sibling: only the file's folder or an ancestor inside the repo is.
+        return rooted and fixed_py and max(ups - 1, 0) <= repo_depth
     return False
 
 

@@ -2791,7 +2791,7 @@
       "examples": {
         "match": [
           "$(echo $(whoami))",
-          "x=$(ls $(pwd))",
+          "x=$(ls $(cat dirs.txt))",
           "$( cat $(find) )"
         ],
         "no_match": [
