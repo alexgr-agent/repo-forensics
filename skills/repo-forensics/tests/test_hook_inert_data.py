@@ -7,10 +7,10 @@ blocked: writing a file and running it in the same command, heredocs fed to a
 shell, unquoted heredocs that expand, Python that calls a shell, and output
 or downloads piped onward. Inert strings only; nothing is executed.
 """
-import importlib
-
 import pytest
 
+import auto_scan
+import pre_scan
 from powershell_hook import ADAPTERS, gate, isolated_hook_state  # noqa: F401  (autouse fixture)
 
 U = 'https://example.invalid/i.sh'
@@ -49,6 +49,7 @@ STILL_BLOCKED = {
     'pwsh-heredoc': f"pwsh <<'E'\n{IRM}\nE",
     'heredoc-ps1-then-pwsh-file': f"cat > a.ps1 <<'E'\n{IRM}\nE\npwsh -File a.ps1",
     'ioc-pin-after-notes': f"cat > n.md <<'E'\nnotes\nE\n{IOC_PIN}",
+    'two-heredocs-second-to-bash': f"cat > n.md <<'A'; bash <<'B'\nnotes\nA\n{PIPE_SH}\nB",
 }
 
 NOW_ALLOWED = {
@@ -62,13 +63,15 @@ NOW_ALLOWED = {
     'python-stdin-runs-python-child': f"cd x && python3 - <<'E'\nimport subprocess, sys\nsubprocess.run([sys.executable, 'hook.py'], input='{PIPE_SH}', text=True)\nE",
     'python-c-test-string': f"cd x && python3 -c \"import pre_scan; print(pre_scan.decide('{PIPE_SH}'))\"",
     'python-c-ioc-test-string': f"cd x && python3 -c \"import pre_scan; print(pre_scan.decide('{IOC_PIN}'))\"",
+    'quoted-separator-before-step': f"cd \"a;b\" && cat > notes.md <<'E'\n{PIPE_SH}\nE",
+    'step-after-heredoc': f"cd d; cat > notes.md <<'E'; echo saved\n{PIPE_SH}\nE",
     'python-c-escaped-dollar': f"python3 -c \"print('\\$({PIPE_SH})')\"",
 }
 
 
 @pytest.mark.parametrize('module', ['pre_scan', 'auto_scan'])
 def test_shell_reachable_text_stays_blocked(module):
-    scanner = importlib.import_module(module)
+    scanner = {'pre_scan': pre_scan, 'auto_scan': auto_scan}[module]
     missed = []
     for name, command in STILL_BLOCKED.items():
         if module == 'pre_scan':
@@ -81,7 +84,7 @@ def test_shell_reachable_text_stays_blocked(module):
 
 @pytest.mark.parametrize('module', ['pre_scan', 'auto_scan'])
 def test_written_or_read_text_is_not_a_command(module):
-    scanner = importlib.import_module(module)
+    scanner = {'pre_scan': pre_scan, 'auto_scan': auto_scan}[module]
     blocked = []
     for name, command in NOW_ALLOWED.items():
         if module == 'pre_scan':
