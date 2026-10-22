@@ -44,6 +44,7 @@ Audit untrusted repos before they touch your agent. Fully local, self-updating d
 <p align="center">
   <a href="https://github.com/alexgreensh/repo-forensics/actions/workflows/tests.yml"><img src="https://github.com/alexgreensh/repo-forensics/actions/workflows/tests.yml/badge.svg?branch=main" alt="Tests"></a>
   <a href="https://github.com/alexgreensh/repo-forensics/actions/workflows/verify-checksums.yml"><img src="https://github.com/alexgreensh/repo-forensics/actions/workflows/verify-checksums.yml/badge.svg?branch=main" alt="Signed release manifest"></a>
+  <a href="https://scorecard.dev/viewer/?uri=github.com/alexgreensh/repo-forensics"><img src="https://api.scorecard.dev/projects/github.com/alexgreensh/repo-forensics/badge" alt="OpenSSF Scorecard"></a>
 </p>
 
 ---
@@ -511,6 +512,12 @@ You're about to give a security tool access to your code, so you should ask. You
 ```bash
 python3 skills/repo-forensics/scripts/verify_install.py --verify-signature   # the hash list is ours
 python3 skills/repo-forensics/scripts/verify_install.py --verify             # every file matches it
+```
+
+Every GitHub release also carries the source tarball, the signed hash list, and SLSA build provenance from GitHub Actions, so you can check a download came from this repo's release workflow and nothing else:
+
+```bash
+gh attestation verify repo-forensics-<version>.tar.gz -R alexgreensh/repo-forensics
 ```
 
 The public keys are pinned in the code and printed here so you can compare them out-of-band:
