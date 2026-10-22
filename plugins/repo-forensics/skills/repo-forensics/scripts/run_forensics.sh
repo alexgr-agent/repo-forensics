@@ -57,7 +57,7 @@ if [ -z "${1:-}" ]; then
     echo "Usage: $0 <repo_path> [options]"
     echo ""
     echo "Modes:"
-    echo "  (default)              Full audit - all 28 scanners"
+    echo "  (default)              Full audit - all 29 scanners"
     echo "  --skill-scan           Focused on AI skill threats (${#FOCUSED_SCANNERS[@]} scanners, faster)"
     echo "  --inventory            Enumerate installed AI-agent stacks (zero-LLM, JSON output)"
     echo ""
@@ -433,13 +433,14 @@ else
     # Full audit: all scanners in parallel
     if ! $MACHINE_FORMAT; then
         echo ""
-        echo "[*] Running all 28 scanners in parallel..."
+        echo "[*] Running all 29 scanners in parallel..."
     fi
     throttled_run run_scanner "entropy" "scan_entropy.py" &
     throttled_run run_scanner "binary" "scan_binary.py" &
     throttled_run run_scanner "yara" "scan_yara.py" &
     throttled_run run_scanner "git_forensics" "scan_git_forensics.py" &
     throttled_run run_scanner "dependencies" "scan_dependencies.py" &
+    throttled_run run_scanner "runtime_floors" "scan_runtime_floors.py" &
     throttled_run run_scanner "secrets" "scan_secrets.py" &
     throttled_run run_scanner "sast" "scan_sast.py" &
     throttled_run run_scanner "infra" "scan_infra.py" &
