@@ -422,6 +422,12 @@ run_scanner() {
         $OFFLINE && scanner_args+=("--offline")
     fi
 
+    # provenance shells out to npm audit signatures / gh attestation verify,
+    # which contact their registries; --offline skips them.
+    if [ "$name" = "provenance" ]; then
+        $OFFLINE && scanner_args+=("--offline")
+    fi
+
     if [ "$name" = "skill_threats" ]; then
         scanner_args+=("--full-audit")
     fi
