@@ -116,3 +116,13 @@ def test_sync_badges_refuses_to_write_a_zero_or_missing_test_count(
     assert exc.value.code != 0
     assert "refusing to write" in capsys.readouterr().err
     assert not metrics.exists()
+
+
+def test_sync_badges_reads_the_summary_line_not_a_test_id(monkeypatch):
+    # A collected test id can itself contain "N tests collected".
+    sb = _sync_badges()
+    stdout = ("tests/t.py::test_x[2-3 tests collected, 1 error\\n]\n"
+              "\n6178 tests collected in 2.16s\n")
+    monkeypatch.setattr(sb.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(
+        args=a, returncode=0, stdout=stdout, stderr=""))
+    assert sb.count_tests() == 6178

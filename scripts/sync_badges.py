@@ -130,7 +130,9 @@ def count_tests():
     )
     if res.returncode != 0:
         return None
-    m = re.search(r"(\d+)\s+tests? collected", res.stdout)
+    # Anchor to the summary line: test ids can contain "N tests collected" too.
+    # Anchor to the summary line: test ids can contain "N tests collected" too.
+    m = re.search(r"^(\d+)\s+tests? collected", res.stdout, re.M)
     if m:
         return int(m.group(1))
     # Fallback: count "::" test-node lines.
