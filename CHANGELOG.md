@@ -31,6 +31,8 @@ All notable changes to repo-forensics. Versions follow semver.
 - Pre-execution gate: one hook invocation stays under 2 CPU seconds whatever the input. A command word is no longer used as a wildcard pattern (a long run of `[` cost over a minute), chained assignments and here-string checks are linear, and the 1.5-second work budget counts from interpreter start. On macOS and Linux a process-CPU timer enforces it as a hard stop; on Windows it is checked between inspection steps. A command over budget is refused with a message asking you to split it.
 - Known limits: this is a bounded detector for the forms in #55, not a complete shell or PowerShell parser. In review it refused 161 of 270 fresh ordinary and launcher-wrapped variants (2.14.15 refused 72) and lost none of the earlier refusals. Unrecognised launchers (`runuser`, `systemd-run`, `conda run`, `psexec`), downloads run through `<(...)`, `<<<`, `eval` or a saved file, computed interpreter names (`$SHELL`), and runtimes that fetch and run code themselves can still get through. The full list is in SKILL.md under "Hook inspection limits".
 
+- CI: a new self-scan job runs repo-forensics on its own code for every push and pull request and fails on any new finding at medium severity or above, compared against a reviewed known list (`.github/selfscan-baseline.json`, matched by scanner, rule, file and severity, not line).
+
 ## [2.14.15] - 2026-10-16
 
 ### Fixed
