@@ -33,6 +33,7 @@ All notable changes to repo-forensics. Versions follow semver.
 - `compromised_versions.json`: the laravel-lang campaign note no longer cites a detector that does not exist; it states that only the disclosed malicious tags are detected, by exact version.
 - Startup cleanup stops only orphaned scanners from this install (parent gone, this install's own `scan_*.py`, past the timeout) and names what it stopped. It used to stop any repo-forensics scan running over 150 s, including scans owned by other live sessions. Reported by @ryanduguid in #65.
 - `verify_install --verify` on Windows no longer reports the `skill` compatibility link as tampered: Windows reads link targets back with backslashes, and they are now compared with forward slashes.
+- Pinned container image digests (`FROM image@sha256:...`) and pip hash pins (`--hash=sha256:...`) no longer raise a HIGH "Long Hex String" finding. Other long hex strings still do.
 
 ## [2.14.15] - 2026-10-16
 
