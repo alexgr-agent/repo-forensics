@@ -22,6 +22,7 @@ All notable changes to repo-forensics. Versions follow semver.
 - Loading a module file from the script's own folder, or from a parent folder inside the scanned repository, is graded like the `pathlib` sibling form. A path that climbs outside the repository stays high.
 - `__import__("json")`, other pure-computation standard-library modules, and the repository's own modules imported by name are low. Every other literal import stays high, as do computed names and `getattr(__import__(...), ...)`.
 - "Lethal Trifecta" no longer counts copying the environment for a subprocess as a network call.
+- "Memory + Network co-occurrence" names the same file on every operating system.
 - "Memory + Network co-occurrence" no longer fires on the word "memory" in a code comment or data file, a link in a README, or `fetch-depth` in a workflow. Outside agent instruction files, it needs a real memory store (`MEMORY.md`, `~/.claude/projects`, a memory tool) and a real network call in code.
 
 ## [2.14.16] - 2026-10-22

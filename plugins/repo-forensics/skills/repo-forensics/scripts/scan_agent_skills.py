@@ -651,6 +651,10 @@ def scan_memory_exfil_cooccurrence(repo_path):
                     break
 
     if memory_hits and network_hits:
+        # Directory walk order differs by filesystem; report the same sample
+        # file on every machine.
+        memory_hits.sort()
+        network_hits.sort()
         # Deduplicate by file
         memory_files = sorted(set(h[0] for h in memory_hits))
         network_files = sorted(set(h[0] for h in network_hits))

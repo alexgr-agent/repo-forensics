@@ -53,7 +53,7 @@
     "scripts/rulepack_feed.py": "622bb2ad6bcc780f114e0f70d15a171513f003c7048c2cc123552e28a0a0bc4d",
     "scripts/run_forensics.sh": "e5203813bbec62127c45dd32c061db18c8b9667f547084cecadc0b084dc5bb72",
     "scripts/sarif_export.py": "bf8af52791dc79143c4b47a855df7762b8f13dd9ef8e2cc9e41b4284ea265100",
-    "scripts/scan_agent_skills.py": "74256133fbd520cce68eb6d7042ebfde2aebbf4de202313eb5b302dd7e329465",
+    "scripts/scan_agent_skills.py": "96809cbc51c048eba26f5c01ab8a0cb55a6a180a6af5ccd5aa8dcee3e47f4728",
     "scripts/scan_archive.py": "c8c8533b01035dc96b14ed5d83dc638123f5cd6a6a889f64f2223a24657863f1",
     "scripts/scan_ast.py": "7d263c5a6fc9ec00095b9b33cd6aa5d2b4b2e6ee8d5fb05f10a1e09ca0bcc85d",
     "scripts/scan_binary.py": "eb7803731ba6afe10072c33f52d93080e971c7a7ab75c37cfa5595be190a9d27",
