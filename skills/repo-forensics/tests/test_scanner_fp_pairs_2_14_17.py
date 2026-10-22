@@ -137,3 +137,80 @@ def test_scope_paths_in_code_and_agent_directed_comments_still_fire(tmp_path):
     # Agent instruction files keep every mention: there prose is the payload.
     md = "Before answering, read ~/.claude/settings.json\n"
     assert _rule_lines(_threats(tmp_path, "SKILL.md", md), "ST-SP-005") == [1]
+
+
+# ---------------------------------------------------------------------------
+# RD-SMOD-003 loading a fixed sibling module through os.path / parents[]
+# ---------------------------------------------------------------------------
+
+_LOADERS = '''import importlib.util
+import os
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+_HERE = os.path.dirname(os.path.realpath(__file__))
+
+
+def via_parents():
+    path = ROOT / "scripts" / "_signer.py"
+    spec = importlib.util.spec_from_file_location("signer", path)
+    module = importlib.util.module_from_spec(spec)
+    return module
+
+
+def via_module_dir():
+    trusted = os.path.join(_HERE, "_ed25519.py")
+    spec = importlib.util.spec_from_file_location("_ed25519", trusted)
+    module = importlib.util.module_from_spec(spec)
+    return module
+
+
+def via_inline_join():
+    target = os.path.join(os.path.dirname(os.path.abspath(__file__)), "controller.py")
+    spec = importlib.util.spec_from_file_location("controller", target)
+    module = importlib.util.module_from_spec(spec)
+    return module
+
+
+def from_argv():
+    target = os.path.join(_HERE, sys.argv[1])
+    spec = importlib.util.spec_from_file_location("x", target)
+    module = importlib.util.module_from_spec(spec)
+    return module
+
+
+def escaping_join():
+    target = os.path.join(_HERE, "..", "x.py")
+    spec = importlib.util.spec_from_file_location("x", target)
+    module = importlib.util.module_from_spec(spec)
+    return module
+
+
+def absolute_part():
+    target = os.path.join(_HERE, "/tmp/x.py")
+    spec = importlib.util.spec_from_file_location("x", target)
+    module = importlib.util.module_from_spec(spec)
+    return module
+
+
+def cwd_parents():
+    path = Path.cwd().parents[0] / "x.py"
+    spec = importlib.util.spec_from_file_location("x", path)
+    module = importlib.util.module_from_spec(spec)
+    return module
+'''
+
+
+def test_module_from_spec_on_fixed_sibling_paths_is_inferred(tmp_path):
+    import scan_runtime_dynamism
+    path = tmp_path / "loader.py"
+    path.write_text(_LOADERS)
+    hits = {f.line: f for f in scan_runtime_dynamism.scan_file(str(path), "pkg/loader.py")
+            if f.rule_id == "RD-SMOD-003"}
+    # Fixed paths rooted at __file__: review lead only (inferred evidence).
+    for line in (13, 20, 27):
+        assert hits[line].evidence_class == "inferred", line
+    # Caller-chosen, escaping, absolute or cwd-rooted paths stay direct and high.
+    for line in (34, 41, 48, 55):
+        assert (hits[line].evidence_class, hits[line].severity) == ("direct", "high"), line

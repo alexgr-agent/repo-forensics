@@ -335,6 +335,9 @@ def _test_generated_compile(tree, compile_line):
     return False
 
 
+_AST_INDEX = ast.Index if sys.version_info < (3, 9) else None
+
+
 def _fixed_sibling_loader(tree, load_line):
     """Prove the spec path is a literal .py sibling rooted at __file__."""
     scope = tree
@@ -384,6 +387,38 @@ def _fixed_sibling_loader(tree, load_line):
                 part = expr.right.value
                 if part not in ('', '.', '..') and '/' not in part and '\\' not in part and ':' not in part:
                     return True, part.endswith('.py')
+            return False, False
+        index = getattr(expr, 'slice', None)
+        if _AST_INDEX is not None and isinstance(index, _AST_INDEX):
+            index = index.value                      # Python 3.8 wraps the index
+        if (isinstance(expr, ast.Subscript) and isinstance(expr.value, ast.Attribute)
+                and expr.value.attr == 'parents'
+                and isinstance(index, ast.Constant)
+                and type(index.value) is int and index.value >= 0):
+            # Path(__file__).resolve().parents[1]: a fixed ancestor directory.
+            rooted, _ = path_proof(expr.value.value, seen)
+            return rooted, False
+        if (isinstance(expr, ast.Call) and isinstance(expr.func, ast.Attribute)
+                and isinstance(expr.func.value, ast.Attribute)
+                and expr.func.value.attr == 'path'
+                and isinstance(expr.func.value.value, ast.Name)
+                and expr.func.value.value.id == 'os'
+                and expr.args and not expr.keywords):
+            fn = expr.func.attr
+            if fn in ('abspath', 'realpath', 'normpath') and len(expr.args) == 1:
+                return path_proof(expr.args[0], seen)
+            if fn == 'dirname' and len(expr.args) == 1:
+                rooted, _ = path_proof(expr.args[0], seen)
+                return rooted, False
+            if fn == 'join' and len(expr.args) >= 2:
+                rooted, _ = path_proof(expr.args[0], seen)
+                parts = expr.args[1:]
+                if rooted and all(
+                        isinstance(p, ast.Constant) and isinstance(p.value, str)
+                        and p.value not in ('', '.', '..') and '/' not in p.value
+                        and '\\' not in p.value and ':' not in p.value
+                        for p in parts):
+                    return True, parts[-1].value.endswith('.py')
             return False, False
         if isinstance(expr, ast.Call):
             name = (expr.func.id if isinstance(expr.func, ast.Name)
