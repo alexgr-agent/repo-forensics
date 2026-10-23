@@ -1255,6 +1255,8 @@ def _envcopy_plain_key(node):
             and not _envcopy_key_steers_execution(node.value))
 
 
+_ENVCOPY_SHELLS = frozenset({'sh', 'bash', 'zsh', 'dash', 'ksh', 'fish', 'csh', 'tcsh', 'cmd',
+                             'powershell', 'pwsh', 'env', 'xargs', 'busybox'})
 _ENVCOPY_DYNAMIC_NAMES = frozenset({'globals', 'locals', 'vars', 'setattr', 'delattr', '__import__',
                                     'exec', 'eval', 'compile', 'importlib', '__builtins__', 'builtins'})
 
@@ -1303,6 +1305,8 @@ def _envcopy_names_are_stdlib(tree):
         if not mine or not all(mine):
             return False
     # builtins the analysis treats as inert (dict copy, str/len/bool tests) must be the real ones
+    if any(b == '*' for b, _ in bindings):  # `from x import *` may rebind anything
+        return False
     if any(b in ('dict',) + tuple(_ENVCOPY_CALL_NAMES) for b, _ in bindings):
         return False
     for n in ast.walk(tree):
@@ -1330,6 +1334,20 @@ def environment_copies_kept_local(source):
         if not (isinstance(kw, ast.keyword) and kw.arg == 'env' and isinstance(call, ast.Call)):
             return False
         f = call.func
+        # A shell-parsed command (shell=..., sh -c, executable=, **kwargs) can post
+        # the environment itself, so the env copy is not the whole story there.
+        if any(k.arg in (None, 'shell', 'executable') for k in call.keywords):
+            return False
+        a0 = call.args[0] if call.args else None
+        if isinstance(a0, (ast.List, ast.Tuple)) and a0.elts:
+            e0 = a0.elts[0]
+            if not (isinstance(e0, ast.Constant) and isinstance(e0.value, str)):
+                return False
+            base = os.path.basename(e0.value).lower()
+            if base.endswith('.exe'):
+                base = base[:-4]
+            if base in _ENVCOPY_SHELLS:
+                return False
         return (isinstance(f, ast.Attribute) and f.attr in _ENVCOPY_SPAWN_ATTRS
                 and isinstance(f.value, ast.Name) and f.value.id == 'subprocess')
 
