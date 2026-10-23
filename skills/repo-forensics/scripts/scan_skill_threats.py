@@ -1443,14 +1443,21 @@ def environment_copies_kept_local(source):
 
 
 _SHADOW_NAMES = ('subprocess', 'os')
+_IMPORT_PATH_TOUCH = re.compile(
+    r'sys\s*\.\s*(?:path|meta_path|path_hooks|path_importer_cache|modules)\b|'
+    r'\bimportlib\b|__import__|\.pth\b|\bsite\b\s*\.|\bimp\b\s*\.|'
+    r'\bchdir\b|runpy|\bexec\b|\beval\b|\bcompile\b')
 
 
 def _local_module_shadows_stdlib(local_dir):
-    """True when a repo-local module could replace `os` or `subprocess` for a
-    script in local_dir (python puts the script's directory first on sys.path).
-    Walks the directory and its ancestors up to the repo root (.git) or 8
-    levels. Content alone cannot prove import origin, so any hit, or an
-    unreadable directory, keeps the finding."""
+    """Fail-closed provenance check. Returns False (safe to trust the stdlib
+    import) ONLY when the search reached the repo root (a .git entry) within 8
+    levels and no entry whose stem is `os` or `subprocess` (any extension, or a
+    package directory) exists in the script's directory or any ancestor up to it.
+    Anything else (no .git within the cap, unreadable directory) returns True.
+    Guarantee: default sys.path with the script's directory first. PYTHONPATH,
+    site hooks and cwd are not knowable from the tree; the caller also keeps
+    the finding when the script itself touches import machinery."""
     d = os.path.abspath(local_dir)
     for _ in range(8):
         try:
@@ -1458,22 +1465,21 @@ def _local_module_shadows_stdlib(local_dir):
         except OSError:
             return True
         for n in names:
-            stem = n.split('.', 1)[0]
-            if stem in _SHADOW_NAMES and (n == stem or n.rsplit('.', 1)[-1] in ('py', 'pyc', 'pyd', 'so')):
+            if n.split('.', 1)[0] in _SHADOW_NAMES:
                 return True
         if '.git' in names:
             return False
         parent = os.path.dirname(d)
         if parent == d:
-            break
+            return True
         d = parent
-    return False
+    return True
 
 
 def _drop_env_copies_kept_local(findings, content, ext, local_dir=None):
     # No directory context (archive member, decoded blob): import origin is
     # unprovable, so the finding stays.
-    if local_dir is None or _local_module_shadows_stdlib(local_dir):
+    if local_dir is None or _IMPORT_PATH_TOUCH.search(content) or _local_module_shadows_stdlib(local_dir):
         return findings
     if ext != '.py' or not any(f.rule_id in ('ST-EX-005', 'ST-EX-007') for f in findings):
         return findings

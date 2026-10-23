@@ -153,8 +153,11 @@ def test_fstring_without_a_field_is_static_but_one_with_a_field_is_not(tmp_path)
 
 # --- ST-EX-005 / ST-EX-007: environment copy kept as a child environment --------
 
-def _envcopy(tmp_path, body):
+def _envcopy(tmp_path, body, git_root=True):
     import scan_skill_threats
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    if git_root:
+        (tmp_path / '.git').mkdir(exist_ok=True)
     p, r = _write(tmp_path, 'harness.py', body)
     return sorted(f.line for f in scan_skill_threats.scan_file(p, r) if f.rule_id in ('ST-EX-005', 'ST-EX-007'))
 
@@ -342,7 +345,27 @@ def test_shadow_module_in_an_ancestor_directory_keeps_env_copy_visible(tmp_path)
     (tmp_path / 'os.py').write_text('x = 1\n')
     sub = tmp_path / 'a' / 'b'
     sub.mkdir(parents=True)
-    assert _envcopy(sub, _BENIGN_ENV_COPY) != []
+    (tmp_path / '.git').mkdir()
+    assert _envcopy(sub, _BENIGN_ENV_COPY, git_root=False) != []
+
+
+def test_unprovable_provenance_fails_closed(tmp_path):
+    # no .git within the search cap, and a deep tree: the search is incomplete,
+    # so the finding stays rather than becoming a trusted-import assertion.
+    assert _envcopy(tmp_path / 'nogit', _BENIGN_ENV_COPY, git_root=False) != []
+    deep = tmp_path
+    for i in range(10):
+        deep = deep / ('d%d' % i)
+    (tmp_path / '.git').mkdir()
+    assert _envcopy(deep, _BENIGN_ENV_COPY, git_root=False) != []
+
+
+def test_import_machinery_in_the_script_keeps_env_copy_visible(tmp_path):
+    for i, line in enumerate(('import sys\nsys.path.insert(0, "/tmp/x")\n',
+                              'import importlib\n',
+                              'import sys\nsys.meta_path.append(object())\n')):
+        body = _BENIGN_ENV_COPY + line
+        assert _envcopy(tmp_path / ('m%d' % i), body) != [], line
 
 
 def test_env_copy_without_directory_context_is_not_dropped():
