@@ -26,6 +26,7 @@ import secrets
 import time
 import stat
 import contextlib
+import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import forensics_core as core
@@ -63,23 +64,53 @@ def _get_legacy_signing_key_path(repo_path):
 
 
 def _read_signing_key(path):
-    with open(path, 'rb') as f:
-        return f.read()
+    flags = os.O_RDONLY | getattr(os, 'O_NONBLOCK', 0) | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_NOCTTY', 0)
+    fd = os.open(path, flags)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError('Signing key is not a regular file')
+        stream = os.fdopen(fd, 'rb')
+    except BaseException:
+        os.close(fd)
+        raise
+    with stream:
+        key = stream.read()
+    if not key:
+        raise OSError('Signing key is empty')
+    return key
 
 
 def _write_signing_key(path, key):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, 'wb') as f:
-        f.write(key)
-    os.chmod(path, 0o600)
+    """Publish a complete private key once without replacing an existing leaf."""
+    if not key:
+        raise OSError('Signing key is empty')
+    directory = os.path.dirname(path)
+    os.makedirs(directory, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix='.forensics-key-', suffix='.tmp', dir=directory)
+    try:
+        with os.fdopen(fd, 'wb') as stream:
+            fd = None
+            stream.write(key)
+            stream.flush()
+            os.fsync(stream.fileno())
+        # Hard-link creation is atomic and fails if any destination already
+        # exists. Readers see all persisted bytes, never an empty in-flight key.
+        os.link(temporary, path)
+    finally:
+        if fd is not None:
+            os.close(fd)
+        os.unlink(temporary)
 
 
 def _migrate_legacy_signing_key(repo_path, key):
     """Copy a verified legacy key outside the repo and remove the old copy."""
     new_path = _get_signing_key_path()
     legacy_path = _get_legacy_signing_key_path(repo_path)
-    if not os.path.exists(new_path):
-        _write_signing_key(new_path, key)
+    if not os.path.lexists(new_path):
+        try:
+            _write_signing_key(new_path, key)
+        except FileExistsError:
+            _read_signing_key(new_path)  # A concurrent creator must leave a readable key.
     try:
         os.remove(legacy_path)
     except OSError:
@@ -94,18 +125,23 @@ def _get_or_create_signing_key(repo_path):  # repo_path kept for API compatibili
     """
     key_path = _get_signing_key_path()
     try:
-        if os.path.exists(key_path):
-            return _read_signing_key(key_path)
-        legacy_path = _get_legacy_signing_key_path(repo_path)
-        if os.path.exists(legacy_path):
-            key = _read_signing_key(legacy_path)
-            _migrate_legacy_signing_key(repo_path, key)
-            return key
-        key = secrets.token_bytes(32)
+        return _read_signing_key(key_path)
+    except FileNotFoundError:
+        pass
+    legacy_path = _get_legacy_signing_key_path(repo_path)
+    try:
+        key = _read_signing_key(legacy_path)
+    except FileNotFoundError:
+        key = None
+    if key is not None:
+        _migrate_legacy_signing_key(repo_path, key)
+        return _read_signing_key(key_path)
+    key = secrets.token_bytes(32)
+    try:
         _write_signing_key(key_path, key)
-        return key
-    except OSError:
-        return secrets.token_bytes(32)
+    except FileExistsError:
+        return _read_signing_key(key_path)
+    return key
 
 
 def find_critical_files(repo_path):

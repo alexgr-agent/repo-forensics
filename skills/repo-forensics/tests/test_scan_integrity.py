@@ -628,3 +628,103 @@ class TestBaselineSafeIO:
         api.c, api.RenameInfo, api.IOStatus, api.nt = c, RenameInfo, IOStatus, Native()
         api.rename(10, 20, scanner.BASELINE_FILENAME)
         assert calls == [(10, 20, scanner.BASELINE_FILENAME, 10, 1)]
+
+
+class TestSigningKeyFileSafety:
+    @pytest.mark.skipif(os.name == 'nt', reason='POSIX FIFO')
+    def test_fifo_key_is_refused_without_waiting_for_writer(self, tmp_path):
+        import subprocess
+        import sys
+        key = tmp_path / scanner.SIGNING_KEY_FILENAME
+        os.mkfifo(key)
+        code = ("import sys; sys.path.insert(0, sys.argv[1]); import scan_integrity as s; "
+                "s._read_signing_key(sys.argv[2])")
+        result = subprocess.run(
+            [sys.executable, '-c', code, os.path.dirname(scanner.__file__), str(key)],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=2)
+        assert result.returncode != 0
+        assert b'OSError' in result.stderr
+
+
+    def test_regular_key_bytes_are_preserved(self, tmp_path):
+        key = tmp_path / scanner.SIGNING_KEY_FILENAME
+        key.write_bytes(b'legacy short key remains supported')
+        assert scanner._read_signing_key(str(key)) == key.read_bytes()
+
+    def test_directory_key_is_refused(self, tmp_path):
+        with pytest.raises(OSError):
+            scanner._read_signing_key(str(tmp_path))
+
+    @pytest.mark.skipif(os.name == 'nt', reason='POSIX no-follow')
+    def test_link_key_is_refused_without_reading_target(self, tmp_path):
+        target = tmp_path / 'target'
+        target.write_bytes(b'keep')
+        key = tmp_path / scanner.SIGNING_KEY_FILENAME
+        key.symlink_to(target)
+        with pytest.raises(OSError):
+            scanner._read_signing_key(str(key))
+        assert target.read_bytes() == b'keep'
+
+
+    def test_new_key_writer_never_follows_dangling_link(self, tmp_path):
+        target = tmp_path / 'victim'
+        key = tmp_path / 'key'
+        key.symlink_to(target)
+        with pytest.raises(OSError):
+            scanner._write_signing_key(str(key), b'test')
+        assert not target.exists()
+        assert key.is_symlink()
+
+    def test_failed_key_creation_does_not_sign_ephemeral_baseline(self, repo_with_hooks, monkeypatch):
+        def refused(*args):
+            raise PermissionError('injected key creation refusal')
+        monkeypatch.setattr(scanner, '_write_signing_key', refused)
+        for _ in range(2):
+            findings = scanner.watch_mode(str(repo_with_hooks), {}, 'text')
+            assert any(f.category == 'integrity-baseline-io' for f in findings)
+            assert not (repo_with_hooks / scanner.BASELINE_FILENAME).exists()
+
+    def test_concurrent_creator_uses_persisted_winner(self, repo_with_hooks, monkeypatch):
+        winner = b'winner key for concurrent creation'
+        path = scanner._get_signing_key_path()
+        def concurrent_create(*args):
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, 'wb') as stream:
+                stream.write(winner)
+            raise FileExistsError('another creator won')
+        monkeypatch.setattr(scanner, '_write_signing_key', concurrent_create)
+        assert scanner._get_or_create_signing_key(str(repo_with_hooks)) == winner
+
+    def test_existing_key_is_never_overwritten(self, tmp_path):
+        path = tmp_path / 'key'
+        path.write_bytes(b'old')
+        with pytest.raises(FileExistsError):
+            scanner._write_signing_key(str(path), b'new')
+        assert path.read_bytes() == b'old'
+
+    def test_key_fsync_failure_removes_partial_creation(self, tmp_path, monkeypatch):
+        path = tmp_path / 'key'
+        def fail(*args):
+            raise OSError('injected fsync failure')
+        monkeypatch.setattr(scanner.os, 'fsync', fail)
+        with pytest.raises(OSError):
+            scanner._write_signing_key(str(path), b'new')
+        assert not path.exists()
+
+
+    def test_key_not_visible_until_all_bytes_are_synced(self, tmp_path, monkeypatch):
+        path = tmp_path / 'key'
+        real_fsync = scanner.os.fsync
+        def inspect(fd):
+            assert not path.exists()
+            real_fsync(fd)
+        monkeypatch.setattr(scanner.os, 'fsync', inspect)
+        scanner._write_signing_key(str(path), b'complete key')
+        assert path.read_bytes() == b'complete key'
+        assert list(tmp_path.glob('.forensics-key-*.tmp')) == []
+
+    def test_empty_key_is_never_accepted(self, tmp_path):
+        path = tmp_path / 'key'
+        path.write_bytes(b'')
+        with pytest.raises(OSError):
+            scanner._read_signing_key(str(path))
