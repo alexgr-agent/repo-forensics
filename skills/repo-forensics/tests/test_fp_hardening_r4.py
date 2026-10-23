@@ -318,3 +318,35 @@ def test_keyframe_opacity_zero_is_always_reported_in_svg(tmp_path):
     }
     for name, style in shapes.items():
         assert _opacity_lines(tmp_path, f'{name}.svg', _svg(style)) != [], name
+
+
+_BENIGN_ENV_COPY = ('import os, subprocess\n'
+                    'subprocess.run(["x"], env=dict(os.environ))\n')
+
+
+def test_repo_local_module_named_like_stdlib_keeps_env_copy_visible(tmp_path):
+    # twin of the benign case: a sibling subprocess.py / os.py can replace the
+    # stdlib module, and file text alone cannot show which one is imported.
+    assert _envcopy(tmp_path / 'clean', _BENIGN_ENV_COPY) == []
+    for i, name in enumerate(('subprocess.py', 'os.py', 'subprocess.so')):
+        d = tmp_path / ('shadow%d' % i)
+        d.mkdir()
+        (d / name).write_text('def run(*a, **k):\n    pass\n')
+        assert _envcopy(d, _BENIGN_ENV_COPY) != [], name
+    pkg = tmp_path / 'pkgshadow'
+    (pkg / 'subprocess').mkdir(parents=True)
+    assert _envcopy(pkg, _BENIGN_ENV_COPY) != []
+
+
+def test_shadow_module_in_an_ancestor_directory_keeps_env_copy_visible(tmp_path):
+    (tmp_path / 'os.py').write_text('x = 1\n')
+    sub = tmp_path / 'a' / 'b'
+    sub.mkdir(parents=True)
+    assert _envcopy(sub, _BENIGN_ENV_COPY) != []
+
+
+def test_env_copy_without_directory_context_is_not_dropped():
+    import scan_skill_threats
+    found = [f for f in scan_skill_threats.scan_content(_BENIGN_ENV_COPY, 'x/harness.py')
+             if f.rule_id in ('ST-EX-005', 'ST-EX-007')]
+    assert found

@@ -1442,7 +1442,39 @@ def environment_copies_kept_local(source):
     return kept - bad
 
 
-def _drop_env_copies_kept_local(findings, content, ext):
+_SHADOW_NAMES = ('subprocess', 'os')
+
+
+def _local_module_shadows_stdlib(local_dir):
+    """True when a repo-local module could replace `os` or `subprocess` for a
+    script in local_dir (python puts the script's directory first on sys.path).
+    Walks the directory and its ancestors up to the repo root (.git) or 8
+    levels. Content alone cannot prove import origin, so any hit, or an
+    unreadable directory, keeps the finding."""
+    d = os.path.abspath(local_dir)
+    for _ in range(8):
+        try:
+            names = os.listdir(d)
+        except OSError:
+            return True
+        for n in names:
+            stem = n.split('.', 1)[0]
+            if stem in _SHADOW_NAMES and (n == stem or n.rsplit('.', 1)[-1] in ('py', 'pyc', 'pyd', 'so')):
+                return True
+        if '.git' in names:
+            return False
+        parent = os.path.dirname(d)
+        if parent == d:
+            break
+        d = parent
+    return False
+
+
+def _drop_env_copies_kept_local(findings, content, ext, local_dir=None):
+    # No directory context (archive member, decoded blob): import origin is
+    # unprovable, so the finding stays.
+    if local_dir is None or _local_module_shadows_stdlib(local_dir):
+        return findings
     if ext != '.py' or not any(f.rule_id in ('ST-EX-005', 'ST-EX-007') for f in findings):
         return findings
     kept = environment_copies_kept_local(content)
@@ -1743,10 +1775,11 @@ def scan_file(file_path, rel_path, budget=None, decode_cache=None):
     odd_breaks = bool(_WORKFLOW_ODD_BREAK.search(raw))
     content = raw.replace('\r\n', '\n').replace('\r', '\n')
     return scan_content(content, rel_path, budget=budget, decode_cache=decode_cache,
-                        odd_breaks=odd_breaks)
+                        odd_breaks=odd_breaks, local_dir=os.path.dirname(os.path.abspath(file_path)))
 
 
-def scan_content(content, rel_path, budget=None, decode_cache=None, odd_breaks=False):
+def scan_content(content, rel_path, budget=None, decode_cache=None, odd_breaks=False,
+                 local_dir=None):
     """Run all categories over already-loaded text — an extracted archive
     member, a decoded blob. The KTD7 in-memory entry point scan_archive recurses
     so prompt-injection / unicode-smuggling / exfil / IOC detection reaches
@@ -1859,7 +1892,7 @@ def scan_content(content, rel_path, budget=None, decode_cache=None, odd_breaks=F
         # Bulk/copy env access (005/006/007) is medium; single env-var (008) low.
         findings.extend(_drop_env_copies_kept_local(
             scan_rules(content, rel_path, EXFIL_RULES_MEDIUM, "credential-exfiltration", "medium"),
-            content, ext))
+            content, ext, local_dir))
         findings.extend(scan_rules(content, rel_path, EXFIL_RULES_LOW, "credential-exfiltration", "low"))
         findings.extend(scan_rules(content, rel_path, EXFIL_RULES_OTHER, "credential-exfiltration", "critical"))
         # Cat 5: Persistence
