@@ -363,13 +363,16 @@ class _WindowsBaselineIO:
             raise c.WinError(c.get_last_error())
 
 
+_BASELINE_MISSING = object()
+
+
 def _windows_read_baseline(repo_path):
     api = _WindowsBaselineIO()
     with api.directory(repo_path) as directory:
         try:
             handle = api.open(BASELINE_FILENAME, parent=directory)
         except FileNotFoundError:
-            return None
+            return _BASELINE_MISSING
         with api.file_object(handle) as stream:
             return json.load(stream)
 
@@ -456,7 +459,7 @@ def _read_baseline(repo_path):
         return _windows_read_baseline(repo_path)
     with _baseline_directory(repo_path) as directory:
         if _baseline_stat(directory) is None:
-            return None
+            return _BASELINE_MISSING
         fd = os.open(BASELINE_FILENAME, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
                      dir_fd=directory)
         try:
@@ -503,6 +506,38 @@ def _write_baseline(repo_path, baseline):
                 pass
 
 
+def _invalid_baseline_finding():
+    return core.Finding(
+        scanner=SCANNER_NAME, severity="high",
+        title="Invalid integrity baseline",
+        description="Baseline is not valid UTF-8 JSON with the expected structure. "
+                    "It was preserved without replacement. Inspect it before deliberately "
+                    "removing it to create a new baseline.",
+        file=BASELINE_FILENAME, line=0, snippet="",
+        category="integrity-baseline-format"
+    )
+
+
+def _valid_baseline_shape(baseline):
+    """Validate fields used by verification and drift checks before reading them."""
+    if not isinstance(baseline, dict) or not isinstance(baseline.get('files'), dict):
+        return False
+    if not all(isinstance(path, str) and isinstance(digest, str)
+               for path, digest in baseline['files'].items()):
+        return False
+    if '_meta' in baseline:
+        meta = baseline['_meta']
+        if not isinstance(meta, dict):
+            return False
+        if 'created' in meta and not isinstance(meta['created'], str):
+            return False
+    if '_hmac' in baseline:
+        signature = baseline['_hmac']
+        if not isinstance(signature, str) or re.fullmatch(r'[0-9a-f]{64}', signature) is None:
+            return False
+    return True
+
+
 def load_baseline(repo_path):
     """Load existing baseline from .forensics-baseline.json with HMAC verification.
 
@@ -513,8 +548,8 @@ def load_baseline(repo_path):
 
     try:
         baseline = _read_baseline(repo_path)
-    except json.JSONDecodeError:
-        return None, integrity_findings
+    except (ValueError, RecursionError):
+        return None, [_invalid_baseline_finding()]
     except OSError as exc:
         integrity_findings.append(core.Finding(
             scanner=SCANNER_NAME, severity="high",
@@ -522,8 +557,11 @@ def load_baseline(repo_path):
             description="Baseline could not be read safely: " + str(exc),
             file=BASELINE_FILENAME, line=0, snippet="", category="integrity-baseline-io"))
         return None, integrity_findings
-    if baseline is None:
+    if baseline is _BASELINE_MISSING:
         return None, integrity_findings
+
+    if not _valid_baseline_shape(baseline):
+        return None, [_invalid_baseline_finding()]
 
     stored_hmac = baseline.pop('_hmac', None)
 
@@ -606,7 +644,10 @@ def watch_mode(repo_path, critical_files, output_format):
     findings = []
     existing, integrity_findings = load_baseline(repo_path)
     findings.extend(integrity_findings)
-    if any(f.category == "integrity-baseline-io" for f in integrity_findings):
+    if integrity_findings:
+        core.emit_status(output_format,
+                         "[!] Baseline is untrusted; preserved without replacement. "
+                         "Inspect it before deliberately removing it to create a new baseline.")
         return findings
 
     current_hashes = {}

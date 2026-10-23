@@ -5,6 +5,8 @@ import json
 import stat
 import hmac
 import hashlib
+import subprocess
+import sys
 import pytest
 import scan_integrity as scanner
 
@@ -339,6 +341,113 @@ class TestSigningKeyOutsideRepo:
         assert stat.S_IMODE(mode) == 0o600, (
             f"Signing key has permissions {oct(stat.S_IMODE(mode))}, expected 0o600"
         )
+
+
+class TestUntrustedBaselinePreservation:
+    @pytest.mark.parametrize('damage', ['tampered', 'missing-key', 'unsigned'])
+    def test_watch_preserves_untrusted_baseline_across_runs(self, repo_with_hooks, damage, capsys):
+        files = scanner.find_critical_files(str(repo_with_hooks))
+        scanner.watch_mode(str(repo_with_hooks), files, 'text')
+        path = repo_with_hooks / scanner.BASELINE_FILENAME
+        data = json.loads(path.read_text())
+        if damage == 'tampered':
+            data['files']['CLAUDE.md'] = '0' * 64
+            path.write_text(json.dumps(data))
+        elif damage == 'missing-key':
+            os.unlink(scanner._get_signing_key_path())
+        else:
+            data.pop('_hmac')
+            path.write_text(json.dumps(data))
+        before = path.read_bytes()
+        capsys.readouterr()
+        for _ in range(2):
+            findings = scanner.watch_mode(str(repo_with_hooks), files, 'text')
+            assert any(f.category == 'integrity-hmac' for f in findings)
+            assert path.read_bytes() == before
+        if damage == 'missing-key':
+            assert not os.path.exists(scanner._get_signing_key_path())
+        output = capsys.readouterr().out
+        assert 'Baseline created' not in output
+        assert 'Baseline updated' not in output
+
+    @pytest.mark.parametrize('contents', [
+        b'{broken', b'\xff', b'null', b'[]', b'42', b'{}',
+        b'{"files":[]}', b'{"files":{"CLAUDE.md":null}}',
+        b'{"files":{},"_meta":null}', b'{"files":{},"_meta":{"created":[]}}',
+        b'{"files":{},"_hmac":123}', b'{"files":{},"_hmac":[]}', b'{"files":{},"_hmac":null}',
+        b'{"files":{},"_hmac":"not-a-signature"}',
+        b'{"files":{},"_hmac":"\\u00e9"}',
+    ])
+    def test_invalid_baseline_reports_and_never_resets(self, repo_with_hooks, contents, capsys):
+        path = repo_with_hooks / scanner.BASELINE_FILENAME
+        path.write_bytes(contents)
+        files = scanner.find_critical_files(str(repo_with_hooks))
+        for _ in range(2):
+            findings = scanner.watch_mode(str(repo_with_hooks), files, 'text')
+            assert any(f.category == 'integrity-baseline-format' and f.severity == 'high'
+                       for f in findings)
+            assert path.read_bytes() == contents
+            assert not os.path.exists(scanner._get_signing_key_path())
+        output = capsys.readouterr().out
+        assert 'Baseline created' not in output
+        assert 'Baseline updated' not in output
+
+
+    @pytest.mark.parametrize('contents', ['{broken', 'null', '{"files":{},"_hmac":null}'])
+    def test_invalid_baseline_cli_reports_valid_json_and_preserves_evidence(self, repo_with_hooks, contents):
+        path = repo_with_hooks / scanner.BASELINE_FILENAME
+        path.write_text(contents)
+        result = subprocess.run(
+            [sys.executable, scanner.__file__, str(repo_with_hooks), '--watch', '--format', 'json'],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+        assert result.returncode == 0  # Scanner CLIs report findings; the orchestrator sets exit codes.
+        report = json.loads(result.stdout)
+        assert any(f['category'] == 'integrity-baseline-format' for f in report)
+        assert path.read_text() == contents
+
+    def test_valid_signed_empty_baseline_still_updates(self, repo_with_hooks):
+        scanner.save_baseline(str(repo_with_hooks), {'files': {}})
+        findings = scanner.watch_mode(str(repo_with_hooks),
+                                      scanner.find_critical_files(str(repo_with_hooks)), 'text')
+        assert any(f.category == 'integrity-new-file' for f in findings)
+        loaded, errors = scanner.load_baseline(str(repo_with_hooks))
+        assert not errors
+        assert 'CLAUDE.md' in loaded['files']
+
+    def test_valid_baseline_without_optional_metadata_still_loads(self, repo_with_hooks):
+        key = scanner._get_or_create_signing_key(str(repo_with_hooks))
+        baseline = {'files': {}}
+        content = json.dumps(baseline, sort_keys=True)
+        baseline['_hmac'] = hmac.new(key, content.encode('utf-8'), hashlib.sha256).hexdigest()
+        (repo_with_hooks / scanner.BASELINE_FILENAME).write_text(json.dumps(baseline))
+        loaded, findings = scanner.load_baseline(str(repo_with_hooks))
+        assert loaded == {'files': {}}
+        assert not findings
+
+    def test_read_error_is_not_first_run(self, repo_with_hooks, monkeypatch):
+        path = repo_with_hooks / scanner.BASELINE_FILENAME
+        path.write_text('{"files":{}}')
+        before = path.read_bytes()
+        real_open = open
+        def unreadable(filename, *args, **kwargs):
+            if os.fspath(filename) == str(path) and args and args[0] == 'r':
+                raise PermissionError('injected read refusal')
+            return real_open(filename, *args, **kwargs)
+        def refused_fdopen(fd, *args, **kwargs):
+            raise PermissionError('injected read refusal')
+        monkeypatch.setattr(scanner.os, 'fdopen', refused_fdopen)
+        findings = scanner.watch_mode(str(repo_with_hooks), {}, 'text')
+        assert any(f.category == 'integrity-baseline-io' for f in findings)
+        assert path.read_bytes() == before
+        assert not os.path.exists(scanner._get_signing_key_path())
+
+    @pytest.mark.parametrize('contents', ['[' * 1500 + '0' + ']' * 1500, '1' * 5000])
+    def test_parser_limit_failure_is_visible_and_preserved(self, repo_with_hooks, contents):
+        path = repo_with_hooks / scanner.BASELINE_FILENAME
+        path.write_text(contents)
+        findings = scanner.watch_mode(str(repo_with_hooks), {}, 'text')
+        assert any(f.category == 'integrity-baseline-format' for f in findings)
+        assert path.read_text() == contents
 
 
 class TestBaselineSafeIO:
