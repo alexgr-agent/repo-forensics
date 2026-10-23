@@ -1357,7 +1357,8 @@ def environment_copies_kept_local(source):
             if isinstance(p, ast.IfExp) and cur is not p.test:
                 cur = p
                 continue
-            if isinstance(p, ast.Dict) and cur in p.values and None in p.keys:
+            if isinstance(p, ast.Dict) and cur in p.values and None in p.keys \
+                    and all(k is None or _envcopy_plain_key(k) for k in p.keys):
                 cur = p
                 continue
             return False

@@ -347,3 +347,13 @@ def test_removing_a_steering_key_is_not_a_reason_to_report(tmp_path):
         'subprocess.run(["x"], env=a)\n'
     )
     assert _envcopy(tmp_path, body) == []
+
+
+def test_dict_literal_spreading_the_environment_keeps_steering_keys_visible(tmp_path):
+    body = (
+        'import os, subprocess\n'
+        'subprocess.run(["x"], env={**os.environ.copy(), "PATH": "/tmp/x"})\n'      # 2
+        'subprocess.run(["x"], env={**os.environ.copy(), "FOO": "1"})\n'            # 3
+        'subprocess.run(["x"], env={**os.environ.copy(), key: "1"})\n'              # 4
+    )
+    assert _envcopy(tmp_path, body) == [2, 4]
