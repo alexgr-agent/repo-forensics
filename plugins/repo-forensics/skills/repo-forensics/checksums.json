@@ -81,7 +81,7 @@
     "scripts/scan_runtime_floors.py": "b3c37dfb62f8c37bdf2bf96cce1cb5367998feb3390d7f846fdd652b2a8b7707",
     "scripts/scan_sast.py": "124ad88a62348cd52d425e5dc41c45dbfe903ce4de7cc0cc2d5ed855ae1f3512",
     "scripts/scan_secrets.py": "7af54b0bed40ecedf4ba2b8ba7b1d8c6d3fe419061c91d4784975d624b2a78d5",
-    "scripts/scan_skill_threats.py": "b8640b7564e32565c8bdbb0ce959bfb199325fa296e9031348b2f40856f7e30a",
+    "scripts/scan_skill_threats.py": "1058b931c068b42e9b67e360fa4233468f62bcc56428fee9b6ea8473099cf4c4",
     "scripts/scan_splitstream.py": "283f0d44ae20c0c4fa46ce68a4fcdf010011aa8650a195becbd5907cf22e6536",
     "scripts/scan_yara.py": "0272b4de75c8af5c461bfda86287254f1be9dfd31cfa20e2ebe91a55a8a35256",
     "scripts/session_scan.py": "d5d1ee3941b11d20ae94e8b5b2862898157510e08a61e536757dd81089221fc4",

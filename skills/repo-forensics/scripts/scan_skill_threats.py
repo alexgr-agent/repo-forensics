@@ -1216,7 +1216,7 @@ def _envcopy_plain_expr(node):
                           ast.Load, ast.Store, ast.operator, ast.cmpop, ast.boolop, ast.unaryop,
                           ast.Subscript, ast.Slice, ast.IfExp, ast.List, ast.Set)):
             continue
-        if isinstance(n, ast.Attribute):
+        if isinstance(n, ast.Attribute) or type(n).__name__ in ('Index', 'ExtSlice'):
             continue
         if isinstance(n, ast.Call):
             f = n.func
@@ -1249,6 +1249,8 @@ def _envcopy_key_steers_execution(key):
 
 
 def _envcopy_plain_key(node):
+    if type(node).__name__ == 'Index':  # Python 3.8 wraps a subscript key in ast.Index
+        node = node.value
     return (isinstance(node, ast.Constant) and isinstance(node.value, str)
             and not _envcopy_key_steers_execution(node.value))
 
