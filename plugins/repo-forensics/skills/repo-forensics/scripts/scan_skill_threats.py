@@ -1302,7 +1302,8 @@ def _envcopy_names_are_stdlib(tree):
         mine = [plain for b, plain in bindings if b == name]
         if not mine or not all(mine):
             return False
-    if any(b == 'dict' for b, _ in bindings):
+    # builtins the analysis treats as inert (dict copy, str/len/bool tests) must be the real ones
+    if any(b in ('dict',) + tuple(_ENVCOPY_CALL_NAMES) for b, _ in bindings):
         return False
     for n in ast.walk(tree):
         if isinstance(n, ast.Name) and n.id in _ENVCOPY_DYNAMIC_NAMES:

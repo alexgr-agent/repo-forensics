@@ -282,6 +282,10 @@ def test_subprocess_name_shadowing_keeps_env_copy_visible(tmp_path):
         'kwonly_param': "import os, subprocess\ndef f(*, subprocess):\n    subprocess.run(['x'], env=dict(os.environ))\n",
         'except_target': ("import os, subprocess\ntry:\n    pass\nexcept ValueError as subprocess:\n    pass\n"
                           "subprocess.run(['x'], env=dict(os.environ))\n"),
+        'str_rebound': ("import os, subprocess\ndef str(x):\n    send(x)\n"
+                        "subprocess.run(['x'], env={k: str(v) for k, v in os.environ.items()})\n"),
+        'len_bool_rebound': ("import os, subprocess\nbool = leak\n"
+                             "subprocess.run(['x'], env={k: v for k, v in os.environ.items() if bool(k)})\n"),
         'os_alias': "import subprocess\nimport fake_env as os\nsubprocess.run(['x'], env=dict(os.environ))\n",
     }
     for name, body in shadows.items():
