@@ -339,3 +339,152 @@ class TestSigningKeyOutsideRepo:
         assert stat.S_IMODE(mode) == 0o600, (
             f"Signing key has permissions {oct(stat.S_IMODE(mode))}, expected 0o600"
         )
+
+
+class TestBaselineSafeIO:
+    def test_save_refuses_symlink_without_clobbering(self, tmp_path):
+        victim = tmp_path / 'victim'
+        victim.write_text('keep me')
+        repo = tmp_path / 'repo'
+        repo.mkdir()
+        (repo / scanner.BASELINE_FILENAME).symlink_to(victim)
+        with pytest.raises(OSError):
+            scanner.save_baseline(str(repo), {'files': {}})
+        assert victim.read_text() == 'keep me'
+
+    def test_save_is_atomic_on_serialization_failure(self, tmp_path):
+        path = tmp_path / scanner.BASELINE_FILENAME
+        path.write_text('old baseline')
+        with pytest.raises(TypeError):
+            scanner.save_baseline(str(tmp_path), {'files': {'bad': object()}})
+        assert path.read_text() == 'old baseline'
+
+    def test_save_refuses_symlinked_parent(self, tmp_path):
+        real = tmp_path / 'real'
+        real.mkdir()
+        link = tmp_path / 'link'
+        link.symlink_to(real, target_is_directory=True)
+        with pytest.raises(OSError):
+            scanner.save_baseline(str(link), {'files': {}})
+        assert not (real / scanner.BASELINE_FILENAME).exists()
+
+    def test_save_replaces_hardlink_not_victim(self, tmp_path):
+        victim = tmp_path / 'victim'
+        victim.write_text('keep')
+        os.link(victim, tmp_path / scanner.BASELINE_FILENAME)
+        scanner.save_baseline(str(tmp_path), {'files': {}})
+        assert victim.read_text() == 'keep'
+
+    @pytest.mark.skipif(os.name == 'nt', reason='POSIX FIFO')
+    def test_special_file_refused_before_open(self, tmp_path):
+        os.mkfifo(tmp_path / scanner.BASELINE_FILENAME)
+        loaded, findings = scanner.load_baseline(str(tmp_path))
+        assert loaded is None
+        assert any(f.category == 'integrity-baseline-io' for f in findings)
+        with pytest.raises(OSError):
+            scanner.save_baseline(str(tmp_path), {'files': {}})
+
+    def test_watch_reports_unsafe_destination_without_replacing(self, tmp_path):
+        victim = tmp_path / 'victim'
+        victim.write_text('keep')
+        repo = tmp_path / 'repo'
+        repo.mkdir()
+        link = repo / scanner.BASELINE_FILENAME
+        link.symlink_to(victim)
+        findings = scanner.watch_mode(str(repo), {}, 'json')
+        assert any(f.category == 'integrity-baseline-io' for f in findings)
+        assert victim.read_text() == 'keep'
+        assert link.is_symlink()
+
+    @pytest.mark.skipif(os.name == 'nt', reason='POSIX directory fd race')
+    def test_parent_swap_cannot_redirect_write(self, tmp_path, monkeypatch):
+        repo = tmp_path / 'repo'
+        repo.mkdir()
+        moved = tmp_path / 'moved'
+        outside = tmp_path / 'outside'
+        outside.mkdir()
+        (outside / scanner.BASELINE_FILENAME).write_text('keep')
+        original = scanner.os.replace
+        def swap(*args, **kwargs):
+            repo.rename(moved)
+            repo.symlink_to(outside, target_is_directory=True)
+            return original(*args, **kwargs)
+        monkeypatch.setattr(scanner.os, 'replace', swap)
+        scanner.save_baseline(str(repo), {'files': {}})
+        assert (outside / scanner.BASELINE_FILENAME).read_text() == 'keep'
+        assert json.loads((moved / scanner.BASELINE_FILENAME).read_text())['files'] == {}
+
+    @pytest.mark.skipif(os.name == 'nt', reason='POSIX replace injection; Windows tested separately')
+    def test_replace_failure_preserves_baseline_and_cleans_temp(self, tmp_path, monkeypatch):
+        baseline = tmp_path / scanner.BASELINE_FILENAME
+        baseline.write_text('old')
+        def fail(*args, **kwargs):
+            raise OSError('injected replace failure')
+        monkeypatch.setattr(scanner.os, 'replace', fail)
+        with pytest.raises(OSError):
+            scanner.save_baseline(str(tmp_path), {'files': {}})
+        assert baseline.read_text() == 'old'
+        assert list(tmp_path.glob('.forensics-baseline-*.tmp')) == []
+
+    def test_interrupt_preserves_baseline_and_cleans_temp(self, tmp_path, monkeypatch):
+        baseline = tmp_path / scanner.BASELINE_FILENAME
+        baseline.write_text('old')
+        def interrupt(*args):
+            raise KeyboardInterrupt()
+        monkeypatch.setattr(scanner.os, 'fsync', interrupt)
+        with pytest.raises(KeyboardInterrupt):
+            scanner.save_baseline(str(tmp_path), {'files': {}})
+        assert baseline.read_text() == 'old'
+        assert list(tmp_path.glob('.forensics-baseline-*.tmp')) == []
+
+    def test_watch_save_error_is_visible(self, tmp_path, monkeypatch, capsys):
+        def fail(*args):
+            raise PermissionError('denied')
+        monkeypatch.setattr(scanner, 'save_baseline', fail)
+        findings = scanner.watch_mode(str(tmp_path), {}, 'json')
+        assert any(f.category == 'integrity-baseline-io' for f in findings)
+        assert 'Baseline created' not in capsys.readouterr().err
+
+    def test_saved_baseline_has_private_mode(self, tmp_path):
+        scanner.save_baseline(str(tmp_path), {'files': {}})
+        if os.name != 'nt':
+            assert stat.S_IMODE((tmp_path / scanner.BASELINE_FILENAME).stat().st_mode) == 0o600
+
+    @pytest.mark.skipif(os.name != 'nt', reason='native Windows handles')
+    def test_windows_parent_rename_cannot_redirect_write(self, tmp_path, monkeypatch):
+        repo = tmp_path / 'repo'
+        repo.mkdir()
+        moved = tmp_path / 'moved'
+        outside = tmp_path / 'outside'
+        outside.mkdir()
+        (outside / scanner.BASELINE_FILENAME).write_text('keep')
+        original = scanner._WindowsBaselineIO.rename
+        def swap(api, handle, directory, name):
+            repo.rename(moved)
+            repo.symlink_to(outside, target_is_directory=True)
+            return original(api, handle, directory, name)
+        monkeypatch.setattr(scanner._WindowsBaselineIO, 'rename', swap)
+        scanner.save_baseline(str(repo), {'files': {}})
+        assert (outside / scanner.BASELINE_FILENAME).read_text() == 'keep'
+        assert json.loads((moved / scanner.BASELINE_FILENAME).read_text())['files'] == {}
+
+    @pytest.mark.skipif(os.name != 'nt', reason='native Windows handles')
+    def test_windows_rename_failure_cleans_temp(self, tmp_path, monkeypatch):
+        baseline = tmp_path / scanner.BASELINE_FILENAME
+        baseline.write_text('old')
+        def fail(*args):
+            raise OSError('injected native rename failure')
+        monkeypatch.setattr(scanner._WindowsBaselineIO, 'rename', fail)
+        with pytest.raises(OSError):
+            scanner.save_baseline(str(tmp_path), {'files': {}})
+        assert baseline.read_text() == 'old'
+        assert list(tmp_path.glob('.forensics-baseline-*.tmp')) == []
+
+    @pytest.mark.skipif(scanner.sys.platform != 'darwin', reason='native macOS system aliases')
+    def test_macos_system_tmp_alias_is_supported(self):
+        import tempfile
+        with tempfile.TemporaryDirectory(dir='/tmp') as repo:
+            scanner.save_baseline(repo, {'files': {}})
+            loaded, findings = scanner.load_baseline(repo)
+            assert loaded['files'] == {}
+            assert not findings

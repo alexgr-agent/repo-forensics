@@ -24,6 +24,8 @@ import hashlib
 import hmac
 import secrets
 import time
+import stat
+import contextlib
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import forensics_core as core
@@ -215,22 +217,305 @@ def check_executable_configs(repo_path, critical_files):
     return findings
 
 
+class _WindowsBaselineIO:
+    """Handle-relative Windows I/O; no path-based fallback on API failure."""
+
+    def __init__(self):
+        import ctypes
+        from ctypes import wintypes as w
+        self.c = ctypes
+        self.w = w
+        class UnicodeString(ctypes.Structure):
+            _fields_ = [('Length', w.USHORT), ('MaximumLength', w.USHORT),
+                        ('Buffer', w.LPWSTR)]
+        class ObjectAttributes(ctypes.Structure):
+            _fields_ = [('Length', w.ULONG), ('RootDirectory', w.HANDLE),
+                        ('ObjectName', ctypes.POINTER(UnicodeString)),
+                        ('Attributes', w.ULONG), ('SecurityDescriptor', w.LPVOID),
+                        ('SecurityQualityOfService', w.LPVOID)]
+        class IOStatus(ctypes.Structure):
+            _fields_ = [('Status', ctypes.c_void_p), ('Information', ctypes.c_size_t)]
+        class AttributeTag(ctypes.Structure):
+            _fields_ = [('FileAttributes', w.DWORD), ('ReparseTag', w.DWORD)]
+        class RenameInfo(ctypes.Structure):
+            _fields_ = [('Flags', w.DWORD), ('RootDirectory', w.HANDLE),
+                        ('FileNameLength', w.DWORD), ('FileName', w.WCHAR * 1)]
+        self.UnicodeString, self.ObjectAttributes = UnicodeString, ObjectAttributes
+        self.IOStatus, self.AttributeTag, self.RenameInfo = IOStatus, AttributeTag, RenameInfo
+        self.nt = ctypes.WinDLL('ntdll', use_last_error=True)
+        self.kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+        self.nt.NtCreateFile.argtypes = [ctypes.POINTER(w.HANDLE), w.DWORD,
+            ctypes.POINTER(ObjectAttributes), ctypes.POINTER(IOStatus),
+            w.LPVOID, w.ULONG, w.ULONG, w.ULONG, w.ULONG, w.LPVOID, w.ULONG]
+        self.nt.NtCreateFile.restype = w.LONG
+        self.nt.RtlNtStatusToDosError.argtypes = [w.LONG]
+        self.nt.RtlNtStatusToDosError.restype = w.ULONG
+        self.kernel.GetCurrentProcess.restype = w.HANDLE
+        self.kernel.DuplicateHandle.argtypes = [w.HANDLE, w.HANDLE, w.HANDLE,
+            ctypes.POINTER(w.HANDLE), w.DWORD, w.BOOL, w.DWORD]
+        self.kernel.DuplicateHandle.restype = w.BOOL
+        self.kernel.CloseHandle.argtypes = [w.HANDLE]
+        self.kernel.CloseHandle.restype = w.BOOL
+        self.kernel.GetFileInformationByHandleEx.argtypes = [w.HANDLE, ctypes.c_int,
+                                                             w.LPVOID, w.DWORD]
+        self.kernel.GetFileInformationByHandleEx.restype = w.BOOL
+        self.kernel.SetFileInformationByHandle.argtypes = [w.HANDLE, ctypes.c_int,
+                                                           w.LPVOID, w.DWORD]
+        self.kernel.SetFileInformationByHandle.restype = w.BOOL
+
+    def open(self, name, parent=None, directory=False, create=False):
+        c, w = self.c, self.w
+        text = c.create_unicode_buffer(name)
+        size = len(name.encode('utf-16-le'))
+        u = self.UnicodeString(size, size + 2, c.cast(text, w.LPWSTR))
+        attrs = self.ObjectAttributes(c.sizeof(self.ObjectAttributes), parent,
+                                      c.pointer(u), 0x40, None, None)
+        result, status = w.HANDLE(), self.IOStatus()
+        # Synchronize, read attributes/data; created files also need write/delete.
+        access = 0x100000 | 0x80 | 1
+        if create:
+            access |= 0x10000 | 2
+        options = 0x200000 | 0x20 | (1 if directory else 0x40)
+        code = self.nt.NtCreateFile(c.byref(result), access, c.byref(attrs),
+            c.byref(status), None, 0x80, 7, 2 if create else 1, options, None, 0)
+        if code < 0:
+            raise c.WinError(self.nt.RtlNtStatusToDosError(code))
+        try:
+            info = self.AttributeTag()
+            if not self.kernel.GetFileInformationByHandleEx(result, 9,
+                    c.byref(info), c.sizeof(info)):
+                raise c.WinError(c.get_last_error())
+            if info.FileAttributes & 0x400 or bool(info.FileAttributes & 0x10) != directory:
+                raise OSError('Baseline path contains a reparse point or wrong file type')
+            return result
+        except BaseException:
+            self.close(result)
+            raise
+
+    def duplicate(self, handle):
+        result = self.w.HANDLE()
+        process = self.kernel.GetCurrentProcess()
+        if not self.kernel.DuplicateHandle(process, handle, process,
+                self.c.byref(result), 0, False, 2):
+            raise self.c.WinError(self.c.get_last_error())
+        return result
+
+    def close(self, handle):
+        self.kernel.CloseHandle(handle)
+
+    @contextlib.contextmanager
+    def directory(self, repo_path):
+        import ntpath
+        path = ntpath.abspath(repo_path)
+        drive, tail = ntpath.splitdrive(path)
+        # Standard drive roots and UNC shares only, not device/pipe namespaces.
+        if not drive or drive.startswith(('\\\\?\\', '\\\\.\\')):
+            raise OSError('Unsupported baseline device path')
+        root = ('\\??\\UNC\\' + drive[2:] if drive.startswith('\\\\')
+                else '\\??\\' + drive) + '\\'
+        handle = self.open(root, directory=True)
+        try:
+            for part in tail.split('\\'):
+                if not part:
+                    continue
+                child = self.open(part, parent=handle, directory=True)
+                self.close(handle)
+                handle = child
+            yield handle
+        finally:
+            self.close(handle)
+
+    def file_object(self, handle, writing=False):
+        import msvcrt
+        try:
+            fd = msvcrt.open_osfhandle(handle.value, os.O_BINARY | (os.O_WRONLY if writing else os.O_RDONLY))
+        except BaseException:
+            self.close(handle)
+            raise
+        try:
+            return os.fdopen(fd, 'w' if writing else 'r', encoding='utf-8', newline='')
+        except BaseException:
+            os.close(fd)
+            raise
+
+    def rename(self, handle, directory, name):
+        c = self.c
+        encoded = name.encode('utf-16-le')
+        length = self.RenameInfo.FileName.offset + len(encoded)
+        buffer = c.create_string_buffer(max(length, c.sizeof(self.RenameInfo)))
+        info = self.RenameInfo.from_buffer(buffer)
+        info.Flags, info.RootDirectory, info.FileNameLength = 1, directory, len(encoded)
+        c.memmove(c.addressof(buffer) + self.RenameInfo.FileName.offset, encoded, len(encoded))
+        if not self.kernel.SetFileInformationByHandle(handle, 3, buffer, length):
+            raise c.WinError(c.get_last_error())
+
+    def delete(self, handle):
+        c = self.c
+        delete = self.c.c_ubyte(1)
+        if not self.kernel.SetFileInformationByHandle(handle, 4, c.byref(delete), c.sizeof(delete)):
+            raise c.WinError(c.get_last_error())
+
+
+def _windows_read_baseline(repo_path):
+    api = _WindowsBaselineIO()
+    with api.directory(repo_path) as directory:
+        try:
+            handle = api.open(BASELINE_FILENAME, parent=directory)
+        except FileNotFoundError:
+            return None
+        with api.file_object(handle) as stream:
+            return json.load(stream)
+
+
+def _windows_write_baseline(repo_path, payload):
+    api = _WindowsBaselineIO()
+    with api.directory(repo_path) as directory:
+        try:
+            existing = api.open(BASELINE_FILENAME, parent=directory)
+        except FileNotFoundError:
+            pass
+        else:
+            api.close(existing)
+        name = '.forensics-baseline-' + secrets.token_hex(16) + '.tmp'
+        handle = api.open(name, parent=directory, create=True)
+        committed = False
+        try:
+            # fdopen owns only the duplicate. Keep the original native handle
+            # alive for handle-relative rename and failure cleanup.
+            duplicate = api.duplicate(handle)
+            with api.file_object(duplicate, writing=True) as stream:
+                stream.write(payload)
+                stream.flush()
+                os.fsync(stream.fileno())
+            api.rename(handle, directory, BASELINE_FILENAME)
+            committed = True
+        finally:
+            try:
+                if not committed:
+                    api.delete(handle)
+            finally:
+                api.close(handle)
+
+
+@contextlib.contextmanager
+def _baseline_directory(repo_path):
+    """Pin every POSIX path component without following links.
+
+    An opened directory remains the destination even if its pathname is renamed.
+    Windows uses separate handle-relative native operations, never a path fallback.
+    """
+    if os.name == 'nt':
+        raise OSError('Safe baseline directory access is unavailable')
+    path = os.path.abspath(repo_path)
+    fd = os.open(os.path.sep, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        components = [part for part in path.split(os.path.sep) if part]
+        # macOS ships these root-owned aliases. Expand only these exact system
+        # links, never an arbitrary repo/user symlink. Targets are still opened
+        # component by component with O_NOFOLLOW.
+        aliases = {"tmp": "private/tmp", "var": "private/var", "etc": "private/etc"}
+        if sys.platform == "darwin" and components and components[0] in aliases:
+            first = components[0]
+            info = os.stat(first, dir_fd=fd, follow_symlinks=False)
+            root = os.fstat(fd)
+            if (stat.S_ISLNK(info.st_mode) and info.st_uid == 0 and
+                    root.st_uid == 0 and not root.st_mode & 0o022 and
+                    os.readlink(first, dir_fd=fd).lstrip("/") == aliases[first]):
+                components = aliases[first].split("/") + components[1:]
+        for part in components:
+            if not part:
+                continue
+            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                            dir_fd=fd)
+            os.close(fd)
+            fd = child
+        yield fd
+    finally:
+        os.close(fd)
+
+
+def _baseline_stat(dir_fd):
+    try:
+        info = os.stat(BASELINE_FILENAME, dir_fd=dir_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return None
+    if not stat.S_ISREG(info.st_mode):
+        raise OSError('Baseline destination is not a regular file')
+    return info
+
+
+def _read_baseline(repo_path):
+    if os.name == 'nt':
+        return _windows_read_baseline(repo_path)
+    with _baseline_directory(repo_path) as directory:
+        if _baseline_stat(directory) is None:
+            return None
+        fd = os.open(BASELINE_FILENAME, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                     dir_fd=directory)
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                raise OSError('Baseline source is not a regular file')
+            handle = os.fdopen(fd, 'r', encoding='utf-8')
+        except BaseException:
+            os.close(fd)
+            raise
+        with handle:
+            return json.load(handle)
+
+
+def _write_baseline(repo_path, baseline):
+    # Serialize before creating anything so invalid input cannot alter disk state.
+    payload = json.dumps(baseline, indent=2)
+    if os.name == 'nt':
+        return _windows_write_baseline(repo_path, payload)
+    with _baseline_directory(repo_path) as directory:
+        _baseline_stat(directory)
+        temporary = '.forensics-baseline-' + secrets.token_hex(16) + '.tmp'
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                     0o600, dir_fd=directory)
+        try:
+            try:
+                os.fchmod(fd, 0o600)
+                handle = os.fdopen(fd, 'w', encoding='utf-8', newline='')
+            except BaseException:
+                os.close(fd)
+                raise
+            with handle:
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+            # Do not knowingly replace a symlink or special file planted mid-write.
+            # rename itself never follows the destination, even after this check.
+            _baseline_stat(directory)
+            os.replace(temporary, BASELINE_FILENAME,
+                       src_dir_fd=directory, dst_dir_fd=directory)
+        finally:
+            try:
+                os.unlink(temporary, dir_fd=directory)
+            except FileNotFoundError:
+                pass
+
+
 def load_baseline(repo_path):
     """Load existing baseline from .forensics-baseline.json with HMAC verification.
 
     Returns (baseline_data, integrity_findings) tuple.
     integrity_findings contains any HMAC-related warnings/errors.
     """
-    baseline_path = os.path.join(repo_path, BASELINE_FILENAME)
     integrity_findings = []
 
-    if not os.path.exists(baseline_path):
-        return None, integrity_findings
-
     try:
-        with open(baseline_path, 'r', encoding='utf-8') as f:
-            baseline = json.load(f)
-    except (json.JSONDecodeError, OSError):
+        baseline = _read_baseline(repo_path)
+    except json.JSONDecodeError:
+        return None, integrity_findings
+    except OSError as exc:
+        integrity_findings.append(core.Finding(
+            scanner=SCANNER_NAME, severity="high",
+            title="Baseline access refused",
+            description="Baseline could not be read safely: " + str(exc),
+            file=BASELINE_FILENAME, line=0, snippet="", category="integrity-baseline-io"))
+        return None, integrity_findings
+    if baseline is None:
         return None, integrity_findings
 
     stored_hmac = baseline.pop('_hmac', None)
@@ -290,7 +575,6 @@ def load_baseline(repo_path):
 
 def save_baseline(repo_path, baseline_data):
     """Save baseline to .forensics-baseline.json with HMAC-SHA256 signature."""
-    baseline_path = os.path.join(repo_path, BASELINE_FILENAME)
     baseline_data['_meta'] = {
         'created': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
         'tool': 'repo-forensics/scan_integrity',
@@ -300,8 +584,14 @@ def save_baseline(repo_path, baseline_data):
     key = _get_or_create_signing_key(repo_path)
     content = json.dumps(baseline_data, sort_keys=True)
     baseline_data['_hmac'] = hmac.new(key, content.encode('utf-8'), hashlib.sha256).hexdigest()
-    with open(baseline_path, 'w', encoding='utf-8') as f:
-        json.dump(baseline_data, f, indent=2)
+    _write_baseline(repo_path, baseline_data)
+
+
+def _baseline_write_finding(exc):
+    return core.Finding(
+        scanner=SCANNER_NAME, severity="high", title="Baseline write refused",
+        description="Baseline could not be saved safely: " + str(exc),
+        file=BASELINE_FILENAME, line=0, snippet="", category="integrity-baseline-io")
 
 
 def watch_mode(repo_path, critical_files, output_format):
@@ -309,6 +599,8 @@ def watch_mode(repo_path, critical_files, output_format):
     findings = []
     existing, integrity_findings = load_baseline(repo_path)
     findings.extend(integrity_findings)
+    if any(f.category == "integrity-baseline-io" for f in integrity_findings):
+        return findings
 
     current_hashes = {}
     for rel_path, full_path in critical_files.items():
@@ -318,7 +610,11 @@ def watch_mode(repo_path, critical_files, output_format):
 
     if existing is None:
         # First run: create baseline
-        save_baseline(repo_path, {'files': current_hashes})
+        try:
+            save_baseline(repo_path, {'files': current_hashes})
+        except OSError as exc:
+            findings.append(_baseline_write_finding(exc))
+            return findings
         core.emit_status(output_format, f"[+] Baseline created: {len(current_hashes)} files tracked in {BASELINE_FILENAME}")
         return findings
 
@@ -360,7 +656,11 @@ def watch_mode(repo_path, critical_files, output_format):
             ))
 
     # Update baseline with current state
-    save_baseline(repo_path, {'files': current_hashes})
+    try:
+        save_baseline(repo_path, {'files': current_hashes})
+    except OSError as exc:
+        findings.append(_baseline_write_finding(exc))
+        return findings
     core.emit_status(output_format, f"[+] Baseline updated: {len(current_hashes)} files tracked")
 
     return findings
