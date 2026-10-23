@@ -459,14 +459,23 @@ class TestBaselineSafeIO:
         outside.mkdir()
         (outside / scanner.BASELINE_FILENAME).write_text('keep')
         original = scanner._WindowsBaselineIO.rename
+        rename_blocked = []
         def swap(api, handle, directory, name):
-            repo.rename(moved)
-            repo.symlink_to(outside, target_is_directory=True)
+            try:
+                repo.rename(moved)
+            except PermissionError:
+                # Windows may prevent renaming a directory while its temporary
+                # child is open. That is also a safe boundary, not a test skip.
+                rename_blocked.append(True)
+                assert repo.is_dir() and not moved.exists()
+            else:
+                repo.symlink_to(outside, target_is_directory=True)
             return original(api, handle, directory, name)
         monkeypatch.setattr(scanner._WindowsBaselineIO, 'rename', swap)
         scanner.save_baseline(str(repo), {'files': {}})
         assert (outside / scanner.BASELINE_FILENAME).read_text() == 'keep'
-        assert json.loads((moved / scanner.BASELINE_FILENAME).read_text())['files'] == {}
+        destination = repo if rename_blocked else moved
+        assert json.loads((destination / scanner.BASELINE_FILENAME).read_text())['files'] == {}
 
     @pytest.mark.skipif(os.name != 'nt', reason='native Windows handles')
     def test_windows_rename_failure_cleans_temp(self, tmp_path, monkeypatch):
@@ -488,3 +497,25 @@ class TestBaselineSafeIO:
             loaded, findings = scanner.load_baseline(repo)
             assert loaded['files'] == {}
             assert not findings
+
+    def test_windows_rename_uses_native_relative_handle_contract(self):
+        """Check marshaling off-platform; native CI still owns filesystem behavior."""
+        import ctypes as c
+        class RenameInfo(c.Structure):
+            _fields_ = [('Flags', c.c_uint32), ('RootDirectory', c.c_void_p),
+                        ('FileNameLength', c.c_uint32), ('FileName', c.c_uint16 * 1)]
+        class IOStatus(c.Structure):
+            _fields_ = [('Status', c.c_void_p), ('Information', c.c_size_t)]
+        calls = []
+        class Native:
+            def NtSetInformationFile(self, handle, status, buffer, length, kind):
+                info = RenameInfo.from_buffer(buffer)
+                name = c.string_at(c.addressof(buffer) + RenameInfo.FileName.offset,
+                                   info.FileNameLength).decode('utf-16-le')
+                calls.append((handle, info.RootDirectory, name, kind, info.Flags))
+                assert length == RenameInfo.FileName.offset + info.FileNameLength
+                return 0
+        api = object.__new__(scanner._WindowsBaselineIO)
+        api.c, api.RenameInfo, api.IOStatus, api.nt = c, RenameInfo, IOStatus, Native()
+        api.rename(10, 20, scanner.BASELINE_FILENAME)
+        assert calls == [(10, 20, scanner.BASELINE_FILENAME, 10, 1)]

@@ -248,6 +248,9 @@ class _WindowsBaselineIO:
             ctypes.POINTER(ObjectAttributes), ctypes.POINTER(IOStatus),
             w.LPVOID, w.ULONG, w.ULONG, w.ULONG, w.ULONG, w.LPVOID, w.ULONG]
         self.nt.NtCreateFile.restype = w.LONG
+        self.nt.NtSetInformationFile.argtypes = [w.HANDLE, ctypes.POINTER(IOStatus),
+                                                w.LPVOID, w.ULONG, ctypes.c_int]
+        self.nt.NtSetInformationFile.restype = w.LONG
         self.nt.RtlNtStatusToDosError.argtypes = [w.LONG]
         self.nt.RtlNtStatusToDosError.restype = w.ULONG
         self.kernel.GetCurrentProcess.restype = w.HANDLE
@@ -346,8 +349,12 @@ class _WindowsBaselineIO:
         info = self.RenameInfo.from_buffer(buffer)
         info.Flags, info.RootDirectory, info.FileNameLength = 1, directory, len(encoded)
         c.memmove(c.addressof(buffer) + self.RenameInfo.FileName.offset, encoded, len(encoded))
-        if not self.kernel.SetFileInformationByHandle(handle, 3, buffer, length):
-            raise c.WinError(c.get_last_error())
+        # The Win32 rename wrapper rejects a relative RootDirectory on some
+        # supported systems. Use the native handle-relative operation directly.
+        status = self.IOStatus()
+        code = self.nt.NtSetInformationFile(handle, c.byref(status), buffer, length, 10)
+        if code < 0:
+            raise c.WinError(self.nt.RtlNtStatusToDosError(code))
 
     def delete(self, handle):
         c = self.c
