@@ -1255,6 +1255,63 @@ def _envcopy_plain_key(node):
             and not _envcopy_key_steers_execution(node.value))
 
 
+_ENVCOPY_DYNAMIC_NAMES = frozenset({'globals', 'locals', 'vars', 'setattr', 'delattr', '__import__',
+                                    'exec', 'eval', 'compile', 'importlib', '__builtins__', 'builtins'})
+
+
+def _envcopy_name_bindings(tree):
+    """Every way a module-level or local name can be (re)bound in this file,
+    as a list of (name, plain_import) pairs. plain_import is True only for a
+    bare `import name` with no alias."""
+    out = []
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Import):
+            for a in n.names:
+                if a.asname:
+                    out.append((a.asname, False))
+                out.append((a.name.split('.')[0], a.asname is None and '.' not in a.name))
+        elif isinstance(n, ast.ImportFrom):
+            for a in n.names:
+                out.append((a.asname or a.name, False))
+        elif isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            out.append((n.name, False))
+        elif isinstance(n, ast.arg):
+            out.append((n.arg, False))
+        elif isinstance(n, ast.Name) and isinstance(n.ctx, (ast.Store, ast.Del)):
+            out.append((n.id, False))
+        elif isinstance(n, ast.ExceptHandler) and n.name:
+            out.append((n.name, False))
+        elif isinstance(n, (ast.Global, ast.Nonlocal)):
+            out.extend((x, False) for x in n.names)
+        else:
+            for attr in ('name', 'rest'):  # match-statement captures (3.10+)
+                v = getattr(n, attr, None)
+                if isinstance(v, str) and type(n).__name__.startswith('Match'):
+                    out.append((v, False))
+    return out
+
+
+def _envcopy_names_are_stdlib(tree):
+    """True only when `subprocess` and `os` are plain stdlib imports that no
+    other statement rebinds, `dict` is never rebound, and nothing in the file
+    reaches the namespace dynamically. A local class, def, alias or assignment
+    named `subprocess` could post the environment, so the name alone proves
+    nothing."""
+    bindings = _envcopy_name_bindings(tree)
+    for name in ('subprocess', 'os'):
+        mine = [plain for b, plain in bindings if b == name]
+        if not mine or not all(mine):
+            return False
+    if any(b == 'dict' for b, _ in bindings):
+        return False
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Name) and n.id in _ENVCOPY_DYNAMIC_NAMES:
+            return False
+        if isinstance(n, ast.Attribute) and n.attr in ('modules', '__dict__', '__builtins__'):
+            return False
+    return True
+
+
 def environment_copies_kept_local(source):
     """Lines whose environment copy provably only becomes the `env=` of a local
     subprocess call (directly or through a name that is only edited or passed as
@@ -1262,6 +1319,8 @@ def environment_copies_kept_local(source):
     try:
         tree = ast.parse(source)
     except (SyntaxError, ValueError, RecursionError, MemoryError):
+        return set()
+    if not _envcopy_names_are_stdlib(tree):
         return set()
     parent = {c: n for n in ast.walk(tree) for c in ast.iter_child_nodes(n)}
 

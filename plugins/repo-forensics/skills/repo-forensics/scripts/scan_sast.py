@@ -43,12 +43,41 @@ _MAX_INERT_PASSES = 16
 
 # `case` arm pattern list (`a|b|c) cmd`): the `|` separates patterns, it is not
 # a pipe. Only the command after the closing paren is checked by the rule.
-_CASE_ARM = re.compile(r'^\s*[^()\s|;&$`]*(?:\|[^()\s|;&$`]*)+\)\s*')
+# Two conditions must both hold before the pattern list is skipped: the line
+# sits inside a `case ... in` ... `esac` block, and no pattern token carries
+# brace-expansion characters. `{curl,-s,url}|sh)` closing a subshell is a real
+# pipe-to-shell, not an arm, and a file with no case block never skips anything.
+_CASE_ARM = re.compile(r'^\s*[^(){},\s|;&$`]*(?:\|[^(){},\s|;&$`]*)+\)\s*')
+_CASE_OPEN = re.compile(r'(?:^|[;&|(]\s*)case\b[^\n]*?\bin\b')
+_ESAC = re.compile(r'(?:^|[;&|(\s])esac\b')
+_SHELL_CASE_EXTS = frozenset({'.sh', '.bash', '.zsh', '.ksh'})
 
 
-def _nesting_survives(rule, line):
+def _case_depth_after(depth, line):
+    """Track `case ... in` / `esac` nesting across logical lines (shell only).
+
+    Returns (depth, arm_next): arm_next is True only when the next line can
+    start a new arm, i.e. this line opened the block (`... in`) or ended an
+    earlier arm (`;;`, `;&`, `;;&`). A line inside an arm body is never an arm,
+    so `(\ncurl|sh)` placed in a body is still checked.
+    """
+    stripped = line.strip()
+    if not stripped or stripped.startswith('#'):
+        return depth, None
+    opened = _CASE_OPEN.search(stripped)
+    if opened:
+        depth += 1
+    depth -= len(_ESAC.findall(stripped))
+    depth = max(depth, 0)
+    arm_next = depth > 0 and (
+        bool(re.search(r'\bin\s*$', stripped)) and bool(opened)
+        or stripped.endswith((';;', ';&', ';;&')))
+    return depth, arm_next
+
+
+def _nesting_survives(rule, line, in_case=False):
     if rule.id == "SA-SH-003":
-        m = _CASE_ARM.match(line)
+        m = _CASE_ARM.match(line) if in_case else None
         if m:
             return rule.regex.search(line[m.end():]) is not None
         return True
@@ -975,7 +1004,8 @@ def _nested_shrink_line(content, live_templates=False):
 #     120s and every delay within 120s, so a hidden frame is only transient. A
 #     fill mode that holds the last frame (`forwards`/`both`) is accepted only
 #     when the file has no infinite, reversing or more-than-5x animation and
-#     the keyframes' 100% frame is visible;
+#     the keyframes' 100% frame is visible; a fill mode that applies the first
+#     frame early (`backwards`/`both`) needs the 0% frame visible too;
 #   * the keyframes are named by an animation, are defined once, set an opacity
 #     on every frame including 0% and 100%, and are visible for at least a
 #     quarter of the cycle.
@@ -1019,8 +1049,8 @@ def _animation_declarations_safe(css):
     element is left in: `forwards` (holds the last frame), `infinite`,
     `reversing` (reverse or alternate direction) and the largest iteration
     count."""
-    info = {'names': set(), 'forwards': False, 'infinite': False,
-            'reversing': False, 'max_count': 1.0}
+    info = {'names': set(), 'forwards': False, 'backwards': False, 'infinite': False,
+            'reversing': False, 'max_count': 1.0, 'max_delay': 0.0}
 
     def _count(value):
         if value == 'infinite':
@@ -1043,7 +1073,9 @@ def _animation_declarations_safe(css):
                 part = part.strip()
                 if part in ('forwards', 'both'):
                     info['forwards'] = True
-                elif part not in ('none', 'backwards'):
+                if part in ('backwards', 'both'):
+                    info['backwards'] = True
+                elif part not in ('none', 'forwards'):
                     return None
         elif prop == 'animation-play-state':
             if value != 'running':
@@ -1078,12 +1110,15 @@ def _animation_declarations_safe(css):
                                 return None
                         elif abs(secs) > _ANIM_DURATION_MAX:
                             return None
+                        else:
+                            info['max_delay'] = max(info['max_delay'], secs)
                     elif t == 'paused':
                         return None
-                    elif t in ('forwards', 'both'):
-                        info['forwards'] = True
-                    elif t == 'backwards':
-                        continue
+                    elif t in ('forwards', 'both', 'backwards'):
+                        if t != 'backwards':
+                            info['forwards'] = True
+                        if t != 'forwards':
+                            info['backwards'] = True
                     elif t in ('reverse', 'alternate', 'alternate-reverse'):
                         info['reversing'] = True
                     elif t == 'infinite' or re.match(r'^[\d.]+$', t):
@@ -1100,6 +1135,7 @@ def _animation_declarations_safe(css):
                 secs = _css_seconds(part.strip())
                 if secs is None or abs(secs) > _ANIM_DURATION_MAX:
                     return None
+                info['max_delay'] = max(info['max_delay'], secs)
         elif prop in ('animation-timing-function', 'animation-composition'):
             continue
         else:
@@ -1183,8 +1219,28 @@ def _benign_keyframe_spans(content, ext):
             visible = sum(b - a for a, b in zip(marks, marks[1:])
                           if frames[a] >= _VISIBLE_OPACITY and frames[b] >= _VISIBLE_OPACITY)
             # A held last frame must be visible; otherwise the cycle must be.
-            if (frames[100.0] >= _VISIBLE_OPACITY if holds_last_frame
-                    else visible >= _VISIBLE_SHARE):
+            # A backwards fill applies the 0% frame for the whole delay, so a
+            # hidden first frame plus any positive delay hides the element for
+            # up to the delay on top of the animation: that stays reported.
+            if info['backwards'] and frames[0.0] < _VISIBLE_OPACITY and info['max_delay'] > 0:
+                continue
+            if holds_last_frame:
+                # A held fill is a fade-in only when the element is hidden at
+                # most as a leading run of frames and visible from the first
+                # visible frame to the end. A hidden stretch after that, or a
+                # hidden last frame, keeps the finding.
+                seen_visible = False
+                ok = True
+                for mark in marks:
+                    if frames[mark] >= _VISIBLE_OPACITY:
+                        seen_visible = True
+                    elif seen_visible:
+                        ok = False
+                        break
+                ok = ok and seen_visible and frames[100.0] >= _VISIBLE_OPACITY
+            else:
+                ok = visible >= _VISIBLE_SHARE
+            if ok:
                 spans.append((base + m.end(), base + i))
     return spans
 
@@ -1528,12 +1584,19 @@ def scan_file(file_path, rel_path):
             lines = f.readlines()
             source = ''.join(lines)
             text = source
+            case_depth = 0
+            arm_ok = False
             for i, line in _logical_lines(lines, ext):
                 line = core.clip_line(line)
+                in_case = arm_ok
+                if ext in _SHELL_CASE_EXTS:
+                    case_depth, nxt = _case_depth_after(case_depth, line)
+                    if nxt is not None:
+                        arm_ok = nxt
                 for rule in rules:
                     if rule.id in _STRUCTURED_TLS_IDS:
                         continue
-                    if rule.regex.search(line) and _nesting_survives(rule, line):
+                    if rule.regex.search(line) and _nesting_survives(rule, line, in_case):
                         findings.append(core.Finding(
                             scanner=SCANNER_NAME,
                             severity=rule.severity,
@@ -1587,12 +1650,19 @@ def scan_text(text, rel_path, ext=None):
     # Unicode-line-boundary split-evasion). _logical_lines applies the same
     # continuation joining as scan_file so in-memory text cannot smuggle a
     # split token past the per-line patterns either.
+    case_depth = 0
+    arm_ok = False
     for i, line in _logical_lines(text.split('\n'), ext):
         line = core.clip_line(line)
+        in_case = arm_ok
+        if ext in _SHELL_CASE_EXTS:
+            case_depth, nxt = _case_depth_after(case_depth, line)
+            if nxt is not None:
+                arm_ok = nxt
         for rule in rules:
             if rule.id in _STRUCTURED_TLS_IDS:
                 continue
-            if rule.regex.search(line) and _nesting_survives(rule, line):
+            if rule.regex.search(line) and _nesting_survives(rule, line, in_case):
                 findings.append(core.Finding(
                     scanner=SCANNER_NAME,
                     severity=rule.severity,
