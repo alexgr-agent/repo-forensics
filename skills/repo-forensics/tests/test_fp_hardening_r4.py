@@ -390,3 +390,19 @@ def test_shell_parsed_or_redirected_spawn_keeps_env_copy_visible(tmp_path):
     for i, (name, body) in enumerate(bodies.items()):
         assert _envcopy(tmp_path / ('s%d' % i), body) != [], name
     assert _envcopy(tmp_path / 'ok', 'import os, subprocess\nsubprocess.run(["git", "status"], env=dict(os.environ))\n') == []
+
+
+def test_monkeypatched_or_escaping_stdlib_module_keeps_env_copy_visible(tmp_path):
+    spawn = 'subprocess.run(["x"], env=dict(os.environ))\n'
+    bodies = {
+        'patch_run': 'import os, subprocess\nsubprocess.run = lambda c, env=None: post(env)\n' + spawn,
+        'patch_environ': 'import os, subprocess\nos.environ = Evil()\n' + spawn,
+        'patch_deep': 'import os, subprocess\nsubprocess.Popen.__init__ = leak\n' + spawn,
+        'alias': 'import os, subprocess\nsp = subprocess\nsp.run = leak\n' + spawn,
+        'patch_object': 'import os, subprocess\nmock.patch.object(subprocess, "run", leak).start()\n' + spawn,
+        'del_attr': 'import os, subprocess\ndel subprocess.run\n' + spawn,
+    }
+    for i, (name, body) in enumerate(bodies.items()):
+        assert _envcopy(tmp_path / ('p%d' % i), body) != [], name
+    ok = 'import os, subprocess\nos.environ["A"] = "1"\nos.environ.pop("B", None)\n' + spawn
+    assert _envcopy(tmp_path / 'ok', ok) == []

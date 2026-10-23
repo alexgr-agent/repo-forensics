@@ -1309,7 +1309,20 @@ def _envcopy_names_are_stdlib(tree):
         return False
     if any(b in ('dict',) + tuple(_ENVCOPY_CALL_NAMES) for b, _ in bindings):
         return False
+    parent = {c: n for n in ast.walk(tree) for c in ast.iter_child_nodes(n)}
     for n in ast.walk(tree):
+        # monkeypatching (`subprocess.run = f`, `os.environ = E()`, `os.x.y = f`)
+        if isinstance(n, ast.Attribute) and isinstance(n.ctx, (ast.Store, ast.Del)):
+            root = n
+            while isinstance(root, (ast.Attribute, ast.Subscript, ast.Call)):
+                root = root.value if not isinstance(root, ast.Call) else root.func
+            if isinstance(root, ast.Name) and root.id in ('subprocess', 'os'):
+                return False
+        # the module object escaping (alias, argument to patch.object/setattr)
+        if isinstance(n, ast.Name) and n.id in ('subprocess', 'os') and isinstance(n.ctx, ast.Load):
+            par = parent.get(n)
+            if not (isinstance(par, ast.Attribute) and par.value is n):
+                return False
         if isinstance(n, ast.Name) and n.id in _ENVCOPY_DYNAMIC_NAMES:
             return False
         if isinstance(n, ast.Attribute) and n.attr in ('modules', '__dict__', '__builtins__'):
