@@ -209,7 +209,7 @@ Scanning never requires network access. The feed is a freshness layer on top of 
 ---
 ## Battle-Tested Against Real Attacks
 
-6,269 tests across 40+ test files. Not synthetic toy examples: detection patterns built from real supply chain campaigns that hit production systems.
+6,296 tests across 40+ test files. Not synthetic toy examples: detection patterns built from real supply chain campaigns that hit production systems.
 
 **Named attack campaigns in the IOC database:**
 
@@ -240,7 +240,7 @@ Scanning never requires network access. The feed is a freshness layer on top of 
 
 Every campaign above has version-pinned IOCs in `compromised_versions.json`, detection rules in the lifecycle and dependency scanners, and correlation rules for compound attack patterns.
 
-**The tests are safe to run.** All 6,269 tests use synthetic fixtures in temporary directories. No real malware is downloaded or executed. Pattern matching runs against fake package.json files containing attack signatures, the same way antivirus software tests against EICAR strings.
+**The tests are safe to run.** All 6,296 tests use synthetic fixtures in temporary directories. No real malware is downloaded or executed. Pattern matching runs against fake package.json files containing attack signatures, the same way antivirus software tests against EICAR strings.
 
 ---
 ## Why Not the Alternatives?
@@ -496,7 +496,7 @@ Exit codes: `0` = clean, `1` = warn, `2` = block merge.
 | **IOC auto-update** | `--update-iocs` pulls latest C2 IPs, malicious domains, known-bad packages |
 | **Installation verification** | `--verify-install` checks repo-forensics itself for tampering |
 | **Manifest drift** | Declared vs actual imports, phantom deps, runtime installs |
-| **6,269 pytest tests** | Full coverage across 40+ test files |
+| **6,296 pytest tests** | Full coverage across 40+ test files |
 
 </details>
 
@@ -742,7 +742,7 @@ read it there.
 
 Suppress false positives with `.forensicsignore` (the ignore file itself is scanned for overly broad patterns).
 
-**Skipped by default:** dependency and tool folders (`node_modules`, `.venv`, `venv`, `__pycache__`, test and lint caches, `coverage`), and `dist`/`build` in a source checkout. Framework build output (`.next`, `.nuxt`, `.svelte-kit`, `.turbo`, `.vercel`, `.output` and similar, plus `*.tsbuildinfo`) is skipped only when a `.gitignore` at or above it excludes it, so a build folder committed to the repository is still scanned. `.gitignore` is read as text; repo-forensics never runs git inside the repository it audits.
+**Skipped by default:** dependency and tool folders (`node_modules`, `.venv`, `venv`, `__pycache__`, test and lint caches, `coverage`), and `dist`/`build` in a source checkout. Framework build output (`.next`, `.nuxt`, `.svelte-kit`, `.turbo`, `.vercel`, `.output` and similar, plus `*.tsbuildinfo`) is **scanned** by default: a repository under audit ships both its folders and its `.gitignore`, so ignore rules inside the audited repo never narrow coverage. When scanning your own projects, set `FORENSICS_SKIP_BUILD_OUTPUT=1` to skip build output that a `.gitignore` at or above it excludes; every folder skipped this way is named in the report with its file count. `.gitignore` is read as text; repo-forensics never runs git inside the repository it audits.
 
 ---
 ## Security
