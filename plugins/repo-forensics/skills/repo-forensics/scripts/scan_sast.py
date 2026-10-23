@@ -86,6 +86,257 @@ def _filter_python_shell_docstring_examples(findings, source, ext):
     return [f for f in findings
             if not (f.rule_id == "SA-PY-006" and f.line in interior_lines)]
 
+# --- SA-PY-008: execute() whose SQL text is provably the author's own -----------
+# The regex fires on any execute( call that shows `%s`, `+`, `.format` or an
+# f-string. A finding is dropped only when AST analysis of the same call proves
+# every piece of the SQL text is fixed in this file: string literals, numeric
+# casts (int/float/len, which can only yield digits), and names bound only to
+# such values (a literal assigned once or conditionally, a loop variable over a
+# literal tuple/list, an app-level constant). Anything caller-controlled keeps
+# the finding: a parameter, an attribute, a call result, an imported name, a
+# rebinding from a non-static value, a `global` write, or any use of exec/eval/
+# globals/locals/vars/setattr (module names) or in the function (local names).
+_SQL_CASTS = frozenset({'int', 'float', 'len', 'bool'})
+_SQL_DYNAMIC_NAMES = frozenset({'exec', 'eval', 'globals', 'locals', 'vars', 'setattr', 'compile', '__import__'})
+_SQL_SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)
+_SQL_COMPS = (ast.ListComp, ast.SetComp, ast.GeneratorExp, ast.DictComp)
+
+
+def _static_sql_call_lines(source):
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError, RecursionError, MemoryError):
+        return None
+    parent = {child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
+    dynamic = False
+    binders = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in _SQL_DYNAMIC_NAMES:
+            dynamic = True
+        if isinstance(node, ast.Attribute) and node.attr in ('__dict__', 'modules'):
+            dynamic = True
+        if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
+            binders.add(node.id)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            binders.add(node.name)
+        elif isinstance(node, ast.alias):
+            if node.name == '*':
+                dynamic = True
+            binders.add(node.asname or node.name.split('.')[0])
+        elif isinstance(node, ast.arg):
+            binders.add(node.arg)
+    casts = _SQL_CASTS - binders
+
+    def enclosing_scopes(node):
+        chain = []
+        node = parent.get(node)
+        while node is not None:
+            if isinstance(node, _SQL_COMPS + (ast.FunctionDef, ast.AsyncFunctionDef, ast.Module)):
+                chain.append(node)
+            elif isinstance(node, (ast.ClassDef, ast.Lambda)):
+                chain.append(node)
+            node = parent.get(node)
+        return chain
+
+    def own_nodes(scope):
+        """Nodes of `scope` excluding nested function/class/lambda bodies."""
+        out, stack = [], [scope]
+        while stack:
+            node = stack.pop()
+            out.append(node)
+            for child in ast.iter_child_nodes(node):
+                if child is not scope and isinstance(child, _SQL_SCOPES):
+                    out.append(child)
+                    continue
+                stack.append(child)
+        return out
+
+    cache = {}
+
+    def literal_tuple(value):
+        return isinstance(value, (ast.Tuple, ast.List, ast.Set)) and all(
+            isinstance(e, ast.Constant) and isinstance(e.value, (str, int, float)) for e in value.elts)
+
+    def name_static(name, scope, seen):
+        key = (name, scope)
+        if key in cache:
+            return cache[key]
+        if key in seen:
+            return False
+        seen = seen | {key}
+        result = _name_static(name, scope, seen)
+        cache[key] = result
+        return result
+
+    def _name_static(name, scope, seen):
+        if isinstance(scope, _SQL_COMPS):
+            for gen in scope.generators:
+                targets = [gen.target] if isinstance(gen.target, ast.Name) else []
+                if any(t.id == name for t in targets):
+                    return literal_tuple(gen.iter)
+                if any(isinstance(n, ast.Name) and n.id == name for n in ast.walk(gen.target)):
+                    return False
+            return None  # not bound here: ask the next scope out
+        if isinstance(scope, (ast.ClassDef, ast.Lambda)):
+            return False
+        is_module = isinstance(scope, ast.Module)
+        if is_module and dynamic:
+            return False
+        if not is_module:
+            a = scope.args
+            params = list(a.posonlyargs) + list(a.args) + list(a.kwonlyargs)
+            params += [x for x in (a.vararg, a.kwarg) if x]
+            if any(p.arg == name for p in params):
+                return False
+        nodes = own_nodes(scope)
+        if not is_module and any(
+                isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id in _SQL_DYNAMIC_NAMES
+                for n in nodes):
+            return False
+        writes = []
+        for node in nodes:
+            if isinstance(node, ast.Name) and node.id == name and isinstance(node.ctx, (ast.Store, ast.Del)):
+                writes.append(node)
+            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node.name == name:
+                return False
+            elif isinstance(node, ast.alias) and (node.asname or node.name.split('.')[0]) == name:
+                return False
+            elif isinstance(node, ast.ExceptHandler) and node.name == name:
+                return False
+            elif isinstance(node, (ast.Global, ast.Nonlocal)) and name in node.names:
+                if not is_module:
+                    return False
+        if is_module:
+            # `global NAME` in a function makes that function's stores writes too.
+            for fn in ast.walk(tree):
+                if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)) and any(
+                        isinstance(g, ast.Global) and name in g.names for g in ast.walk(fn)):
+                    return False
+        # Nested scopes that rebind the name through nonlocal/global.
+        for node in ast.walk(scope):
+            if node is not scope and isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                if any(isinstance(g, (ast.Global, ast.Nonlocal)) and name in g.names for g in ast.walk(node)):
+                    return False
+        if not writes:
+            return None
+        for w in writes:
+            if not isinstance(w.ctx, ast.Store):
+                return False
+            owner = parent.get(w)
+            if isinstance(owner, ast.Assign) and w in owner.targets:
+                if not expr_static(owner.value, scope, seen):
+                    return False
+            elif isinstance(owner, ast.AnnAssign) and owner.target is w and owner.value is not None:
+                if not expr_static(owner.value, scope, seen):
+                    return False
+            elif isinstance(owner, ast.AugAssign) and owner.target is w and isinstance(owner.op, ast.Add):
+                if not expr_static(owner.value, scope, seen):
+                    return False
+            elif isinstance(owner, ast.For) and owner.target is w:
+                if not (literal_tuple(owner.iter)):
+                    return False
+            else:
+                return False
+        return True
+
+    def resolve_name(name, node, seen):
+        for scope in enclosing_scopes(node):
+            verdict = name_static(name, scope, seen)
+            if verdict is None:
+                continue
+            return verdict
+        return False
+
+    def expr_static(expr, scope, seen):
+        """SQL *text* made only of fixed pieces."""
+        if isinstance(expr, ast.Constant):
+            return isinstance(expr.value, (str, int, float))
+        if isinstance(expr, ast.JoinedStr):
+            for v in expr.values:
+                if isinstance(v, ast.Constant):
+                    continue
+                if not isinstance(v, ast.FormattedValue) or not value_safe(v.value, v, seen):
+                    return False
+                if v.format_spec is not None and not expr_static(v.format_spec, scope, seen):
+                    return False
+            return True
+        if isinstance(expr, ast.Name):
+            return resolve_name(expr.id, expr, seen)
+        if isinstance(expr, ast.IfExp):
+            return expr_static(expr.body, scope, seen) and expr_static(expr.orelse, scope, seen)
+        if isinstance(expr, ast.BinOp):
+            if isinstance(expr.op, ast.Add):
+                return expr_static(expr.left, scope, seen) and expr_static(expr.right, scope, seen)
+            if isinstance(expr.op, ast.Mod):
+                right = expr.right
+                items = right.elts if isinstance(right, ast.Tuple) else [right]
+                return expr_static(expr.left, scope, seen) and all(value_safe(i, expr, seen) for i in items)
+            if isinstance(expr.op, ast.Mult):
+                return (expr_static(expr.left, scope, seen) and value_safe(expr.right, expr, seen)) or (
+                    expr_static(expr.right, scope, seen) and value_safe(expr.left, expr, seen))
+            return False
+        if isinstance(expr, ast.Call) and isinstance(expr.func, ast.Attribute):
+            attr = expr.func.attr
+            if attr == 'format' and expr_static(expr.func.value, scope, seen):
+                return (all(value_safe(a, expr, seen) for a in expr.args)
+                        and all(k.arg is not None and value_safe(k.value, expr, seen) for k in expr.keywords))
+            if attr == 'join' and expr_static(expr.func.value, scope, seen) and len(expr.args) == 1 and not expr.keywords:
+                return iterable_static(expr.args[0], expr, seen)
+        return False
+
+    def iterable_static(expr, anchor, seen):
+        if literal_tuple(expr):
+            return True
+        if isinstance(expr, ast.Name):
+            for scope in enclosing_scopes(expr):
+                writes = [n for n in own_nodes(scope) if isinstance(n, ast.Name)
+                          and n.id == expr.id and isinstance(n.ctx, (ast.Store, ast.Del))]
+                if writes:
+                    return all(isinstance(parent.get(w), ast.Assign) and w in parent[w].targets
+                               and isinstance(parent[w].value, ast.Tuple) and literal_tuple(parent[w].value)
+                               for w in writes)
+            return False
+        if isinstance(expr, ast.BinOp) and isinstance(expr.op, ast.Mult):
+            return (isinstance(expr.left, ast.Constant) and isinstance(expr.left.value, str)
+                    and value_safe(expr.right, expr, seen))
+        return False
+
+    def value_safe(expr, anchor, seen):
+        """A value interpolated into SQL text can only add fixed characters."""
+        if isinstance(expr, ast.Constant):
+            return isinstance(expr.value, (str, int, float, bool))
+        if isinstance(expr, ast.Call) and isinstance(expr.func, ast.Name) and expr.func.id in casts:
+            return True
+        if isinstance(expr, ast.Name):
+            return resolve_name(expr.id, expr, seen)
+        return expr_static(expr, None, seen)
+
+    safe_lines, unsafe_lines = set(), set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        f = node.func
+        is_exec = (isinstance(f, ast.Attribute) and f.attr == 'execute') or (
+            isinstance(f, ast.Name) and f.id == 'execute')
+        if not is_exec:
+            continue
+        lines = range(node.lineno, (node.end_lineno or node.lineno) + 1)
+        first = node.args[0] if node.args else None
+        ok = (first is not None and not isinstance(first, ast.Starred)
+              and expr_static(first, None, frozenset()))
+        (safe_lines if ok else unsafe_lines).update(lines)
+    return safe_lines - unsafe_lines
+
+
+def _filter_static_sql_execute(findings, source, ext):
+    if ext != ".py" or not any(f.rule_id == "SA-PY-008" for f in findings):
+        return findings
+    safe = _static_sql_call_lines(source)
+    if not safe:
+        return findings
+    return [f for f in findings if not (f.rule_id == "SA-PY-008" and f.line in safe)]
+
+
 # Per-language detection rules load from the shipped pack at import time
 # (rule_loader memoizes -> parsed once per process). by_extension is the
 # pre-built index; rules_for_extension(ext) returns the rules gated to `ext`
@@ -714,6 +965,230 @@ def _nested_shrink_line(content, live_templates=False):
     return (None, limit_line, shrink_seen)
 
 
+# --- opacity:0 inside a looping @keyframes block ---------------------------------
+# A keyframe whose frame sets `opacity: 0` hides nothing by itself: the element
+# is only dimmed while the animation runs. The finding is dropped for such a
+# line only when the whole file proves the hiding cannot persist:
+#   * an SVG with inline <style> only (no script, import, link, stylesheet PI,
+#     CSS escapes, entities, var(), timeline or Web Animations use);
+#   * no play state other than `running`, every duration between 0.1s and
+#     120s and every delay within 120s, so a hidden frame is only transient. A
+#     fill mode that holds the last frame (`forwards`/`both`) is accepted only
+#     when the file has no infinite, reversing or more-than-5x animation and
+#     the keyframes' 100% frame is visible;
+#   * the keyframes are named by an animation, are defined once, set an opacity
+#     on every frame including 0% and 100%, and are visible for at least a
+#     quarter of the cycle.
+# A base `opacity:0` rule, an inline style, or any other hiding pattern keeps
+# its own finding.
+_STYLE_BLOCK = re.compile(r'<style\b[^>]*>(.*?)</style\s*>', re.IGNORECASE | re.DOTALL)
+_STYLE_ATTR = re.compile(r'\bstyle\s*=\s*(?:"([^"]*)"|\'([^\']*)\')', re.IGNORECASE)
+_KEYFRAMES_HEAD = re.compile(r'@(?:-[a-z]+-)?keyframes\s+([\w-]+)\s*\{', re.IGNORECASE)
+_ANIM_DECL = re.compile(r'(?<![\w-])((?:-[a-z]+-)?animation(?:-[a-z-]+)?)\s*:\s*([^;{}]*)', re.IGNORECASE)
+_TIME_TOKEN = re.compile(r'^(\d*\.?\d+)(ms|s)$', re.IGNORECASE)
+_ANIM_KEYWORDS = frozenset({
+    'none', 'infinite', 'alternate', 'alternate-reverse', 'reverse', 'normal', 'running',
+    'ease', 'ease-in', 'ease-out', 'ease-in-out', 'linear', 'step-start', 'step-end',
+    'forwards', 'backwards', 'both', 'paused',
+})
+_KEYFRAME_OPACITY = re.compile(r'(?<![\w-])opacity\s*:\s*([^;}]+)', re.IGNORECASE)
+_KEYFRAME_TOKEN_BAN = ('<script', '@import', '<link', 'xml-stylesheet', '.animate(',
+                       'timeline', 'animation-range')
+_ANIM_DURATION_MIN = 0.1
+_ANIM_DURATION_MAX = 120.0
+_VISIBLE_OPACITY = 0.3
+_VISIBLE_SHARE = 25.0
+
+
+def _blank_comments(text):
+    return re.sub(r'/\*.*?\*/', lambda m: re.sub(r'[^\n]', ' ', m.group(0)), text, flags=re.DOTALL)
+
+
+def _css_seconds(token):
+    m = _TIME_TOKEN.match(token)
+    if not m:
+        return None
+    value = float(m.group(1))
+    return value / 1000.0 if m.group(2).lower() == 'ms' else value
+
+
+def _animation_declarations_safe(css):
+    """Summarise the file's animation declarations, or return None when they
+    could persist a hidden frame or cannot be read. The result carries the
+    keyframe names in use and the file-wide modes that decide what state an
+    element is left in: `forwards` (holds the last frame), `infinite`,
+    `reversing` (reverse or alternate direction) and the largest iteration
+    count."""
+    info = {'names': set(), 'forwards': False, 'infinite': False,
+            'reversing': False, 'max_count': 1.0}
+
+    def _count(value):
+        if value == 'infinite':
+            info['infinite'] = True
+            return True
+        try:
+            info['max_count'] = max(info['max_count'], float(value))
+        except ValueError:
+            return False
+        return True
+
+    for m in _ANIM_DECL.finditer(css):
+        prop = re.sub(r'^-[a-z]+-', '', m.group(1).lower())
+        orig = re.sub(r'\s*!important\s*$', '', m.group(2).strip(), flags=re.IGNORECASE)
+        value = orig.lower()
+        if any(x in value for x in ('var(', 'calc(', 'env(', 'attr(')):
+            return None
+        if prop == 'animation-fill-mode':
+            for part in value.split(','):
+                part = part.strip()
+                if part in ('forwards', 'both'):
+                    info['forwards'] = True
+                elif part not in ('none', 'backwards'):
+                    return None
+        elif prop == 'animation-play-state':
+            if value != 'running':
+                return None
+        elif prop == 'animation-duration':
+            for part in value.split(','):
+                secs = _css_seconds(part.strip())
+                if secs is None or (secs != 0 and not _ANIM_DURATION_MIN <= secs <= _ANIM_DURATION_MAX):
+                    return None
+        elif prop == 'animation-name':
+            info['names'].update(x.strip() for x in orig.split(',')
+                                 if x.strip() and x.strip().lower() != 'none')
+        elif prop == 'animation-iteration-count':
+            for part in value.split(','):
+                if not _count(part.strip()):
+                    return None
+        elif prop == 'animation-direction':
+            for part in value.split(','):
+                part = part.strip()
+                if part != 'normal':
+                    info['reversing'] = True
+        elif prop == 'animation':
+            for layer in re.split(r',(?![^(]*\))', orig):
+                duration_seen = False
+                for tok in layer.split():
+                    t = tok.lower()
+                    secs = _css_seconds(t)
+                    if secs is not None:
+                        if not duration_seen:
+                            duration_seen = True
+                            if secs != 0 and not _ANIM_DURATION_MIN <= secs <= _ANIM_DURATION_MAX:
+                                return None
+                        elif abs(secs) > _ANIM_DURATION_MAX:
+                            return None
+                    elif t == 'paused':
+                        return None
+                    elif t in ('forwards', 'both'):
+                        info['forwards'] = True
+                    elif t == 'backwards':
+                        continue
+                    elif t in ('reverse', 'alternate', 'alternate-reverse'):
+                        info['reversing'] = True
+                    elif t == 'infinite' or re.match(r'^[\d.]+$', t):
+                        if not _count(t):
+                            return None
+                    elif t in _ANIM_KEYWORDS or t.startswith(('steps(', 'cubic-bezier(')):
+                        continue
+                    elif re.match(r'^-?[a-z_][\w-]*$', t):
+                        info['names'].add(tok)
+                    else:
+                        return None
+        elif prop == 'animation-delay':
+            for part in value.split(','):
+                secs = _css_seconds(part.strip())
+                if secs is None or abs(secs) > _ANIM_DURATION_MAX:
+                    return None
+        elif prop in ('animation-timing-function', 'animation-composition'):
+            continue
+        else:
+            return None
+    return info
+
+
+def _frame_opacities(body):
+    """Parse a keyframes body into {percent: opacity}. None when any frame is
+    unreadable or lacks a plain numeric opacity."""
+    frames = {}
+    for m in re.finditer(r'([^{}]+)\{([^{}]*)\}', body):
+        om = _KEYFRAME_OPACITY.search(m.group(2))
+        if not om:
+            return None
+        raw = om.group(1).strip().lower()
+        try:
+            value = float(raw[:-1]) / 100.0 if raw.endswith('%') else float(raw)
+        except ValueError:
+            return None
+        for sel in m.group(1).split(','):
+            sel = sel.strip().lower()
+            if sel == 'from':
+                pct = 0.0
+            elif sel == 'to':
+                pct = 100.0
+            elif re.match(r'^\d*\.?\d+%$', sel):
+                pct = float(sel[:-1])
+            else:
+                return None
+            if not 0.0 <= pct <= 100.0:
+                return None
+            frames[pct] = value
+    if 0.0 not in frames or 100.0 not in frames:
+        return None
+    return frames
+
+
+def _benign_keyframe_spans(content, ext):
+    """Character spans of @keyframes blocks that provably cannot hide content."""
+    if ext != '.svg':
+        return []
+    low = content.lower()
+    if any(t in low for t in _KEYFRAME_TOKEN_BAN):
+        return []
+    blocks = [(m.start(1), m.group(1)) for m in _STYLE_BLOCK.finditer(content)]
+    if not blocks:
+        return []
+    css_text = '\n'.join(b for _, b in blocks) + '\n' + '\n'.join(
+        (m.group(1) or m.group(2) or '') for m in _STYLE_ATTR.finditer(content))
+    # Any escape or entity could spell a banned property differently.
+    if '\\' in css_text or '&' in css_text:
+        return []
+    info = _animation_declarations_safe(_blank_comments(css_text))
+    if not info or not info['names']:
+        return []
+    names = info['names']
+    holds_last_frame = info['forwards']
+    if holds_last_frame and (info['infinite'] or info['reversing'] or info['max_count'] > 5):
+        return []
+    spans = []
+    defined = {}
+    for base, body in blocks:
+        clean = _blank_comments(body)
+        for m in _KEYFRAMES_HEAD.finditer(clean):
+            defined[m.group(1)] = defined.get(m.group(1), 0) + 1
+    for base, body in blocks:
+        clean = _blank_comments(body)
+        for m in _KEYFRAMES_HEAD.finditer(clean):
+            name = m.group(1)
+            depth, i = 1, m.end()
+            while i < len(clean) and depth:
+                depth += (clean[i] == '{') - (clean[i] == '}')
+                i += 1
+            if depth or defined.get(name) != 1 or name not in names:
+                continue
+            frames = _frame_opacities(clean[m.end():i - 1])
+            if frames is None:
+                continue
+            marks = sorted(frames)
+            visible = sum(b - a for a, b in zip(marks, marks[1:])
+                          if frames[a] >= _VISIBLE_OPACITY and frames[b] >= _VISIBLE_OPACITY)
+            # A held last frame must be visible; otherwise the cycle must be.
+            if (frames[100.0] >= _VISIBLE_OPACITY if holds_last_frame
+                    else visible >= _VISIBLE_SHARE):
+                spans.append((base + m.end(), base + i))
+    return spans
+
+
 def scan_css_steganography(file_path, rel_path):
     ext = core.normalized_ext(file_path)
     if ext not in CSS_STEG_EXTENSIONS:
@@ -725,10 +1200,17 @@ def scan_css_steganography(file_path, rel_path):
     except (OSError, UnicodeDecodeError):
         return []
     lines = content.split('\n')
+    benign_spans = _benign_keyframe_spans(content, ext)
+    line_start = 0
     for i, line in enumerate(lines):
+        raw_start, line_start = line_start, line_start + len(line) + 1
         line = core.clip_line(line)
         for pat, title in CSS_STEG_PATTERNS:
             if pat.search(line):
+                if (benign_spans and title == "CSS hiding: opacity:0"
+                        and all(any(a <= raw_start + m.start() < b for a, b in benign_spans)
+                                for m in pat.finditer(lines[i]))):
+                    continue
                 findings.append(core.Finding(
                     scanner=SCANNER_NAME, severity="medium",
                     title=title,
@@ -1072,7 +1554,7 @@ def scan_file(file_path, rel_path):
         print(f"[!] Skipped {rel_path}: {e}", file=sys.stderr)
     findings = core.downgrade_inert_literal_imports(findings, source, _DYNAMIC_IMPORT_IDS,
                                                     file_path, rel_path)
-    return _filter_python_shell_docstring_examples(findings, source, ext)
+    return _filter_static_sql_execute(_filter_python_shell_docstring_examples(findings, source, ext), source, ext)
 
 
 def scan_text(text, rel_path, ext=None):
@@ -1128,7 +1610,7 @@ def scan_text(text, rel_path, ext=None):
                 ))
     findings.extend(_scan_structured_tls(text, rel_path, ext, rules))
     findings = core.downgrade_inert_literal_imports(findings, text, _DYNAMIC_IMPORT_IDS)
-    return _filter_python_shell_docstring_examples(findings, text, ext)
+    return _filter_static_sql_execute(_filter_python_shell_docstring_examples(findings, text, ext), text, ext)
 
 
 def main():
