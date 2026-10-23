@@ -215,6 +215,38 @@ def check_executable_configs(repo_path, critical_files):
     return findings
 
 
+def _invalid_baseline_finding():
+    return core.Finding(
+        scanner=SCANNER_NAME, severity="high",
+        title="Invalid integrity baseline",
+        description="Baseline is not valid UTF-8 JSON with the expected structure. "
+                    "It was preserved without replacement. Inspect it before deliberately "
+                    "removing it to create a new baseline.",
+        file=BASELINE_FILENAME, line=0, snippet="",
+        category="integrity-baseline-format"
+    )
+
+
+def _valid_baseline_shape(baseline):
+    """Validate fields used by verification and drift checks before reading them."""
+    if not isinstance(baseline, dict) or not isinstance(baseline.get('files'), dict):
+        return False
+    if not all(isinstance(path, str) and isinstance(digest, str)
+               for path, digest in baseline['files'].items()):
+        return False
+    if '_meta' in baseline:
+        meta = baseline['_meta']
+        if not isinstance(meta, dict):
+            return False
+        if 'created' in meta and not isinstance(meta['created'], str):
+            return False
+    if '_hmac' in baseline:
+        signature = baseline['_hmac']
+        if not isinstance(signature, str) or re.fullmatch(r'[0-9a-f]{64}', signature) is None:
+            return False
+    return True
+
+
 def load_baseline(repo_path):
     """Load existing baseline from .forensics-baseline.json with HMAC verification.
 
@@ -224,14 +256,21 @@ def load_baseline(repo_path):
     baseline_path = os.path.join(repo_path, BASELINE_FILENAME)
     integrity_findings = []
 
-    if not os.path.exists(baseline_path):
-        return None, integrity_findings
-
     try:
         with open(baseline_path, 'r', encoding='utf-8') as f:
             baseline = json.load(f)
-    except (json.JSONDecodeError, OSError):
+    except (ValueError, RecursionError):
+        return None, [_invalid_baseline_finding()]
+    except FileNotFoundError:
         return None, integrity_findings
+    except OSError as exc:
+        return None, [core.Finding(
+            scanner=SCANNER_NAME, severity="high", title="Baseline access refused",
+            description="Baseline could not be read: " + str(exc),
+            file=BASELINE_FILENAME, line=0, snippet="", category="integrity-baseline-io")]
+
+    if not _valid_baseline_shape(baseline):
+        return None, [_invalid_baseline_finding()]
 
     stored_hmac = baseline.pop('_hmac', None)
 
@@ -309,6 +348,11 @@ def watch_mode(repo_path, critical_files, output_format):
     findings = []
     existing, integrity_findings = load_baseline(repo_path)
     findings.extend(integrity_findings)
+    if integrity_findings:
+        core.emit_status(output_format,
+                         "[!] Baseline is untrusted; preserved without replacement. "
+                         "Inspect it before deliberately removing it to create a new baseline.")
+        return findings
 
     current_hashes = {}
     for rel_path, full_path in critical_files.items():
