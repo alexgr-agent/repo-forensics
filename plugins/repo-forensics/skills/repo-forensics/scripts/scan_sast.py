@@ -41,7 +41,17 @@ _INERT_SUBSTITUTION = re.compile(
 _MAX_INERT_PASSES = 16
 
 
+# `case` arm pattern list (`a|b|c) cmd`): the `|` separates patterns, it is not
+# a pipe. Only the command after the closing paren is checked by the rule.
+_CASE_ARM = re.compile(r'^\s*[^()\s|;&$`]*(?:\|[^()\s|;&$`]*)+\)\s*')
+
+
 def _nesting_survives(rule, line):
+    if rule.id == "SA-SH-003":
+        m = _CASE_ARM.match(line)
+        if m:
+            return rule.regex.search(line[m.end():]) is not None
+        return True
     if rule.id != "SA-SH-004":
         return True
     for _ in range(_MAX_INERT_PASSES):
