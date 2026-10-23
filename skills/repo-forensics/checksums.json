@@ -79,7 +79,7 @@
     "scripts/scan_provenance.py": "eadbc902ab6ec144b0bd9ee20ecbb759e1a616ea72a89662eda319f03daf6854",
     "scripts/scan_runtime_dynamism.py": "b616afd43a962f0916c03a496a827c63cf7684cd26be8d8555ee8e826db9afa5",
     "scripts/scan_runtime_floors.py": "b3c37dfb62f8c37bdf2bf96cce1cb5367998feb3390d7f846fdd652b2a8b7707",
-    "scripts/scan_sast.py": "d996f94a0a5a8de8fa49f44da930a28b7c40d5b009646540afb4ba5c44ffd981",
+    "scripts/scan_sast.py": "d8099c840a975ab6fd28d1186d633ebf847d88a853203c2a9b480f47d04c0e50",
     "scripts/scan_secrets.py": "7af54b0bed40ecedf4ba2b8ba7b1d8c6d3fe419061c91d4784975d624b2a78d5",
     "scripts/scan_skill_threats.py": "50384a18bd039abf489781167080d10995eda690111ecf8ceab1f0501390a9d3",
     "scripts/scan_splitstream.py": "283f0d44ae20c0c4fa46ce68a4fcdf010011aa8650a195becbd5907cf22e6536",

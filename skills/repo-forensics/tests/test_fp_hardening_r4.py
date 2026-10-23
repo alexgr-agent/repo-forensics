@@ -18,7 +18,7 @@ def _write(tmp_path, rel, text):
     return str(path), rel
 
 
-# --- CSS opacity:0 inside @keyframes -------------------------------------
+# --- CSS opacity:0 inside @keyframes: no exemption ------------------------
 
 def _opacity_lines(tmp_path, name, body):
     p, r = _write(tmp_path, name, body)
@@ -27,110 +27,6 @@ def _opacity_lines(tmp_path, name, body):
 
 def _svg(style, extra=''):
     return f'<svg xmlns="http://www.w3.org/2000/svg">\n<style>\n{style}\n</style>\n{extra}<text class="t">hi</text>\n</svg>\n'
-
-
-LOOP = ('.t { animation: fade 8s ease-in-out infinite; }\n'
-        '@keyframes fade { 0%, 100% { opacity: 0; } 20%, 80% { opacity: 1; } }')
-
-
-def test_looping_fade_keyframes_are_not_hiding(tmp_path):
-    assert _opacity_lines(tmp_path, 'a.svg', _svg(LOOP)) == []
-
-
-def test_fade_in_once_and_stay_is_not_hiding(tmp_path):
-    style = ('.t { animation: rise 600ms ease 1 both; }\n'
-             '@keyframes rise { from { opacity: 0; } to { opacity: 1; } }')
-    assert _opacity_lines(tmp_path, 'a.svg', _svg(style)) == []
-    # forwards only: the element shows normally during a delay, then fades 0 -> 1
-    style = ('.t { animation: rise 600ms ease 1 forwards; animation-delay: 300ms; }\n'
-             '@keyframes rise { from { opacity: 0; } to { opacity: 1; } }')
-    assert _opacity_lines(tmp_path, 'b.svg', _svg(style)) == []
-
-
-def test_keyframes_that_end_hidden_still_reported(tmp_path):
-    style = ('.t { animation: gone 2s forwards; }\n'
-             '@keyframes gone { from { opacity: 1; } to { opacity: 0; } }')
-    assert _opacity_lines(tmp_path, 'a.svg', _svg(style)) != []
-
-
-def test_reversed_hold_still_reported(tmp_path):
-    style = ('.t { animation: rise 2s reverse forwards; }\n'
-             '@keyframes rise { from { opacity: 0; } to { opacity: 1; } }')
-    assert _opacity_lines(tmp_path, 'a.svg', _svg(style)) != []
-
-
-def test_infinite_with_held_frame_still_reported(tmp_path):
-    style = ('.t { animation: gone 2s infinite; } .u { animation-fill-mode: forwards; }\n'
-             '@keyframes gone { 0% { opacity: 1; } 100% { opacity: 0; } }')
-    assert _opacity_lines(tmp_path, 'a.svg', _svg(style)) != []
-
-
-def test_paused_animation_still_reported(tmp_path):
-    style = ('.t { animation: fade 8s infinite; animation-play-state: paused; }\n'
-             '@keyframes fade { 0%, 100% { opacity: 0; } 20%, 80% { opacity: 1; } }')
-    assert _opacity_lines(tmp_path, 'a.svg', _svg(style)) != []
-
-
-def test_huge_duration_still_reported(tmp_path):
-    style = ('.t { animation: fade 99999999s infinite; }\n'
-             '@keyframes fade { 0%, 100% { opacity: 0; } 20%, 80% { opacity: 1; } }')
-    assert _opacity_lines(tmp_path, 'a.svg', _svg(style)) != []
-
-
-def test_huge_delay_with_backwards_fill_still_reported(tmp_path):
-    style = ('.t { animation: fade 2s 99999s both; }\n'
-             '@keyframes fade { from { opacity: 0; } to { opacity: 1; } }')
-    assert _opacity_lines(tmp_path, 'a.svg', _svg(style)) != []
-
-
-def test_all_hidden_cycle_still_reported(tmp_path):
-    style = ('.t { animation: fade 8s infinite; }\n'
-             '@keyframes fade { 0% { opacity: 0; } 100% { opacity: 0; } }')
-    assert _opacity_lines(tmp_path, 'a.svg', _svg(style)) != []
-
-
-def test_variable_duration_timeline_and_scripts_still_reported(tmp_path):
-    for style, extra in [
-        ('.t { animation: fade var(--d) infinite; }\n@keyframes fade { 0%,100% { opacity: 0; } 20%,80% { opacity: 1; } }', ''),
-        (LOOP + '\n.t { animation-timeline: scroll(); }', ''),
-        (LOOP, '<script>document.querySelector(".t").style.animationPlayState="paused"</script>\n'),
-        ('@import url(x.css);\n' + LOOP, ''),
-    ]:
-        assert _opacity_lines(tmp_path, 'a.svg', _svg(style, extra)) != []
-
-
-def test_escaped_property_name_still_reported(tmp_path):
-    style = LOOP + '\n.u { animation-fill-\\6d ode: forwards; }'
-    assert _opacity_lines(tmp_path, 'a.svg', _svg(style)) != []
-
-
-def test_base_opacity_zero_and_inline_style_still_reported(tmp_path):
-    body = _svg(LOOP + '\n.secret { opacity: 0; }', '<text style="opacity:0;">x</text>\n')
-    assert len(_opacity_lines(tmp_path, 'a.svg', body)) == 2
-
-
-def test_keyframes_in_html_and_unused_keyframes_still_reported(tmp_path):
-    assert _opacity_lines(tmp_path, 'a.html', _svg(LOOP)) != []
-    assert _opacity_lines(tmp_path, 'b.svg', _svg('@keyframes fade { 0%,100% { opacity: 0; } 20%,80% { opacity: 1; } }')) != []
-
-
-def test_one_line_minified_base_rule_next_to_keyframes_still_reported(tmp_path):
-    style = '.s{opacity:0} .t{animation:fade 8s infinite} @keyframes fade{0%,100%{opacity:0}20%,80%{opacity:1}}'
-    assert _opacity_lines(tmp_path, 'a.svg', _svg(style)) != []
-
-
-def test_duplicate_keyframes_name_still_reported(tmp_path):
-    style = LOOP + '\n@keyframes fade { 0% { opacity: 0; } 100% { opacity: 0; } }'
-    assert _opacity_lines(tmp_path, 'a.svg', _svg(style)) != []
-
-
-def test_other_hiding_on_the_same_line_is_still_reported(tmp_path):
-    style = ('.t { animation: fade 8s infinite; }\n'
-             '@keyframes fade { 0%, 100% { opacity: 0; font-size: 0; } 20%, 80% { opacity: 1; } }')
-    p, r = _write(tmp_path, 'a.svg', _svg(style))
-    titles = [f.title for f in scan_sast.scan_css_steganography(p, r)]
-    assert "CSS hiding: zero-size text" in titles
-    assert "CSS hiding: opacity:0" not in titles
 
 
 # --- SA-PY-008 static SQL text -------------------------------------------
@@ -364,62 +260,7 @@ def test_dict_literal_spreading_the_environment_keeps_steering_keys_visible(tmp_
     assert _envcopy(tmp_path, body) == [2, 4]
 
 
-# --- review round: delayed backwards/both fill, name shadowing --------------
-
-def test_delayed_backwards_fill_with_hidden_first_frame_is_reported(tmp_path):
-    for fill in ('backwards', 'both'):
-        style = (f'.t {{ animation: f 1s 119s {fill}; }}\n'
-                 '@keyframes f { 0% { opacity: 0 } 1% { opacity: 1 } 100% { opacity: 1 } }')
-        assert _opacity_lines(tmp_path, f'a_{fill}.svg', _svg(style)) != [], fill
-    longhand = ('.t { animation-name: f; animation-duration: 1s; animation-delay: 60s;\n'
-                'animation-fill-mode: backwards; }\n'
-                '@keyframes f { 0% { opacity: 0 } 1% { opacity: 1 } 100% { opacity: 1 } }')
-    assert _opacity_lines(tmp_path, 'b.svg', _svg(longhand)) != []
-    multi = ('.t { animation: f 1s 119s both, g 1s; }\n'
-             '@keyframes f { 0% { opacity: 0 } 1% { opacity: 1 } 100% { opacity: 1 } }\n'
-             '@keyframes g { 0% { opacity: 1 } 100% { opacity: 1 } }')
-    assert _opacity_lines(tmp_path, 'c.svg', _svg(multi)) != []
-
-
-def test_any_positive_delay_with_backwards_prefill_and_hidden_first_frame_is_reported(tmp_path):
-    # no tolerated delay budget: even a short delay keeps the hidden first frame on screen
-    for delay in ('300ms', '2s', '3.1s', '0s'):
-        style = (f'.t {{ animation: f 1s {delay} both; }}\n'
-                 '@keyframes f { 0% { opacity: 0 } 100% { opacity: 1 } }')
-        found = _opacity_lines(tmp_path, f'a_{delay}.svg', _svg(style))
-        assert bool(found) == (delay != '0s'), delay
-
-
-def test_visible_first_frame_with_delay_and_fill_is_not_reported(tmp_path):
-    ok = ('.t { animation: f 1s 100s both; }\n'
-          '@keyframes f { 0% { opacity: 1 } 100% { opacity: 1 } }')
-    assert _opacity_lines(tmp_path, 'a.svg', _svg(ok)) == []
-
-
-def test_negative_delay_steps_timing_and_multiple_animations(tmp_path):
-    neg = ('.t { animation: f 10s -5s forwards; }\n'
-           '@keyframes f { 0% { opacity: 0 } 100% { opacity: 1 } }')
-    # negative delays are not parsed, so the file stays reported rather than guessed at
-    assert _opacity_lines(tmp_path, 'a.svg', _svg(neg)) != []
-    # step timing: a hold that jumps hidden after the first visible frame is still reported
-    steps = ('.t { animation: f 10s steps(2, end) forwards; }\n'
-             '@keyframes f { 0% { opacity: 1 } 50% { opacity: 0 } 100% { opacity: 1 } }')
-    assert _opacity_lines(tmp_path, 'b.svg', _svg(steps)) != []
-    # a second, malicious animation next to a benign one is judged on its own frames
-    multi = ('.t { animation: ok 1s forwards, bad 100s forwards; }\n'
-             '@keyframes ok { 0% { opacity: 0 } 100% { opacity: 1 } }\n'
-             '@keyframes bad { 0% { opacity: 1 } 5% { opacity: 0 } 95% { opacity: 0 } 100% { opacity: 1 } }')
-    lines = _opacity_lines(tmp_path, 'c.svg', _svg(multi))
-    assert lines and all(ln >= 5 for ln in lines)  # only the `bad` keyframes line
-    # a later paused override anywhere in the file keeps everything visible to the scanner
-    paused = ('.t { animation: f 1s forwards; }\n.u { animation-play-state: paused; }\n'
-              '@keyframes f { 0% { opacity: 0 } 100% { opacity: 1 } }')
-    assert _opacity_lines(tmp_path, 'd.svg', _svg(paused)) != []
-    # cascade: a later rule restoring a long delay with a backwards fill
-    cascade = ('.t { animation: f 1s both; }\n.t { animation-delay: 100s; }\n'
-               '@keyframes f { 0% { opacity: 0 } 100% { opacity: 1 } }')
-    assert _opacity_lines(tmp_path, 'e.svg', _svg(cascade)) != []
-
+# --- review round: name shadowing -------------------------------------------
 
 def test_subprocess_name_shadowing_keeps_env_copy_visible(tmp_path):
     shadows = {
@@ -437,6 +278,10 @@ def test_subprocess_name_shadowing_keeps_env_copy_visible(tmp_path):
         'dict': "import os, subprocess\ndef dict(x):\n    send(x)\nsubprocess.run(['x'], env=dict(os.environ))\n",
         'globals': "import os, subprocess\nglobals()['subprocess'] = Fake()\nsubprocess.run(['x'], env=dict(os.environ))\n",
         'sys_modules': "import os, subprocess, sys\nsys.modules['subprocess'] = Fake()\nsubprocess.run(['x'], env=dict(os.environ))\n",
+        'param_with_import': "import os, subprocess\ndef f(subprocess):\n    subprocess.run(['x'], env=dict(os.environ))\n",
+        'kwonly_param': "import os, subprocess\ndef f(*, subprocess):\n    subprocess.run(['x'], env=dict(os.environ))\n",
+        'except_target': ("import os, subprocess\ntry:\n    pass\nexcept ValueError as subprocess:\n    pass\n"
+                          "subprocess.run(['x'], env=dict(os.environ))\n"),
         'os_alias': "import subprocess\nimport fake_env as os\nsubprocess.run(['x'], env=dict(os.environ))\n",
     }
     for name, body in shadows.items():
@@ -445,14 +290,27 @@ def test_subprocess_name_shadowing_keeps_env_copy_visible(tmp_path):
     assert scan_skill_threats.environment_copies_kept_local(stdlib) != set()
 
 
-def test_held_fill_with_a_hidden_stretch_after_a_visible_frame_is_reported(tmp_path):
-    style = ('.t { animation: f 100s both; }\n'
-             '@keyframes f { 0% { opacity: 1 } 10% { opacity: 0 } 95% { opacity: 0 } 100% { opacity: 1 } }')
-    assert _opacity_lines(tmp_path, 'a.svg', _svg(style)) != []
 
 
-def test_longhand_both_fill_with_delay_and_hidden_first_frame_is_reported(tmp_path):
-    style = ('.t { animation-name: f; animation-duration: 1s; animation-delay: 60s;\n'
-             'animation-fill-mode: both; }\n'
-             '@keyframes f { 0% { opacity: 0 } 1% { opacity: 1 } 100% { opacity: 1 } }')
-    assert _opacity_lines(tmp_path, 'a.svg', _svg(style)) != []
+def test_keyframe_opacity_zero_is_always_reported_in_svg(tmp_path):
+    # No keyframe shape is proven benign: hidden time cannot be bounded from the
+    # file alone (fill modes, delays, durations and cascade all move it), so every
+    # opacity:0 keyframe stays visible. Benign-looking and hostile shapes alike.
+    shapes = {
+        'loop': ('.t { animation: fade 8s ease-in-out infinite; }\n'
+                 '@keyframes fade { 0%, 100% { opacity: 0; } 20%, 80% { opacity: 1; } }'),
+        'fade_in': ('.t { animation: rise 600ms ease 1 both; }\n'
+                    '@keyframes rise { from { opacity: 0; } to { opacity: 1; } }'),
+        'delayed_backwards': ('.t { animation: f 1s 119s backwards; }\n'
+                              '@keyframes f { 0% { opacity: 0 } 1% { opacity: 1 } 100% { opacity: 1 } }'),
+        'delayed_both': ('.t { animation: f 1s 119s both; }\n'
+                         '@keyframes f { 0% { opacity: 0 } 1% { opacity: 1 } 100% { opacity: 1 } }'),
+        'hidden_end': ('.t { animation: f 1s forwards; }\n'
+                       '@keyframes f { 0% { opacity: 1 } 100% { opacity: 0 } }'),
+        'hidden_middle': ('.t { animation: f 100s both; }\n'
+                          '@keyframes f { 0% { opacity: 1 } 5% { opacity: 0 } 95% { opacity: 0 } 100% { opacity: 1 } }'),
+        'paused': ('.t { animation: f 1s; }\n.u { animation-play-state: paused; }\n'
+                   '@keyframes f { 0% { opacity: 0 } 100% { opacity: 1 } }'),
+    }
+    for name, style in shapes.items():
+        assert _opacity_lines(tmp_path, f'{name}.svg', _svg(style)) != [], name
